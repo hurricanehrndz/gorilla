@@ -28,9 +28,14 @@
 
   # Lint changed Go files on commit. Pin the hook to the same golangci-lint
   # from `packages` above so the CLI and the hook never drift; config lives in
-  # .golangci.yml (v2 schema).
+  # .golangci.yml (v2 schema). The stock entry full-lints every touched
+  # package, which resurfaces the pre-existing findings deferred to the
+  # kernel-repair workstream — lint only lines new since main instead, same
+  # as `just lint main` and CI.
   git-hooks.hooks.golangci-lint = {
     enable = true;
     package = pkgs.golangci-lint;
+    entry = "${pkgs.golangci-lint}/bin/golangci-lint run --new-from-merge-base=main ./...";
+    pass_filenames = false;
   };
 }
