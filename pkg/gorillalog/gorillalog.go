@@ -2,6 +2,7 @@ package gorillalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,14 +48,17 @@ func (f fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (f fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Sinks are independent: one failing child (e.g. an invalid stdout handle
+	// when running as a Windows service) must not block the others.
+	var errs []error
 	for _, h := range f.handlers {
 		if h.Enabled(ctx, r.Level) {
 			if err := h.Handle(ctx, r.Clone()); err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (f fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -90,6 +94,10 @@ func NewLog(cfg config.Configuration) error {
 		consoleLevel = slog.LevelDebug
 	}
 
+	// UI text sink extension point: Workstream D adds a third child handler
+	// here (alongside the console and file sinks) that renders records for the
+	// UI; D owns wiring that handler's transport. The fan-out handler already
+	// forwards every record to each enabled child, so no other change is needed.
 	handlers := []slog.Handler{
 		slog.NewTextHandler(consoleOut, &slog.HandlerOptions{Level: consoleLevel}),
 	}

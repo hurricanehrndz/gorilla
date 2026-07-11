@@ -2,11 +2,15 @@ package gorillalog
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 )
@@ -68,6 +72,36 @@ func TestFanoutWritesToConsoleAndFile(t *testing.T) {
 	}
 	if !strings.Contains(string(readLog(t, dir)), "fanout-message") {
 		t.Errorf("file sink missing message")
+	}
+}
+
+// failingHandler always errors on Handle, like a console TextHandler writing
+// to an invalid stdout handle under a Windows service.
+type failingHandler struct{}
+
+func (failingHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (failingHandler) Handle(context.Context, slog.Record) error { return errors.New("bad handle") }
+func (failingHandler) WithAttrs([]slog.Attr) slog.Handler        { return failingHandler{} }
+func (failingHandler) WithGroup(string) slog.Handler             { return failingHandler{} }
+
+// TestFanoutSurvivesFailingChild encodes the Windows-service case: stdout is
+// an invalid handle so the console handler errors on every write; the file
+// sink must still receive the record (sinks are independent).
+func TestFanoutSurvivesFailingChild(t *testing.T) {
+	buf := &bytes.Buffer{}
+	fan := fanoutHandler{handlers: []slog.Handler{
+		failingHandler{},
+		slog.NewTextHandler(buf, nil),
+	}}
+
+	rec := slog.NewRecord(time.Now(), slog.LevelWarn, "still-delivered", 0)
+	err := fan.Handle(context.Background(), rec)
+
+	if !strings.Contains(buf.String(), "still-delivered") {
+		t.Errorf("second sink missing record after first sink failed: %q", buf.String())
+	}
+	if err == nil {
+		t.Errorf("expected the failing child's error to be surfaced")
 	}
 }
 
