@@ -61,21 +61,31 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 	var installed bool
 	var versionMatch bool
 	for _, regItem := range RegistryItems {
-		// Check if the catalog name is in the registry
-		if strings.Contains(regItem.Name, checkReg.Name) {
-			installed = true
-			slog.Debug("Current installed version", "version", regItem.Version)
+		// Check if the catalog name matches the registry name (K2: exact match, not substring)
+		if !strings.EqualFold(strings.TrimSpace(regItem.Name), strings.TrimSpace(checkReg.Name)) {
+			continue
+		}
+		installed = true
+		slog.Debug("Current installed version", "version", regItem.Version)
 
-			// Check if the catalog version matches the registry
-			currentVersion, err := version.NewVersion(regItem.Version)
-			if err != nil {
-				slog.Warn("Unable to parse current version", "err", err)
-			}
-			outdated := currentVersion.LessThan(catalogVersion)
-			if !outdated {
+		// If the catalog version is unparseable, fall back to exact string equality
+		if catalogVersion == nil {
+			if regItem.Version == checkReg.Version {
 				versionMatch = true
 			}
-			break
+			continue
+		}
+
+		// Check if the catalog version matches the registry
+		// K3: evaluate every matching entry (no break) and treat an unparseable
+		// installed version as not a match instead of dereferencing nil
+		currentVersion, err := version.NewVersion(regItem.Version)
+		if err != nil {
+			slog.Warn("Unable to parse current version", "version", regItem.Version, "err", err)
+			continue
+		}
+		if !currentVersion.LessThan(catalogVersion) {
+			versionMatch = true
 		}
 	}
 

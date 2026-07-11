@@ -309,6 +309,161 @@ func TestCheckRegistry(t *testing.T) {
 	}
 }
 
+// TestCheckRegistryMatching validates the registry name/version matching rules
+// against defects K2 (substring name matches) and K3 (first-hit break and
+// nil-version panic), plus the install/update/uninstall decision table.
+func TestCheckRegistryMatching(t *testing.T) {
+	defer func() {
+		RegistryItems = origRegistryItems
+	}()
+
+	regCheckItem := func(name, version string) catalog.Item {
+		return catalog.Item{
+			Check: catalog.InstallCheck{
+				Registry: catalog.RegCheck{
+					Name:    name,
+					Version: version,
+				},
+			},
+			DisplayName: name,
+		}
+	}
+
+	tests := []struct {
+		desc        string
+		registry    map[string]RegistryApplication
+		item        catalog.Item
+		installType string
+		want        bool
+	}{
+		// K2: a registry name containing the catalog name as a substring is not a match
+		{
+			desc: `substring name is not installed (K2)`,
+			registry: map[string]RegistryApplication{
+				`javaUpdater`: {Name: `Java Auto Updater`, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`Java`, `1.0.0`),
+			installType: `install`,
+			want:        true,
+		},
+		// K2: matching is case-insensitive and ignores surrounding whitespace
+		{
+			desc: `normalized name matches (K2)`,
+			registry: map[string]RegistryApplication{
+				`java`: {Name: ` java `, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`Java`, `1.0.0`),
+			installType: `install`,
+			want:        false,
+		},
+		// K3: with duplicate names, any entry at or above the catalog version
+		// satisfies the check regardless of map iteration order
+		{
+			desc: `duplicate names, one current (K3)`,
+			registry: map[string]RegistryApplication{
+				`dupOld`: {Name: `Dup`, Version: `1.0.0`},
+				`dupNew`: {Name: `Dup`, Version: `2.0.0`},
+			},
+			item:        regCheckItem(`Dup`, `2.0.0`),
+			installType: `install`,
+			want:        false,
+		},
+		// K3: an unparseable installed version must not panic and is not a version match
+		{
+			desc: `garbage installed version (K3)`,
+			registry: map[string]RegistryApplication{
+				`garbage`: {Name: `Garbage`, Version: `latest`},
+			},
+			item:        regCheckItem(`Garbage`, `1.0.0`),
+			installType: `install`,
+			want:        true,
+		},
+		// K3: an unparseable entry is skipped, not fatal, when a parseable duplicate satisfies
+		{
+			desc: `garbage duplicate plus current entry (K3)`,
+			registry: map[string]RegistryApplication{
+				`garbage`: {Name: `Dup`, Version: `latest`},
+				`current`: {Name: `Dup`, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`Dup`, `1.0.0`),
+			installType: `install`,
+			want:        false,
+		},
+		// An unparseable catalog version falls back to exact string equality
+		{
+			desc: `garbage catalog version, exact string match`,
+			registry: map[string]RegistryApplication{
+				`garbage`: {Name: `Garbage`, Version: `latest`},
+			},
+			item:        regCheckItem(`Garbage`, `latest`),
+			installType: `install`,
+			want:        false,
+		},
+		{
+			desc: `garbage catalog version, string mismatch`,
+			registry: map[string]RegistryApplication{
+				`garbage`: {Name: `Garbage`, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`Garbage`, `latest`),
+			installType: `install`,
+			want:        true,
+		},
+		// Decision table: install/update/uninstall semantics are preserved
+		{
+			desc: `decision table: install outdated`,
+			registry: map[string]RegistryApplication{
+				`app`: {Name: `App`, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`App`, `2.0.0`),
+			installType: `install`,
+			want:        true,
+		},
+		{
+			desc:        `decision table: update not installed`,
+			registry:    fakeRegistryItems,
+			item:        regCheckItem(`Not Installed`, `1.0.0`),
+			installType: `update`,
+			want:        false,
+		},
+		{
+			desc: `decision table: update outdated`,
+			registry: map[string]RegistryApplication{
+				`app`: {Name: `App`, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`App`, `2.0.0`),
+			installType: `update`,
+			want:        true,
+		},
+		{
+			desc: `decision table: uninstall installed`,
+			registry: map[string]RegistryApplication{
+				`app`: {Name: `App`, Version: `1.0.0`},
+			},
+			item:        regCheckItem(`App`, `1.0.0`),
+			installType: `uninstall`,
+			want:        true,
+		},
+		{
+			desc:        `decision table: uninstall not installed`,
+			registry:    fakeRegistryItems,
+			item:        regCheckItem(`Not Installed`, `1.0.0`),
+			installType: `uninstall`,
+			want:        false,
+		},
+	}
+
+	// Repeat the table to shake out any dependence on map iteration order (K3)
+	for i := 0; i < 20; i++ {
+		for _, tt := range tests {
+			RegistryItems = tt.registry
+			actionNeeded, _ := checkRegistry(tt.item, tt.installType)
+			if actionNeeded != tt.want {
+				t.Errorf("%s: actionNeeded: %v; Expected checkRegistry to return %v", tt.desc, actionNeeded, tt.want)
+			}
+		}
+	}
+}
+
 // TestCheckAppx validates AppX/MSIX package status checks across install/update/uninstall types
 func TestCheckAppx(t *testing.T) {
 	execCommand = fakeExecCommandAppx
