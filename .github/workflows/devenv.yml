@@ -1,0 +1,18 @@
+name: devenv
+on: [push, pull_request]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed for `just lint` new-from-merge-base
+      - uses: cachix/install-nix-action@v27
+      - uses: cachix/cachix-action@v15
+        with:
+          name: devenv
+      - run: nix profile install nixpkgs#devenv
+      - run: devenv shell -- just fmt-check
+      - run: devenv shell -- just lint origin/${{ github.base_ref || 'main' }}
+      - run: devenv shell -- just build
+      - run: devenv shell -- just check-xplat
