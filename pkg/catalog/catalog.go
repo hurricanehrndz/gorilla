@@ -65,12 +65,11 @@ var downloadGet = download.Get
 
 // Get returns a map of `Item` from the catalog and any fatal catalog-loading error.
 func Get(cfg config.Configuration) (map[int]map[string]Item, error) {
-
 	// catalogMap is an map of parsed catalogs
-	var catalogMap = make(map[int]map[string]Item)
+	catalogMap := make(map[int]map[string]Item)
 
 	// catalogCount allows us to be sure we are processing catalogs in order
-	var catalogCount = 0
+	catalogCount := 0
 
 	// Error if dont have at least one catalog
 	if len(cfg.Catalogs) < 1 {

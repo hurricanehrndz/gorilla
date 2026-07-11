@@ -1,4 +1,3 @@
----
 name: example_manifest
 managed_installs:
   - Chocolatey

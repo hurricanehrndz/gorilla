@@ -306,7 +306,6 @@ func TestCheckRegistry(t *testing.T) {
 	if !actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return true", actionNeeded)
 	}
-
 }
 
 // TestCheckAppx validates AppX/MSIX package status checks across install/update/uninstall types
@@ -423,7 +422,6 @@ func TestCheckScript(t *testing.T) {
 
 // TestCheckPath validates that the status of a path is checked correctly
 func TestCheckPath(t *testing.T) {
-
 	// Run checkPath for pathInstalled
 	// We expect action is not needed; Only error if action needed is true
 	actionNeeded, err := checkPath(pathInstalled, "install")
@@ -473,7 +471,6 @@ func TestCheckPath(t *testing.T) {
 	if !actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkPath to return true", actionNeeded)
 	}
-
 }
 
 // ExampleCheckStatus_script validates that a script check is ran

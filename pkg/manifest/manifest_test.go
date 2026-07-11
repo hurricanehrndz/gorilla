@@ -51,7 +51,6 @@ var (
 
 // TestGet verifies that multiple manifests are processed correctly
 func TestGet(t *testing.T) {
-
 	// Override the download function, but restore it when we're done
 	downloadGet = fakeDownload
 	defer func() {
@@ -92,7 +91,6 @@ func TestGet(t *testing.T) {
 
 // TestGetCatalogs verifies that catalogs included in a manifest get added to the config
 func TestGetCatalogs(t *testing.T) {
-
 	// Override the download function, but restore it when we're done
 	downloadGet = fakeDownload
 	defer func() {
@@ -184,7 +182,6 @@ func TestGetSkipsMissingLocalManifest(t *testing.T) {
 
 // fakeDownload returns a manifest encoded as yaml based on the url passed
 func fakeDownload(manifestURL string) ([]byte, error) {
-
 	// Define a testManifest based on the url passed
 	var testManifest Item
 	switch manifestURL {

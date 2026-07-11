@@ -37,3 +37,11 @@ build/
 # Local .NET CLI homes/tooling caches
 /.dotnet/
 /.dotnet-home/
+
+# devenv / direnv
+.devenv*
+.direnv
+devenv.local.nix
+
+# git-hooks.nix generates this as a machine-specific symlink into /nix/store
+.pre-commit-config.yaml

@@ -25,7 +25,6 @@ var (
 
 // Start adds the data we already know at the beginning of a run
 func Start() {
-
 	// Get the current time
 	currentTime := time.Now().UTC()
 
@@ -54,7 +53,6 @@ func Start() {
 
 // End will compile everything and save to disk
 func End() {
-
 	// Compile everything
 	Items["InstalledItems"] = InstalledItems
 	Items["UninstalledItems"] = UninstalledItems
@@ -78,11 +76,10 @@ func End() {
 
 	// Write Items to disk as GorillaReport.json
 	reportPath := filepath.Join(os.Getenv("ProgramData"), "gorilla/GorillaReport.json")
-	writeErr := os.WriteFile(reportPath, reportJSON, 0644)
+	writeErr := os.WriteFile(reportPath, reportJSON, 0o644)
 	if writeErr != nil {
 		fmt.Println("Unable to write GorillaReport.json to disk:", writeErr)
 	}
-
 }
 
 // Print writes the report to stdout instead of writing to disk

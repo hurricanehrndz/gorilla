@@ -54,7 +54,7 @@ func NewLog(cfg config.Configuration) error {
 
 	// Create the log directory
 	logPath = filepath.Join(cfg.AppDataPath, "gorilla.log")
-	err := os.MkdirAll(filepath.Dir(logPath), 0755)
+	err := os.MkdirAll(filepath.Dir(logPath), 0o755)
 	if err != nil {
 		return fmt.Errorf("unable to create log directory %s: %w", filepath.Dir(logPath), err)
 	}
@@ -62,7 +62,7 @@ func NewLog(cfg config.Configuration) error {
 	_ = rotateLogIfNeeded(logPath)
 
 	// Create the log file
-	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("unable to open log file %s: %w", logPath, err)
 	}
@@ -158,7 +158,7 @@ func rotateCurrentLogIfNeeded() {
 		return
 	}
 	if logFile == nil {
-		file, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		file, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if openErr != nil {
 			return
 		}
@@ -174,7 +174,7 @@ func rotateCurrentLogIfNeeded() {
 	_ = logFile.Close()
 	logFile = nil
 	_ = rotateLogIfNeeded(logPath)
-	file, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	file, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if openErr != nil {
 		return
 	}

@@ -9,14 +9,11 @@ import (
 	"time"
 )
 
-var (
-	expectedItems = make(map[string]interface{})
-)
+var expectedItems = make(map[string]interface{})
 
 // TestStart validates that a properly formated `Items` object
 // is created with the expected starting data
 func TestStart(t *testing.T) {
-
 	// Set our expectations
 	fakeTime = time.Now().UTC()
 	expectedTime := fakeTime.Format("2006-01-02 15:04:05 -0700")
@@ -52,7 +49,6 @@ func TestStart(t *testing.T) {
 // TestEnd validates that a properly formated `Items` object
 // is updated with the correct items and
 func TestEnd(t *testing.T) {
-
 	// Set our expectations
 	fakeTime = time.Now().UTC()
 	expectedTime := fakeTime.Format("2006-01-02 15:04:05 -0700")

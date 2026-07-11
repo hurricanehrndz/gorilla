@@ -1,0 +1,25 @@
+# golangci-lint v2 configuration.
+# Docs: https://golangci-lint.run/usage/configuration/
+version: "2"
+run:
+  timeout: 5m
+linters:
+  # Keep golangci-lint's default set (errcheck, govet, ineffassign,
+  # staticcheck, unused) and layer a low-noise, high-signal set on top.
+  enable:
+    - bodyclose # unclosed HTTP response bodies
+    - misspell # common misspellings in comments/strings
+    - unconvert # unnecessary type conversions
+    - unparam # unused function parameters
+  settings:
+    govet:
+      # Enable the shadow analyzer (off by default) to catch a re-declared
+      # variable shadowing an outer one, e.g. a shadowed `err`.
+      enable:
+        - shadow
+  # Complexity guards (gocyclo/gocognit/cyclop/funlen/nestif) and any
+  # whole-tree cleanup are intentionally deferred to Workstream B
+  # (kernel-repair). Enforcement here is incremental (new-from-merge-base).
+
+# Formatting is handled by treefmt (gofumpt) in devenv.nix, so no formatters
+# are enabled here to avoid two tools fighting over the same files.

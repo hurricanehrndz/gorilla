@@ -19,10 +19,8 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 )
 
-var (
-	// A package level copy of our config for the `download` package to reference
-	downloadCfg config.Configuration
-)
+// A package level copy of our config for the `download` package to reference
+var downloadCfg config.Configuration
 
 // SetConfig accepts a configuration struct that all functions in the `download` package will use
 func SetConfig(cfg config.Configuration) {
@@ -36,7 +34,7 @@ func File(file string, url string) error {
 	absPath := filepath.Join(file, fileName)
 
 	// Create the directory
-	err := os.MkdirAll(filepath.Clean(file), 0755)
+	err := os.MkdirAll(filepath.Clean(file), 0o755)
 	if err != nil {
 		gorillalog.Warn("Unable to make filepath:", file, err)
 	}
@@ -67,7 +65,6 @@ func File(file string, url string) error {
 // Timeout is 10 seconds
 // Will only write to disk if http status code is 2XX
 func Get(url string) ([]byte, error) {
-
 	// Declare the http client
 	var client *http.Client
 
@@ -142,7 +139,6 @@ func Get(url string) ([]byte, error) {
 	// Actually send the request, using the client we setup
 	// Storing the response in resp
 	resp, err := client.Do(req)
-
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +185,7 @@ func Verify(file string, sha string) bool {
 // Once downloaded it will attempt to verify the hash again
 func IfNeeded(absFile string, url string, hash string) bool {
 	// If the file exists, check the hash
-	var verified = false
+	verified := false
 	if _, err := os.Stat(absFile); err == nil {
 		verified = Verify(absFile, hash)
 	}

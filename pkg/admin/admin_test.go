@@ -15,7 +15,7 @@ import (
 func TestBuildCatalogs(t *testing.T) {
 	repoPath := t.TempDir()
 	packagesInfoPath := filepath.Join(repoPath, "packages-info")
-	if err := os.MkdirAll(packagesInfoPath, 0755); err != nil {
+	if err := os.MkdirAll(packagesInfoPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,13 +43,13 @@ installer:
   location: packages/skip/skip.nupkg
   hash: ghi
 `
-	if err := os.WriteFile(filepath.Join(packagesInfoPath, "chrome.yaml"), []byte(itemA), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(packagesInfoPath, "chrome.yaml"), []byte(itemA), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(packagesInfoPath, "agent.yaml"), []byte(itemB), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(packagesInfoPath, "agent.yaml"), []byte(itemB), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(packagesInfoPath, "skip.yaml"), []byte(itemSkip), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(packagesInfoPath, "skip.yaml"), []byte(itemSkip), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -87,7 +87,7 @@ func TestBuildCatalogsMissingPackagesInfo(t *testing.T) {
 func TestBuildCatalogsCatalogGetRoundTrip(t *testing.T) {
 	repoPath := t.TempDir()
 	packagesInfoPath := filepath.Join(repoPath, "packages-info")
-	if err := os.MkdirAll(packagesInfoPath, 0755); err != nil {
+	if err := os.MkdirAll(packagesInfoPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,7 +105,7 @@ installer:
   hash: abc
 version: 1.2.3.4
 `
-	if err := os.WriteFile(filepath.Join(packagesInfoPath, "chrome.yaml"), []byte(item), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(packagesInfoPath, "chrome.yaml"), []byte(item), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

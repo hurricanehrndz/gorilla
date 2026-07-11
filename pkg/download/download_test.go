@@ -118,7 +118,6 @@ func TestFileHash(t *testing.T) {
 	if !Verify(filepath.Join(dir, "hashtest.txt"), validHash) {
 		t.Errorf("Hash does not match downloaded test file!")
 	}
-
 }
 
 // TestFileHashLocal verifies that a *local* file is downloaded properly
@@ -146,7 +145,6 @@ func TestFileHashLocal(t *testing.T) {
 	if !Verify(filepath.Join(dir, "hashtest.txt"), validHash) {
 		t.Errorf("Hash does not match downloaded test file from a local url!")
 	}
-
 }
 
 // TestFileTimeout verifies a connection will timeout
@@ -180,7 +178,6 @@ func TestFileTimeout(t *testing.T) {
 	} else {
 		t.Errorf("File() did not return an error when running 'TestFileTimeout'")
 	}
-
 }
 
 // TestFileStatus verifies status codes are respected
@@ -207,7 +204,6 @@ func TestFileStatus(t *testing.T) {
 	} else {
 		t.Errorf("File() did not return an error when returning a 404")
 	}
-
 }
 
 // TestFileBasicAuth verifies username and password are included in headers
@@ -234,7 +230,6 @@ func TestFileBasicAuth(t *testing.T) {
 	if fileErr != nil {
 		t.Errorf("File download with basic auth failed':\n%v", fileErr)
 	}
-
 }
 
 // TestFileTLS verifies TLS auth is functioning
@@ -295,7 +290,6 @@ func TestFileTLS(t *testing.T) {
 	if fileErr != nil {
 		t.Errorf("File download with TLS auth failed':\n%v", fileErr)
 	}
-
 }
 
 func copy(src, dst string) error {
@@ -326,7 +320,6 @@ func copy(src, dst string) error {
 
 // TestIfNeededValid confirms that a file is not downloaded when a valid copy exists
 func TestIfNeededValid(t *testing.T) {
-
 	// Create a temporary directory
 	dir, err := os.MkdirTemp("", "gorilla_test")
 	if err != nil {
@@ -369,12 +362,10 @@ func TestIfNeededValid(t *testing.T) {
 	if !modTime.Equal(testTime) {
 		t.Error("IfNeeded() downloaded a file that *was not* needed!")
 	}
-
 }
 
 // TestIfNeededInvalid confirms that a file *is* downloaded when an invalid copy exists
 func TestIfNeededInvalid(t *testing.T) {
-
 	// Create a temporary directory
 	dir, err := os.MkdirTemp("", "gorilla_test")
 	if err != nil {
@@ -416,5 +407,4 @@ func TestIfNeededInvalid(t *testing.T) {
 	if modTime.Equal(testTime) {
 		t.Error("IfNeeded() did *not* download a file when it *was* needed!")
 	}
-
 }

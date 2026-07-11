@@ -150,7 +150,6 @@ var (
 
 // TestManifests verifies that the installs, uninstalls, and upgrades are processed correctly
 func TestManifests(t *testing.T) {
-
 	// Setup our test manifests
 	testManifests := []manifest.Item{
 		{
@@ -283,7 +282,6 @@ func TestUninstallsMsix(t *testing.T) {
 
 // TestInstalls tests if install items and their dependencies are processed correctly
 func TestInstalls(t *testing.T) {
-
 	// Override the install function to use our fake function
 	installerInstall = fakeInstall
 	defer func() { installerInstall = origInstall }()
@@ -306,7 +304,6 @@ func TestInstalls(t *testing.T) {
 
 // TestUninstalls tests if uninstall items are processed correctly
 func TestUninstalls(t *testing.T) {
-
 	// Override the install function to use our fake function
 	installerInstall = fakeUninstall
 	defer func() { installerInstall = origInstall }()
@@ -328,7 +325,6 @@ func TestUninstalls(t *testing.T) {
 
 // TestUpdates tests if update items are processed correctly
 func TestUpdates(t *testing.T) {
-
 	// Override the install function to use our fake function
 	installerInstall = fakeUpdate
 	defer func() { installerInstall = origInstall }()
@@ -350,7 +346,6 @@ func TestUpdates(t *testing.T) {
 
 // TestCleanUp verifies that only the correct files and directories are removed
 func TestCleanUp(t *testing.T) {
-
 	// Override the os.Remove function
 	osRemove = fakeOsRemove
 	defer func() {

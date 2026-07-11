@@ -1,5 +1,4 @@
 name: UI Client Test
-
 on:
   push:
     branches:
@@ -17,29 +16,23 @@ on:
       - '!gorilla-ui/**/*.md'
       - Makefile
       - .github/workflows/ui-client-test.yml
-
 permissions:
   contents: read
-
 jobs:
   build:
     name: UI Lint And Test
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-    - name: Set Git config
-      run: git config --global core.autocrlf false
-
-    - name: Check out code
-      uses: actions/checkout@v4
-
-    - name: Set up .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: 8.0.x
-
-    - name: UI lint
-      run: make ui-lint
-
-    - name: UI test
-      run: make ui-test
+      - name: Set Git config
+        run: git config --global core.autocrlf false
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: UI lint
+        run: make ui-lint
+      - name: UI test
+        run: make ui-test

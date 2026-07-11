@@ -69,7 +69,6 @@ func firstItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (ca
 	}
 	gorillalog.Warn(fmt.Sprintf("skipping item %q because it was not found in any catalog", itemName))
 	return catalog.Item{}, false
-
 }
 
 // Manifests iterates though the first manifest and any included manifests
@@ -208,7 +207,6 @@ var osRemove = os.Remove
 
 // CleanUp checks the age of items in the cache and removes if older than 10 days
 func CleanUp(cachePath string) {
-
 	// Clean up old files
 	err := filepath.Walk(cachePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
