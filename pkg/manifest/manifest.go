@@ -2,11 +2,11 @@ package manifest
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -49,7 +49,7 @@ func Get(cfg config.Configuration) (manifests []Item, newCatalogs []string, err 
 
 		// Download the manifest
 		manifestURL := cfg.URL + "manifests/" + currentManifest + ".yaml"
-		gorillalog.Info("Manifest Url:", manifestURL)
+		slog.Info("Manifest Url", "url", manifestURL)
 		yamlFile, err := downloadGet(manifestURL)
 		if err != nil {
 			return nil, nil, err
@@ -117,7 +117,7 @@ func Get(cfg config.Configuration) (manifests []Item, newCatalogs []string, err 
 	if len(cfg.LocalManifests) > 0 {
 		for _, manifest := range cfg.LocalManifests {
 			var localManifest Item
-			gorillalog.Info("Manifest File:", manifest)
+			slog.Info("Manifest File", "path", manifest)
 			localManifestsYaml, err := os.ReadFile(manifest)
 			if err != nil {
 				if errors.Is(err, os.ErrNotExist) {

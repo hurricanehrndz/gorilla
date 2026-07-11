@@ -13,9 +13,6 @@ import (
 )
 
 var (
-	// CachePath is a directory we will use for temporary storage
-	cachePath string
-
 	// Define flag defaults
 	aboutArg          bool
 	aboutDefault      = false
@@ -85,6 +82,7 @@ type Configuration struct {
 	AppDataPath     string   `yaml:"app_data_path"`
 	Verbose         bool     `yaml:"verbose,omitempty"`
 	Debug           bool     `yaml:"debug,omitempty"`
+	LogFilePlain    bool     `yaml:"log_file_plain,omitempty"`
 	CheckOnly       bool     `yaml:"checkonly,omitempty"`
 	BuildArg        bool
 	ImportArg       string

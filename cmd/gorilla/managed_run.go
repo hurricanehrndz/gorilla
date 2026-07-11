@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -49,7 +50,7 @@ func managedRun(cfg config.Configuration) error {
 	}
 
 	if cfg.BuildArg {
-		gorillalog.Info("Building catalogs...")
+		slog.Info("Building catalogs...")
 		if err := buildCatalogsFunc(cfg.RepoPath); err != nil {
 			return fmt.Errorf("error building catalogs: %w", err)
 		}
@@ -57,7 +58,7 @@ func managedRun(cfg config.Configuration) error {
 	}
 
 	if cfg.ImportArg != "" {
-		gorillalog.Info("Importing item...")
+		slog.Info("Importing item...")
 		if err := importItemFunc(cfg.RepoPath, cfg.ImportArg); err != nil {
 			return fmt.Errorf("error importing item: %w", err)
 		}
@@ -74,7 +75,7 @@ func managedRun(cfg config.Configuration) error {
 	download.SetConfig(cfg)
 
 	// Get the manifests
-	gorillalog.Info("Retrieving manifest:", cfg.Manifest)
+	slog.Info("Retrieving manifest", "manifest", cfg.Manifest)
 	manifests, newCatalogs, err := manifest.Get(cfg)
 	if err != nil {
 		return fmt.Errorf("unable to retrieve manifest: %w", err)
@@ -86,38 +87,38 @@ func managedRun(cfg config.Configuration) error {
 	}
 
 	// Get the catalogs
-	gorillalog.Info("Retrieving catalog:", cfg.Catalogs)
+	slog.Info("Retrieving catalog", "catalogs", cfg.Catalogs)
 	catalogs, err := catalog.Get(cfg)
 	if err != nil {
 		return fmt.Errorf("unable to retrieve catalog: %w", err)
 	}
 
 	// Process the manifests into install type groups
-	gorillalog.Info("Processing manifest...")
+	slog.Info("Processing manifest...")
 	installs, uninstalls, updates := process.Manifests(manifests, catalogs)
 
 	// Prepare and install
-	gorillalog.Info("Processing managed installs...")
+	slog.Info("Processing managed installs...")
 	process.Installs(installs, catalogs, cfg.URLPackages, cfg.CachePath, cfg.CheckOnly)
 
 	// Prepare and uninstall
-	gorillalog.Info("Processing managed uninstalls...")
+	slog.Info("Processing managed uninstalls...")
 	process.Uninstalls(uninstalls, catalogs, cfg.URLPackages, cfg.CachePath, cfg.CheckOnly)
 
 	// Prepare and update
-	gorillalog.Info("Processing managed updates...")
+	slog.Info("Processing managed updates...")
 	process.Updates(updates, catalogs, cfg.URLPackages, cfg.CachePath, cfg.CheckOnly)
 
 	// Save GorillaReport to disk
-	gorillalog.Info("Saving GorillaReport.json...")
+	slog.Info("Saving GorillaReport.json...")
 	if cfg.CheckOnly {
 		report.Print()
 	}
 
 	// Run CleanUp to delete old cached items and empty directories
-	gorillalog.Info("Cleaning up the cache...")
+	slog.Info("Cleaning up the cache...")
 	process.CleanUp(cfg.CachePath)
 
-	gorillalog.Info("Done!")
+	slog.Info("Done!")
 	return nil
 }

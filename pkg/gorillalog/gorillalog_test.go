@@ -1,265 +1,275 @@
 package gorillalog
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 )
 
-// TestNewLog tests the creation of the log and its directory
-func TestNewLog(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	// Set up a place for test data
-	tmpDir := filepath.Join(os.Getenv("TMPDIR"), "gorillalog")
-
-	cfg := config.Configuration{
-		AppDataPath: tmpDir,
-		Debug:       false,
-		Verbose:     false,
-	}
-
-	defer func() {
-		// Clean up when we are done
-		os.RemoveAll(tmpDir)
-		Close()
-		log.SetOutput(os.Stdout)
-	}()
-
-	// Run the function
-	if err := NewLog(cfg); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
-
-	// Check values
-	logDir := tmpDir
-	logFile := filepath.Join(tmpDir, "gorilla.log")
-	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		fmt.Println(err)
-		t.Errorf("Log Directory not created: %s", logDir)
-	}
-	if _, err := os.Stat(logFile); os.IsNotExist(err) {
-		t.Errorf("Log File not created: %s", logFile)
-	}
-}
-
-func TestNewLogRotatesOversizedFileOnStartup(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	tmpDir := t.TempDir()
-	originalMax := logMaxSizeBytes
-	logMaxSizeBytes = 16
+// setConsole redirects the console sink to a buffer and restores state on
+// cleanup so tests can assert what reaches stdout.
+func setConsole(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	orig := consoleOut
+	buf := &bytes.Buffer{}
+	consoleOut = buf
 	t.Cleanup(func() {
-		logMaxSizeBytes = originalMax
 		Close()
-		log.SetOutput(os.Stdout)
+		consoleOut = orig
 	})
+	return buf
+}
 
-	activePath := filepath.Join(tmpDir, "gorilla.log")
-	if err := os.WriteFile(activePath, []byte(strings.Repeat("x", 64)), 0o644); err != nil {
-		t.Fatalf("seed log file: %v", err)
-	}
-
-	cfg := config.Configuration{
-		AppDataPath: tmpDir,
-	}
+// newLog calls NewLog and registers Close as a cleanup. Call it AFTER
+// t.TempDir(): cleanups run LIFO, so Close releases the lumberjack file
+// handle before TempDir's RemoveAll — Windows cannot delete an open file.
+func newLog(t *testing.T, cfg config.Configuration) {
+	t.Helper()
 	if err := NewLog(cfg); err != nil {
 		t.Fatalf("NewLog failed: %v", err)
 	}
-
-	if _, err := os.Stat(activePath + ".1"); err != nil {
-		t.Fatalf("expected rotated backup log, got error: %v", err)
-	}
+	t.Cleanup(Close)
 }
 
-func TestInfoRotatesOversizedActiveFileBeforeWrite(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	tmpDir := t.TempDir()
-	originalMax := logMaxSizeBytes
-	logMaxSizeBytes = 40
-	t.Cleanup(func() {
-		logMaxSizeBytes = originalMax
-		Close()
-		log.SetOutput(os.Stdout)
-	})
-
-	cfg := config.Configuration{
-		AppDataPath: tmpDir,
-	}
-	if err := NewLog(cfg); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
-
-	Info(strings.Repeat("A", 128))
-	Info("second line triggers size check")
-
-	backupPath := filepath.Join(tmpDir, "gorilla.log.1")
-	if _, err := os.Stat(backupPath); err != nil {
-		t.Fatalf("expected rotated backup log, got error: %v", err)
-	}
-}
-
-func TestRotateLogIfNeededPreservesPreviousBackupWhenRenameFails(t *testing.T) {
-	tmpDir := t.TempDir()
-	activePath := filepath.Join(tmpDir, "gorilla.log")
-	backupPath := activePath + ".1"
-
-	if err := os.WriteFile(activePath, []byte(strings.Repeat("a", 128)), 0o644); err != nil {
-		t.Fatalf("write active log: %v", err)
-	}
-	if err := os.WriteFile(backupPath, []byte("previous-backup"), 0o644); err != nil {
-		t.Fatalf("write backup log: %v", err)
-	}
-
-	originalMax := logMaxSizeBytes
-	logMaxSizeBytes = 32
-	t.Cleanup(func() { logMaxSizeBytes = originalMax })
-
-	originalRename := osRename
-	osRename = func(oldpath, newpath string) error {
-		if oldpath == activePath && newpath == backupPath {
-			return errors.New("forced rename failure")
-		}
-		return originalRename(oldpath, newpath)
-	}
-	t.Cleanup(func() { osRename = originalRename })
-
-	if err := rotateLogIfNeeded(activePath); err == nil {
-		t.Fatalf("expected rotateLogIfNeeded to fail when active rename fails")
-	}
-
-	backupContent, err := os.ReadFile(backupPath)
+func readLog(t *testing.T, dir string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "gorilla.log"))
 	if err != nil {
-		t.Fatalf("expected backup to still exist: %v", err)
+		t.Fatalf("read log file: %v", err)
 	}
-	if string(backupContent) != "previous-backup" {
-		t.Fatalf("expected previous backup content to be preserved, got %q", string(backupContent))
+	return data
+}
+
+// TestNewLogCreatesDirAndFile verifies the log directory and file materialize
+// under AppDataPath.
+func TestNewLogCreatesDirAndFile(t *testing.T) {
+	setConsole(t)
+	dir := filepath.Join(t.TempDir(), "nested")
+
+	newLog(t, config.Configuration{AppDataPath: dir})
+	Info("seed") // lumberjack creates the file on first write
+
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		t.Errorf("log directory not created: %s", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gorilla.log")); os.IsNotExist(err) {
+		t.Errorf("log file not created under %s", dir)
 	}
 }
 
-func TestRotateLogIfNeededReturnsStatErrorWithoutPanicking(t *testing.T) {
-	originalStat := osStat
-	osStat = func(string) (os.FileInfo, error) {
-		return nil, errors.New("forced stat failure")
-	}
-	t.Cleanup(func() { osStat = originalStat })
+// TestFanoutWritesToConsoleAndFile proves one call reaches every active sink.
+func TestFanoutWritesToConsoleAndFile(t *testing.T) {
+	console := setConsole(t)
+	dir := t.TempDir()
 
-	if err := rotateLogIfNeeded("/tmp/does-not-matter.log"); err == nil {
-		t.Fatalf("expected rotateLogIfNeeded to return stat error")
+	newLog(t, config.Configuration{AppDataPath: dir, Verbose: true})
+	Warn("fanout-message")
+
+	if !strings.Contains(console.String(), "fanout-message") {
+		t.Errorf("console sink missing message: %q", console.String())
+	}
+	if !strings.Contains(string(readLog(t, dir)), "fanout-message") {
+		t.Errorf("file sink missing message")
 	}
 }
 
-func TestRotateCurrentLogIfNeededReopensWhenHandleMissing(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
+// failingHandler always errors on Handle, like a console TextHandler writing
+// to an invalid stdout handle under a Windows service.
+type failingHandler struct{}
 
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "gorilla.log")
-	if err := os.WriteFile(path, []byte("seed"), 0o644); err != nil {
-		t.Fatalf("seed log: %v", err)
+func (failingHandler) Enabled(context.Context, slog.Level) bool  { return true }
+func (failingHandler) Handle(context.Context, slog.Record) error { return errors.New("bad handle") }
+func (failingHandler) WithAttrs([]slog.Attr) slog.Handler        { return failingHandler{} }
+func (failingHandler) WithGroup(string) slog.Handler             { return failingHandler{} }
+
+// TestFanoutSurvivesFailingChild encodes the Windows-service case: stdout is
+// an invalid handle so the console handler errors on every write; the file
+// sink must still receive the record (sinks are independent).
+func TestFanoutSurvivesFailingChild(t *testing.T) {
+	buf := &bytes.Buffer{}
+	fan := fanoutHandler{handlers: []slog.Handler{
+		failingHandler{},
+		slog.NewTextHandler(buf, nil),
+	}}
+
+	rec := slog.NewRecord(time.Now(), slog.LevelWarn, "still-delivered", 0)
+	err := fan.Handle(context.Background(), rec)
+
+	if !strings.Contains(buf.String(), "still-delivered") {
+		t.Errorf("second sink missing record after first sink failed: %q", buf.String())
+	}
+	if err == nil {
+		t.Errorf("expected the failing child's error to be surfaced")
+	}
+}
+
+// TestNewLogSkipsUnusableStdout encodes spec R5: an SCM-started Windows
+// service has no usable stdout, so NewLog must attach no console sink at all
+// (instead of one that fails every write) while the file sink keeps working.
+// A closed *os.File stands in for the NULL stdout handle: Stat fails on it.
+func TestNewLogSkipsUnusableStdout(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
 	}
 
-	originalPath := logPath
-	originalFile := logFile
-	logPath = path
-	logFile = nil
+	orig := consoleOut
+	SetOutput(f)
 	t.Cleanup(func() {
-		logPath = originalPath
-		logFile = originalFile
-	})
-	t.Cleanup(func() {
+		SetOutput(orig)
 		Close()
-		log.SetOutput(os.Stdout)
 	})
 
-	rotateCurrentLogIfNeeded()
-	if logFile == nil {
-		t.Fatalf("expected rotateCurrentLogIfNeeded to reopen log file when handle is missing")
+	dir := t.TempDir()
+	newLog(t, config.Configuration{AppDataPath: dir, Verbose: true})
+
+	fan, ok := slog.Default().Handler().(fanoutHandler)
+	if !ok {
+		t.Fatalf("default handler is %T, want fanoutHandler", slog.Default().Handler())
+	}
+	if len(fan.handlers) != 1 {
+		t.Errorf("expected only the file sink, got %d handlers", len(fan.handlers))
+	}
+
+	Warn("no-console")
+	if !strings.Contains(string(readLog(t, dir)), "no-console") {
+		t.Errorf("file sink missing record when console is skipped")
 	}
 }
 
-// ExampleDebug_off tests the output of a log sent to DEBUG while config.Debug is false
-func ExampleDebug_off() {
-	// Set up what we expect
-	logString := "Debug String!"
+// TestFileEncodingJSONDefault asserts the file sink emits structured JSON.
+func TestFileEncodingJSONDefault(t *testing.T) {
+	setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function without debug
-	debug = false
-	Debug(logString)
+	newLog(t, config.Configuration{AppDataPath: dir})
+	Warn("json-line")
 
-	// Output:
+	line := bytes.TrimSpace(readLog(t, dir))
+	var rec map[string]any
+	if err := json.Unmarshal(line, &rec); err != nil {
+		t.Fatalf("file line is not JSON: %v (%q)", err, line)
+	}
+	if rec["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", rec["level"])
+	}
+	if rec["msg"] != "json-line" {
+		t.Errorf("msg = %v, want json-line", rec["msg"])
+	}
 }
 
-// ExampleDebug_on tests the output of a log sent to DEBUG while config.Debug is true
-func ExampleDebug_on() {
-	// Set up what we expect
-	logString := "Debug String!"
+// TestFileEncodingPlain asserts LogFilePlain swaps the file sink to text.
+func TestFileEncodingPlain(t *testing.T) {
+	setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function with debug
-	debug = true
-	Debug(logString)
+	newLog(t, config.Configuration{AppDataPath: dir, LogFilePlain: true})
+	Warn("plain-line")
 
-	// Output:
-	// Debug String!
+	line := bytes.TrimSpace(readLog(t, dir))
+	if err := json.Unmarshal(line, &map[string]any{}); err == nil {
+		t.Errorf("expected non-JSON text line, got JSON: %q", line)
+	}
+	if !strings.Contains(string(line), "plain-line") {
+		t.Errorf("plain line missing message: %q", line)
+	}
 }
 
-// ExampleInfo_verbose_off tests the output of a log sent to INFO while config.Verbose is false
-func ExampleInfo_verbose_off() {
-	// Set up what we expect
-	logString := "Info String!"
+// TestConsoleLevelGating checks verbose/debug drive which levels reach console.
+func TestConsoleLevelGating(t *testing.T) {
+	tests := []struct {
+		name           string
+		verbose, debug bool
+		infoVisible    bool
+		debugVisible   bool
+	}{
+		{"default", false, false, false, false},
+		{"verbose", true, false, true, false},
+		{"debug", false, true, true, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			console := setConsole(t)
+			dir := t.TempDir()
+			newLog(t, config.Configuration{AppDataPath: dir, Verbose: tc.verbose, Debug: tc.debug})
 
-	// Run the function without verbose
-	verbose = false
+			Debug("dbg-msg")
+			Info("info-msg")
+			Warn("warn-msg")
+			out := console.String()
 
-	Info(logString)
-	// Output:
+			if got := strings.Contains(out, "info-msg"); got != tc.infoVisible {
+				t.Errorf("info visible = %v, want %v: %q", got, tc.infoVisible, out)
+			}
+			if got := strings.Contains(out, "dbg-msg"); got != tc.debugVisible {
+				t.Errorf("debug visible = %v, want %v: %q", got, tc.debugVisible, out)
+			}
+			if !strings.Contains(out, "warn-msg") {
+				t.Errorf("warn must always reach console: %q", out)
+			}
+		})
+	}
 }
 
-// ExampleInfoVerboseOn tests the output of a log sent to INFO while config.Verbose is true
-func ExampleInfo_verbose_on() {
-	// Set up what we expect
-	logString := "Info String!"
+// TestCheckOnlyNoFileAndErrorNoPanic confirms checkonly suppresses the file
+// sink and neuters Error's panic.
+func TestCheckOnlyNoFileAndErrorNoPanic(t *testing.T) {
+	setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function with verbose
-	verbose = true
+	newLog(t, config.Configuration{AppDataPath: dir, CheckOnly: true})
+	if logWriter != nil {
+		t.Errorf("checkonly should not open a file writer")
+	}
 
-	Info(logString)
-	// Output:
-	// Info String!
+	Warn("checkonly-warn")
+	if _, err := os.Stat(filepath.Join(dir, "gorilla.log")); !os.IsNotExist(err) {
+		t.Errorf("checkonly must not create a log file, stat err = %v", err)
+	}
+
+	// Must not panic under checkonly.
+	Error("should-not-panic")
 }
 
-// ExampleWarn tests the output of a log sent to WARN
-func ExampleWarn() {
-	// Set up what we expect
-	logString := "Warn String!"
+// TestErrorPanicsAndLogs confirms Error logs to both sinks then panics, and
+// that the file sink is a lumberjack writer under AppDataPath.
+func TestErrorPanicsAndLogs(t *testing.T) {
+	console := setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function
-	Warn(logString)
-	// Output:
-	// Warn String!
-}
+	newLog(t, config.Configuration{AppDataPath: dir})
+	if logWriter == nil {
+		t.Fatal("expected a lumberjack file writer")
+	}
+	if want := filepath.Join(dir, "gorilla.log"); logWriter.Filename != want {
+		t.Errorf("writer filename = %q, want %q", logWriter.Filename, want)
+	}
 
-// ExampleError tests the output of a log sent to ERROR
-func ExampleError() {
-	// Set up what we expect
-	logString := "Error String!"
-
-	// Prepare to recover from a panic
-	defer func() {
-		recover()
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Error did not panic")
+			}
+		}()
+		Error("boom")
 	}()
 
-	// Run the function
-	Error(logString)
-	// Output:
+	if !strings.Contains(console.String(), "boom") {
+		t.Errorf("Error missing from console: %q", console.String())
+	}
+	if !strings.Contains(string(readLog(t, dir)), "boom") {
+		t.Errorf("Error missing from file")
+	}
 }

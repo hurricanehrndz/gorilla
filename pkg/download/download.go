@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 )
 
 // A package level copy of our config for the `download` package to reference
@@ -36,7 +36,7 @@ func File(file string, url string) error {
 	// Create the directory
 	err := os.MkdirAll(filepath.Clean(file), 0o755)
 	if err != nil {
-		gorillalog.Warn("Unable to make filepath:", file, err)
+		slog.Warn("Unable to make filepath", "path", file, "err", err)
 	}
 
 	// Create the file
@@ -128,7 +128,7 @@ func Get(url string) ([]byte, error) {
 	// Build the request
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		gorillalog.Warn("Unable to request url:", url, err)
+		slog.Warn("Unable to request url", "url", url, "err", err)
 	}
 
 	// If we have a user and pass, configure basic auth
@@ -162,18 +162,18 @@ func Get(url string) ([]byte, error) {
 func Verify(file string, sha string) bool {
 	f, err := os.Open(file)
 	if err != nil {
-		gorillalog.Warn("Unable to open file:", err)
+		slog.Warn("Unable to open file", "err", err)
 		return false
 	}
 	defer f.Close()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		gorillalog.Warn("Unable to verify hash due to IO error:", err)
+		slog.Warn("Unable to verify hash due to IO error", "err", err)
 		return false
 	}
 	shaHash := hex.EncodeToString(h.Sum(nil))
 	if shaHash != strings.ToLower(sha) {
-		gorillalog.Debug("File hash does not match expected value:", file)
+		slog.Debug("File hash does not match expected value", "path", file)
 		return false
 	}
 	return true
@@ -193,11 +193,11 @@ func IfNeeded(absFile string, url string, hash string) bool {
 	// If hash failed, download the installer
 	if !verified {
 		absPath, _ := filepath.Split(absFile)
-		gorillalog.Info("Downloading", url, "to", absPath)
+		slog.Info("Downloading", "url", url, "path", absPath)
 		// Download the installer
 		err := File(absPath, url)
 		if err != nil {
-			gorillalog.Warn("Unable to retrieve package:", url, err)
+			slog.Warn("Unable to retrieve package", "url", url, "err", err)
 			return verified
 		}
 		verified = Verify(absFile, hash)

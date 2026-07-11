@@ -2,12 +2,12 @@ package admin
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -29,7 +29,7 @@ func BuildCatalogs(repoPath string) error {
 	var packageInfoQueue []string
 	err := filepath.WalkDir(packagesInfoPath, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			gorillalog.Warn("Failed to access path:", path, walkErr)
+			slog.Warn("Failed to access path", "path", path, "err", walkErr)
 			return walkErr
 		}
 		if d.IsDir() {
@@ -37,7 +37,7 @@ func BuildCatalogs(repoPath string) error {
 		}
 		switch strings.ToLower(filepath.Ext(path)) {
 		case ".yaml", ".yml":
-			gorillalog.Debug("Queuing package-info file:", path)
+			slog.Debug("Queuing package-info file", "path", path)
 			packageInfoQueue = append(packageInfoQueue, path)
 		}
 		return nil
@@ -58,7 +58,7 @@ func BuildCatalogs(repoPath string) error {
 			return fmt.Errorf("parse package-info %s: %w", packageInfoPath, err)
 		}
 		if parsed.Catalog == "" {
-			gorillalog.Warn("Skipping package-info with no catalog:", packageInfoPath)
+			slog.Warn("Skipping package-info with no catalog", "path", packageInfoPath)
 			continue
 		}
 
@@ -70,7 +70,7 @@ func BuildCatalogs(repoPath string) error {
 			itemName = strings.TrimSuffix(filepath.Base(packageInfoPath), filepath.Ext(packageInfoPath))
 		}
 		if itemName == "" {
-			gorillalog.Warn("Skipping package-info with no item_name/display_name:", packageInfoPath)
+			slog.Warn("Skipping package-info with no item_name/display_name", "path", packageInfoPath)
 			continue
 		}
 

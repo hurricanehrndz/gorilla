@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"runtime/debug"
 	"slices"
@@ -125,7 +126,7 @@ func (sr *serviceRunner) start(ctx context.Context) error {
 		defer sr.wg.Done()
 		err := sr.serveNamedPipe(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			gorillalog.Warn("service named pipe endpoint failed:", err)
+			slog.Warn("service named pipe endpoint failed", "err", err)
 		}
 	}()
 
@@ -135,8 +136,12 @@ func (sr *serviceRunner) start(ctx context.Context) error {
 func (sr *serviceRunner) executeCommandSafe(cmd Command) (resp CommandResponse, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			gorillalog.Warn("panic during service command execution:", recovered)
-			gorillalog.Warn(string(debug.Stack()))
+			slog.Warn(
+				"panic during service command execution",
+				"operation", cmd.Action,
+				"recovered", recovered,
+				"stack", string(debug.Stack()),
+			)
 			resp = CommandResponse{}
 			err = fmt.Errorf("internal service panic while executing action %q", cmd.Action)
 		}
@@ -182,7 +187,13 @@ func writeErrorEnvelope(file *os.File, requestID, operation, operationID, code, 
 			ErrorMessage: message,
 		},
 	}); err != nil {
-		gorillalog.Warn("failed to write error envelope:", err)
+		slog.Warn(
+			"failed to write error envelope",
+			"operation", operation,
+			"requestId", requestID,
+			"operationId", operationID,
+			"err", err,
+		)
 	}
 }
 
@@ -247,14 +258,14 @@ func (sr *serviceRunner) flushAndDisconnectNamedPipe(handle windows.Handle) {
 	if err := flushNamedPipeBuffers(handle); err != nil &&
 		!errors.Is(err, windows.ERROR_BROKEN_PIPE) &&
 		!errors.Is(err, windows.ERROR_NO_DATA) {
-		gorillalog.Warn("failed to flush named pipe buffers:", err)
+		slog.Warn("failed to flush named pipe buffers", "err", err)
 	}
 
 	if err := disconnectNamedPipe(handle); err != nil &&
 		!errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED) &&
 		!errors.Is(err, windows.ERROR_BROKEN_PIPE) &&
 		!errors.Is(err, windows.ERROR_NO_DATA) {
-		gorillalog.Warn("failed to disconnect named pipe:", err)
+		slog.Warn("failed to disconnect named pipe", "err", err)
 	}
 }
 
@@ -265,30 +276,38 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			result = "error"
-			gorillalog.Warn("panic while handling named pipe request:", recovered)
-			gorillalog.Warn(string(debug.Stack()))
+			slog.Warn(
+				"panic while handling named pipe request",
+				"operation", req.Operation,
+				"requestId", req.RequestID,
+				"operationId", req.OperationID,
+				"recovered", recovered,
+				"stack", string(debug.Stack()),
+			)
 			writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, "internal_error", "internal service error")
 		}
-		gorillalog.Debug(
-			"named pipe lifecycle:",
-			"operation=", req.Operation,
-			"requestId=", req.RequestID,
-			"operationId=", req.OperationID,
-			"state=completed",
-			"result=", result,
-			"durationMs=", time.Since(startedAt).Milliseconds(),
+		slog.Debug(
+			"named pipe lifecycle",
+			"operation", req.Operation,
+			"requestId", req.RequestID,
+			"operationId", req.OperationID,
+			"state", "completed",
+			"result", result,
+			"durationMs", time.Since(startedAt).Milliseconds(),
 		)
 	}()
 
 	if err := json.NewDecoder(file).Decode(&req); err != nil {
 		result = "error"
-		gorillalog.Warn("failed to decode named pipe request:", err)
+		slog.Warn("failed to decode named pipe request", "err", err)
 		writeErrorEnvelope(file, "", "", "", "invalid_request", "invalid JSON request body")
 		return
 	}
 
-	// Keep correlation keys explicit so request/operation flow can be joined with UI diagnostics.
-	gorillalog.Debug("named pipe request:", req.Operation, "requestId=", req.RequestID, "operationId=", req.OperationID)
+	// Per-request logger carries the correlation keys so request/operation flow
+	// can be joined with UI diagnostics.
+	logger := slog.With("operation", req.Operation, "requestId", req.RequestID, "operationId", req.OperationID)
+	logger.Debug("named pipe request", "state", "received")
 
 	if req.Version != pipeProtocolVersion {
 		result = "error"
@@ -299,14 +318,14 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 	cmd, err := commandFromRequestEnvelope(req)
 	if err != nil {
 		result = "error"
-		gorillalog.Warn("failed to map request envelope to command:", err)
+		logger.Warn("failed to map request envelope to command", "err", err)
 		writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, "invalid_request", err.Error())
 		return
 	}
 
 	if err := validateCommand(cmd); err != nil {
 		result = "error"
-		gorillalog.Warn("command validation failed:", err)
+		logger.Warn("command validation failed", "err", err)
 		writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, "invalid_request", err.Error())
 		return
 	}
@@ -314,7 +333,7 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 	if cmd.Action == actionStreamOperationStatus {
 		if err := sr.writeStreamOperationStatusSequence(file, req, cmd.Items[0]); err != nil {
 			result = "error"
-			gorillalog.Warn("failed to write stream response envelope:", err)
+			logger.Warn("failed to write stream response envelope", "err", err)
 			return
 		}
 		result = "ok"
@@ -328,7 +347,7 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 		} else {
 			result = "error"
 		}
-		gorillalog.Warn("command execution failed:", err)
+		logger.Warn("command execution failed", "err", err)
 		writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, "command_failed", err.Error())
 		return
 	}
@@ -338,10 +357,10 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 
 	if err := sr.writeSuccessEnvelope(file, req, cmd, resp); err != nil {
 		result = "error"
-		gorillalog.Warn("failed to write success envelope:", err)
+		logger.Warn("failed to write success envelope", "err", err)
 	} else {
 		result = "ok"
-		gorillalog.Debug("named pipe response sent:", req.Operation, "requestId=", req.RequestID)
+		logger.Debug("named pipe response sent", "state", "responded")
 	}
 	sr.scheduleRunAfterMutation(ctx, cmd.Action, resp.OperationID)
 }
@@ -378,7 +397,12 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, o
 				})
 				return
 			}
-			gorillalog.Warn("failed to run managed action after service mutation:", err)
+			slog.Warn(
+				"failed to run managed action after service mutation",
+				"operation", action,
+				"operationId", operationID,
+				"err", err,
+			)
 			sr.appendOperationEvent(operationID, operationStatusEventPayload{
 				State:           "Failed",
 				ProgressPercent: 100,
@@ -515,7 +539,12 @@ func (sr *serviceRunner) writeStreamOperationStatusSequence(file *os.File, req s
 	}); err != nil {
 		return err
 	}
-	gorillalog.Debug("stream ack sent for operationId=", operationID)
+	slog.Debug(
+		"stream ack sent",
+		"operation", actionStreamOperationStatus,
+		"requestId", req.RequestID,
+		"operationId", operationID,
+	)
 
 	sent := 0
 	for {
@@ -577,6 +606,14 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event operatio
 	now := time.Now()
 	op.events = append(op.events, event)
 	op.lastUpdated = now
+	// Single choke point for tracked-operation transitions; log the state with
+	// the operationId the service already has in hand.
+	slog.Debug(
+		"operation status event",
+		"operationId", operationID,
+		"state", event.State,
+		"progressPercent", event.ProgressPercent,
+	)
 	if event.State == "Succeeded" || event.State == "Failed" || event.State == "Canceled" {
 		op.done = true
 		op.completedAt = now
@@ -716,7 +753,7 @@ func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRe
 
 	runner := newServiceRunner(g.cfg, g.managedRun)
 	if err := runner.start(ctx); err != nil {
-		gorillalog.Warn("failed to start service runner:", err)
+		slog.Warn("failed to start service runner", "err", err)
 		return false, 1
 	}
 

@@ -3,6 +3,7 @@ package status
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/download"
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	version "github.com/hashicorp/go-version"
 )
 
@@ -49,10 +49,10 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 	checkReg := catalogItem.Check.Registry
 	catalogVersion, err := version.NewVersion(checkReg.Version)
 	if err != nil {
-		gorillalog.Warn("Unable to parse new version: ", checkReg.Version, err)
+		slog.Warn("Unable to parse new version", "version", checkReg.Version, "err", err)
 	}
 
-	gorillalog.Debug("Check registry version:", checkReg.Version)
+	slog.Debug("Check registry version", "version", checkReg.Version)
 	// If needed, populate applications status from the registry
 	if len(RegistryItems) == 0 {
 		RegistryItems, checkErr = getUninstallKeys()
@@ -64,12 +64,12 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 		// Check if the catalog name is in the registry
 		if strings.Contains(regItem.Name, checkReg.Name) {
 			installed = true
-			gorillalog.Debug("Current installed version:", regItem.Version)
+			slog.Debug("Current installed version", "version", regItem.Version)
 
 			// Check if the catalog version matches the registry
 			currentVersion, err := version.NewVersion(regItem.Version)
 			if err != nil {
-				gorillalog.Warn("Unable to parse current version", err)
+				slog.Warn("Unable to parse current version", "err", err)
 			}
 			outdated := currentVersion.LessThan(catalogVersion)
 			if !outdated {
@@ -118,13 +118,13 @@ func checkScript(catalogItem catalog.Item, cachePath string, installType string)
 
 	// Delete the temporary script
 	if err := os.Remove(tmpScript); err != nil && !os.IsNotExist(err) {
-		gorillalog.Warn("Unable to remove temporary check script:", tmpScript, err)
+		slog.Warn("Unable to remove temporary check script", "path", tmpScript, "err", err)
 	}
 
 	// Log results
-	gorillalog.Debug("Command Error:", err)
-	gorillalog.Debug("stdout:", outStr)
-	gorillalog.Debug("stderr:", errStr)
+	slog.Debug("Command error", "err", err)
+	slog.Debug("Command stdout", "stdout", outStr)
+	slog.Debug("Command stderr", "stderr", errStr)
 
 	actionNeeded = false
 	// Application not installed if exit 0
@@ -143,7 +143,7 @@ func checkPath(catalogItem catalog.Item, installType string) (actionNeeded bool,
 	// Iterate through all file provided paths
 	for _, checkFile := range catalogItem.Check.File {
 		path := filepath.Clean(checkFile.Path)
-		gorillalog.Debug("Check file path:", path)
+		slog.Debug("Check file path", "path", path)
 		_, err := os.Stat(path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -158,11 +158,11 @@ func checkPath(catalogItem catalog.Item, installType string) (actionNeeded bool,
 				// When doing an update or uninstall, and the file path does
 				// not exist, do nothing
 				if installType == "update" || installType == "uninstall" {
-					gorillalog.Debug("No action needed: Install type is", installType)
+					slog.Debug("No action needed", "installType", installType)
 					break
 				}
 			}
-			gorillalog.Warn("Unable to check path:", path, err)
+			slog.Warn("Unable to check path", "path", path, "err", err)
 			break
 
 		} else if err == nil {
@@ -176,7 +176,7 @@ func checkPath(catalogItem catalog.Item, installType string) (actionNeeded bool,
 		// If a hash is not blank, verify it matches the file
 		// if the hash does not match, we need to install
 		if checkFile.Hash != "" {
-			gorillalog.Debug("Check file hash:", checkFile.Hash)
+			slog.Debug("Check file hash", "hash", checkFile.Hash)
 			hashMatch := download.Verify(path, checkFile.Hash)
 			if !hashMatch {
 				actionStore = append(actionStore, true)
@@ -185,25 +185,25 @@ func checkPath(catalogItem catalog.Item, installType string) (actionNeeded bool,
 		}
 
 		if checkFile.Version != "" {
-			gorillalog.Debug("Check file version:", checkFile.Version)
+			slog.Debug("Check file version", "version", checkFile.Version)
 
 			// Get the file metadata, and check that it has a value
 			metadata := GetFileMetadata(path)
 			if metadata.versionString == "" {
 				break
 			}
-			gorillalog.Debug("Current installed version:", metadata.versionString)
+			slog.Debug("Current installed version", "version", metadata.versionString)
 
 			// Convert both strings to a `Version` object
 			versionHave, err := version.NewVersion(metadata.versionString)
 			if err != nil {
-				gorillalog.Warn("Unable to compare version:", metadata.versionString)
+				slog.Warn("Unable to compare version", "version", metadata.versionString)
 				actionStore = append(actionStore, true)
 				break
 			}
 			versionWant, err := version.NewVersion(checkFile.Version)
 			if err != nil {
-				gorillalog.Warn("Unable to compare version:", checkFile.Version)
+				slog.Warn("Unable to compare version", "version", checkFile.Version)
 				actionStore = append(actionStore, true)
 				break
 			}
@@ -247,12 +247,12 @@ func checkAppx(catalogItem catalog.Item, installType string) (actionNeeded bool,
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		gorillalog.Warn("checkAppx command error:", err)
+		slog.Warn("checkAppx command error", "err", err)
 	}
 
 	installedVersionStr := strings.TrimSpace(stdout.String())
-	gorillalog.Debug("AppX installed version:", installedVersionStr)
-	gorillalog.Debug("AppX stderr:", stderr.String())
+	slog.Debug("AppX installed version", "version", installedVersionStr)
+	slog.Debug("AppX stderr", "stderr", stderr.String())
 
 	installed := installedVersionStr != ""
 
@@ -260,12 +260,12 @@ func checkAppx(catalogItem catalog.Item, installType string) (actionNeeded bool,
 	if installed && checkAppxItem.Version != "" {
 		catalogVersion, err := version.NewVersion(checkAppxItem.Version)
 		if err != nil {
-			gorillalog.Warn("Unable to parse catalog appx version:", checkAppxItem.Version, err)
+			slog.Warn("Unable to parse catalog appx version", "version", checkAppxItem.Version, "err", err)
 			return true, err
 		}
 		currentVersion, err := version.NewVersion(installedVersionStr)
 		if err != nil {
-			gorillalog.Warn("Unable to parse installed appx version:", installedVersionStr, err)
+			slog.Warn("Unable to parse installed appx version", "version", installedVersionStr, "err", err)
 			return true, err
 		}
 		versionMatch = !currentVersion.LessThan(catalogVersion)
@@ -287,22 +287,22 @@ func checkAppx(catalogItem catalog.Item, installType string) (actionNeeded bool,
 // CheckStatus determines the method for checking status
 func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actionNeeded bool, checkErr error) {
 	if catalogItem.Check.Script != "" {
-		gorillalog.Info("Checking status via script:", catalogItem.DisplayName)
+		slog.Info("Checking status via script", "item", catalogItem.DisplayName)
 		return checkScript(catalogItem, cachePath, installType)
 
 	} else if catalogItem.Check.File != nil {
-		gorillalog.Info("Checking status via file:", catalogItem.DisplayName)
+		slog.Info("Checking status via file", "item", catalogItem.DisplayName)
 		return checkPath(catalogItem, installType)
 
 	} else if catalogItem.Check.Registry.Version != "" {
-		gorillalog.Info("Checking status via registry:", catalogItem.DisplayName)
+		slog.Info("Checking status via registry", "item", catalogItem.DisplayName)
 		return checkRegistry(catalogItem, installType)
 
 	} else if catalogItem.Check.Appx.Name != "" {
-		gorillalog.Info("Checking status via appx:", catalogItem.DisplayName)
+		slog.Info("Checking status via appx", "item", catalogItem.DisplayName)
 		return checkAppx(catalogItem, installType)
 	}
 
-	gorillalog.Warn("Not enough data to check the current status:", catalogItem.DisplayName)
+	slog.Warn("Not enough data to check the current status", "item", catalogItem.DisplayName)
 	return
 }

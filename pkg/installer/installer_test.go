@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -725,20 +726,33 @@ func TestUninstallURL(t *testing.T) {
 	}
 }
 
-// Example_runCommand tests the output when running a command in debug
-func Example_runCommand() {
-	// Temp directory for logging
-	logTmp, _ := os.MkdirTemp("", "gorilla-installer_test")
-
-	// Setup a testing Configuration struct with debug mode
-	cfgVerbose := config.Configuration{
+// captureConsole redirects gorillalog's console sink to a buffer (debug mode
+// so DEBUG/INFO messages are visible) and restores it after the test.
+func captureConsole(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	gorillalog.SetOutput(buf)
+	cfg := config.Configuration{
 		Debug:       true,
 		Verbose:     true,
-		AppDataPath: logTmp,
+		AppDataPath: t.TempDir(),
 	}
+	// Register the Close cleanup AFTER t.TempDir(): cleanups run LIFO, so
+	// Close releases the log file handle before TempDir's RemoveAll —
+	// Windows cannot delete an open file.
+	t.Cleanup(func() {
+		gorillalog.SetOutput(os.Stdout)
+		gorillalog.Close()
+	})
+	if err := gorillalog.NewLog(cfg); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	return buf
+}
 
-	// Start gorillalog in debug mode
-	_ = gorillalog.NewLog(cfgVerbose)
+// TestRunCommandDebugOutput tests the output when running a command in debug
+func TestRunCommandDebugOutput(t *testing.T) {
+	console := captureConsole(t)
 
 	// Override execCommand with our fake version
 	execCommand = fakeExecCommand
@@ -751,130 +765,113 @@ func Example_runCommand() {
 	// Run the function
 	runCommand(testCmd, testArgs)
 
-	// Output:
-	// command: Command Test! [arg1 arg2]
-	// Command Output:
-	// --------------------
-	// [Command Test! arg1 arg2]
-	// --------------------
+	out := console.String()
+	for _, want := range []string{
+		"command: Command Test! [arg1 arg2]",
+		"Command Output:",
+		"[Command Test! arg1 arg2]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("console output missing %q:\n%s", want, out)
+		}
+	}
 }
 
-func Example_installItemSuccess() {
-	// Override execCommand and checkStatus with our fake versions
+// installTestOverrides swaps execCommand/checkStatus/runCommand for fakes and
+// restores them after the test.
+func installTestOverrides(t *testing.T) {
+	t.Helper()
 	execCommand = fakeExecCommand
 	statusCheckStatus = fakeCheckStatus
 	runCommand = fakeRunCommand
 	download.SetConfig(downloadCfg)
-	defer func() {
+	t.Cleanup(func() {
 		execCommand = origExec
 		statusCheckStatus = origCheckStatus
 		runCommand = origRunCommand
-	}()
-
-	// Set shared testing variables
-	cachePath := "testdata/"
-	urlPackages := "https://example.com/"
-
-	//
-	// Msi
-	//
-	msiItem.DisplayName = statusActionNoError
-
-	//
-
-	// Run Install
-	installItem(msiItem, urlPackages, cachePath)
-
-	// Output:
-	// Installing msi for _gorilla_dev_action_noerror_
-	// _gorilla_dev_action_noerror_ 1.2.3 Installation SUCCESSFUL
+	})
 }
 
-func Example_installItemFailure() {
-	// Override execCommand and checkStatus with our fake versions
-	execCommand = fakeExecCommand
-	statusCheckStatus = fakeCheckStatus
-	runCommand = fakeRunCommand
-	download.SetConfig(downloadCfg)
-	defer func() {
-		execCommand = origExec
-		statusCheckStatus = origCheckStatus
-		runCommand = origRunCommand
-	}()
+func TestInstallItemSuccess(t *testing.T) {
+	console := captureConsole(t)
+	installTestOverrides(t)
 
-	// Set shared testing variables
-	cachePath := "testdata/"
-	urlPackages := "https://example.com/"
-
-	//
 	// Msi
-	//
-	msiItem.DisplayName = statusActionError
-
-	//
-
-	// Run Install
-	installItem(msiItem, urlPackages, cachePath)
-
-	// Output:
-	// Installing msi for _gorilla_dev_action_error_
-	// _gorilla_dev_action_error_ 1.2.3 Installation FAILED
-}
-
-func Example_uninstallItemSuccess() {
-	// Override execCommand and checkStatus with our fake versions
-	execCommand = fakeExecCommand
-	statusCheckStatus = fakeCheckStatus
-	runCommand = fakeRunCommand
-	download.SetConfig(downloadCfg)
-	defer func() {
-		execCommand = origExec
-		statusCheckStatus = origCheckStatus
-		runCommand = origRunCommand
-	}()
-
-	// Set shared testing variables
-	cachePath := "testdata/"
-	urlPackages := "https://example.com/"
-
-	//
-	// Msi
-	//
 	msiItem.DisplayName = statusActionNoError
 
 	// Run Install
-	uninstallItem(msiItem, urlPackages, cachePath)
+	installItem(msiItem, "https://example.com/", "testdata/")
 
-	// Output:
-	// Uninstalling msi for _gorilla_dev_action_noerror_
-	// _gorilla_dev_action_noerror_ 1.2.3 Uninstallation SUCCESSFUL
+	out := console.String()
+	for _, want := range []string{
+		"Installing msi for _gorilla_dev_action_noerror_",
+		"_gorilla_dev_action_noerror_ 1.2.3 Installation SUCCESSFUL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("console output missing %q:\n%s", want, out)
+		}
+	}
 }
 
-func Example_uninstallItemFailure() {
-	// Override execCommand and checkStatus with our fake versions
-	execCommand = fakeExecCommand
-	statusCheckStatus = fakeCheckStatus
-	runCommand = fakeRunCommand
-	download.SetConfig(downloadCfg)
-	defer func() {
-		execCommand = origExec
-		statusCheckStatus = origCheckStatus
-		runCommand = origRunCommand
-	}()
+func TestInstallItemFailure(t *testing.T) {
+	console := captureConsole(t)
+	installTestOverrides(t)
 
-	// Set shared testing variables
-	cachePath := "testdata/"
-	urlPackages := "https://example.com/"
-
-	//
 	// Msi
-	//
 	msiItem.DisplayName = statusActionError
 
 	// Run Install
-	uninstallItem(msiItem, urlPackages, cachePath)
+	installItem(msiItem, "https://example.com/", "testdata/")
 
-	// Output:
-	// Uninstalling msi for _gorilla_dev_action_error_
-	// _gorilla_dev_action_error_ 1.2.3 Uninstallation FAILED
+	out := console.String()
+	for _, want := range []string{
+		"Installing msi for _gorilla_dev_action_error_",
+		"_gorilla_dev_action_error_ 1.2.3 Installation FAILED",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("console output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestUninstallItemSuccess(t *testing.T) {
+	console := captureConsole(t)
+	installTestOverrides(t)
+
+	// Msi
+	msiItem.DisplayName = statusActionNoError
+
+	// Run Uninstall
+	uninstallItem(msiItem, "https://example.com/", "testdata/")
+
+	out := console.String()
+	for _, want := range []string{
+		"Uninstalling msi for _gorilla_dev_action_noerror_",
+		"_gorilla_dev_action_noerror_ 1.2.3 Uninstallation SUCCESSFUL",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("console output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestUninstallItemFailure(t *testing.T) {
+	console := captureConsole(t)
+	installTestOverrides(t)
+
+	// Msi
+	msiItem.DisplayName = statusActionError
+
+	// Run Uninstall
+	uninstallItem(msiItem, "https://example.com/", "testdata/")
+
+	out := console.String()
+	for _, want := range []string{
+		"Uninstalling msi for _gorilla_dev_action_error_",
+		"_gorilla_dev_action_error_ 1.2.3 Uninstallation FAILED",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("console output missing %q:\n%s", want, out)
+		}
+	}
 }

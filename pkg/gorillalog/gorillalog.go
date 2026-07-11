@@ -1,228 +1,207 @@
 package gorillalog
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
+	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
-	// Define these config variables at the package scope
-	debug     bool
-	verbose   bool
-	checkonly bool
 	logMu     sync.Mutex
-	logFile   *os.File
-	logPath   string
+	checkonly bool
+	logWriter *lumberjack.Logger
 
-	logMaxSizeBytes int64 = 10 * 1024 * 1024
-	osRename              = os.Rename
-	osRemove              = os.Remove
-	osStat                = os.Stat
+	// consoleOut is the console sink; overridable in tests.
+	consoleOut io.Writer = os.Stdout
 )
 
-// TODO rewrite with io.multiwriter
-// Something like this?
-// logOutput := io.MultiWriter(os.Stdout, logFile)
-// log.SetOutput(logOutput)
-//
-// Diagnostics policy notes:
-// - Service operational logs currently write to <app_data_path>/gorilla.log (except checkonly mode).
-// - High-volume service trace logging must stay behind debug mode only.
-// - Follow-up implementation should add bounded retention/rotation and standardized
-//   correlation fields (requestId, operationId, operation, state, result, durationMs).
+// SetOutput redirects the console sink; intended for tests. It takes effect
+// on the next NewLog call.
+func SetOutput(w io.Writer) {
+	logMu.Lock()
+	defer logMu.Unlock()
+	consoleOut = w
+}
 
-// NewLog creates a file and points a new logging instance at it.
+// consoleHandler returns a text handler for consoleOut, or nil when consoleOut
+// is a real file with no usable handle — e.g. the NULL stdout of an
+// SCM-started Windows service. Non-file writers (test buffers) skip the probe.
+func consoleHandler(opts *slog.HandlerOptions) slog.Handler {
+	if f, ok := consoleOut.(*os.File); ok {
+		if _, err := f.Stat(); err != nil {
+			return nil
+		}
+	}
+	return slog.NewTextHandler(consoleOut, opts)
+}
+
+// fanoutHandler forwards each record to every child handler that has the
+// record's level enabled.
+type fanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func (f fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range f.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Sinks are independent: one failing child (e.g. an invalid stdout handle
+	// when running as a Windows service) must not block the others.
+	var errs []error
+	for _, h := range f.handlers {
+		if h.Enabled(ctx, r.Level) {
+			if err := h.Handle(ctx, r.Clone()); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (f fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	hs := make([]slog.Handler, len(f.handlers))
+	for i, h := range f.handlers {
+		hs[i] = h.WithAttrs(attrs)
+	}
+	return fanoutHandler{handlers: hs}
+}
+
+func (f fanoutHandler) WithGroup(name string) slog.Handler {
+	hs := make([]slog.Handler, len(f.handlers))
+	for i, h := range f.handlers {
+		hs[i] = h.WithGroup(name)
+	}
+	return fanoutHandler{handlers: hs}
+}
+
+// NewLog builds the fan-out logger: a text console sink plus, unless checkonly
+// is active, a rotated file sink (structured JSON by default, plain text when
+// cfg.LogFilePlain). The result is installed as slog's default logger.
 func NewLog(cfg config.Configuration) error {
 	logMu.Lock()
 	defer logMu.Unlock()
 
-	// Store the verbosity for later use
-	debug = cfg.Debug
-	verbose = cfg.Verbose
 	checkonly = cfg.CheckOnly
 
-	// Skip log if checkonly is active
-	if checkonly {
-		return nil
+	consoleLevel := slog.LevelWarn
+	if cfg.Verbose {
+		consoleLevel = slog.LevelInfo
+	}
+	if cfg.Debug {
+		consoleLevel = slog.LevelDebug
 	}
 
-	// Create the log directory
-	logPath = filepath.Join(cfg.AppDataPath, "gorilla.log")
-	err := os.MkdirAll(filepath.Dir(logPath), 0o755)
-	if err != nil {
-		return fmt.Errorf("unable to create log directory %s: %w", filepath.Dir(logPath), err)
+	// UI text sink extension point: Workstream D adds a third child handler
+	// here (alongside the console and file sinks) that renders records for the
+	// UI; D owns wiring that handler's transport. The fan-out handler already
+	// forwards every record to each enabled child, so no other change is needed.
+	var handlers []slog.Handler
+	if h := consoleHandler(&slog.HandlerOptions{Level: consoleLevel}); h != nil {
+		handlers = append(handlers, h)
 	}
 
-	_ = rotateLogIfNeeded(logPath)
+	if !checkonly {
+		logPath := filepath.Join(cfg.AppDataPath, "gorilla.log")
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			return fmt.Errorf("unable to create log directory %s: %w", filepath.Dir(logPath), err)
+		}
 
-	// Create the log file
-	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("unable to open log file %s: %w", logPath, err)
+		if logWriter != nil {
+			_ = logWriter.Close()
+		}
+		logWriter = &lumberjack.Logger{
+			Filename:   logPath,
+			MaxSize:    10,
+			MaxBackups: 3,
+			MaxAge:     28,
+			Compress:   true,
+		}
+
+		fileLevel := slog.LevelInfo
+		if cfg.Debug {
+			fileLevel = slog.LevelDebug
+		}
+		fileOpts := &slog.HandlerOptions{Level: fileLevel}
+
+		var fileHandler slog.Handler
+		if cfg.LogFilePlain {
+			fileHandler = slog.NewTextHandler(logWriter, fileOpts)
+		} else {
+			fileHandler = slog.NewJSONHandler(logWriter, fileOpts)
+		}
+		handlers = append(handlers, fileHandler)
 	}
 
-	if logFile != nil {
-		_ = logFile.Close()
+	if len(handlers) == 0 {
+		// checkonly with no usable stdout: nowhere to log, but slog.New
+		// requires a handler.
+		handlers = append(handlers, slog.DiscardHandler)
 	}
-	logFile = file
 
-	// Configure the `log` package to use our file
-	log.SetOutput(logFile)
-
-	//  Configure the `log` package to use microsecond resolution
-	log.SetFlags(log.Ldate | log.Lmicroseconds)
+	slog.SetDefault(slog.New(fanoutHandler{handlers: handlers}))
 	return nil
 }
 
-// Close releases the active log file handle, if one is open.
+// Close releases the active log file writer and resets logging state.
 func Close() {
 	logMu.Lock()
 	defer logMu.Unlock()
 
-	if logFile == nil {
-		return
+	if logWriter != nil {
+		_ = logWriter.Close()
+		logWriter = nil
 	}
-	log.SetOutput(io.Discard)
-	_ = logFile.Close()
-	logFile = nil
-	logPath = ""
+	checkonly = false
+	h := consoleHandler(nil)
+	if h == nil {
+		h = slog.DiscardHandler
+	}
+	slog.SetDefault(slog.New(h))
 }
 
-// Debug logs a string as DEBUG
-// We write to disk if debug is true
+// join renders variadic args into a single message with space separation,
+// matching the historic log.Println formatting the call sites rely on.
+func join(args []interface{}) string {
+	return strings.TrimSuffix(fmt.Sprintln(args...), "\n")
+}
+
+// Debug logs at DEBUG level. Handler levels gate whether it is emitted.
 func Debug(logStrings ...interface{}) {
-	if debug {
-		fmt.Println(logStrings...)
-		if checkonly {
-			return
-		}
-		logMu.Lock()
-		defer logMu.Unlock()
-		rotateCurrentLogIfNeeded()
-		log.SetPrefix("DEBUG: ")
-		log.Println(logStrings...)
-	}
+	slog.Default().Debug(join(logStrings))
 }
 
-// Info logs a string as INFO
-// We only print to stdout if verbose is true
+// Info logs at INFO level.
 func Info(logStrings ...interface{}) {
-	if verbose {
-		fmt.Println(logStrings...)
-	}
-	if checkonly {
-		return
-	}
-	logMu.Lock()
-	defer logMu.Unlock()
-	rotateCurrentLogIfNeeded()
-	log.SetPrefix("INFO: ")
-	log.Println(logStrings...)
+	slog.Default().Info(join(logStrings))
 }
 
-// Warn logs a string as WARN
-// We print to stdout and write to disk
+// Warn logs at WARN level.
 func Warn(logStrings ...interface{}) {
-	fmt.Println(logStrings...)
-	if checkonly {
-		return
-	}
-	logMu.Lock()
-	defer logMu.Unlock()
-	rotateCurrentLogIfNeeded()
-	log.SetPrefix("WARN: ")
-	log.Println(logStrings...)
+	slog.Default().Warn(join(logStrings))
 }
 
-// Error logs a string a ERROR
-// We print to stdout, write to disk, and then panic
+// Error logs at ERROR level and then panics (recoverable). It is a no-op when
+// checkonly is active.
 func Error(logStrings ...interface{}) {
 	if checkonly {
 		return
 	}
-	logMu.Lock()
-	defer logMu.Unlock()
-	rotateCurrentLogIfNeeded()
-	log.SetPrefix("ERROR: ")
-	log.Panic(logStrings...)
-}
-
-func rotateCurrentLogIfNeeded() {
-	if logPath == "" {
-		return
-	}
-	if logFile == nil {
-		file, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if openErr != nil {
-			return
-		}
-		log.SetOutput(file)
-		logFile = file
-		return
-	}
-	info, err := logFile.Stat()
-	if err != nil || info.Size() < logMaxSizeBytes {
-		return
-	}
-	log.SetOutput(io.Discard)
-	_ = logFile.Close()
-	logFile = nil
-	_ = rotateLogIfNeeded(logPath)
-	file, openErr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if openErr != nil {
-		return
-	}
-	log.SetOutput(file)
-	logFile = file
-}
-
-func rotateLogIfNeeded(path string) error {
-	if logMaxSizeBytes <= 0 {
-		return nil
-	}
-	info, err := osStat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if info.Size() < logMaxSizeBytes {
-		return nil
-	}
-
-	backupPath := path + ".1"
-	backupStashPath := path + ".1.swap"
-	if rmErr := osRemove(backupStashPath); rmErr != nil && !os.IsNotExist(rmErr) {
-		return rmErr
-	}
-
-	hasBackup := false
-	if _, statErr := osStat(backupPath); statErr == nil {
-		if renameErr := osRename(backupPath, backupStashPath); renameErr != nil {
-			return renameErr
-		}
-		hasBackup = true
-	}
-
-	if renameErr := osRename(path, backupPath); renameErr != nil {
-		if hasBackup {
-			_ = osRename(backupStashPath, backupPath)
-		}
-		return renameErr
-	}
-
-	if hasBackup {
-		if rmErr := osRemove(backupStashPath); rmErr != nil && !os.IsNotExist(rmErr) {
-			return rmErr
-		}
-	}
-
-	return nil
+	msg := join(logStrings)
+	slog.Default().Error(msg)
+	panic(msg)
 }
