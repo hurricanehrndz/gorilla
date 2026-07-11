@@ -5,9 +5,9 @@ package status
 
 import (
 	"fmt"
+	"log/slog"
 	"unsafe"
 
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"golang.org/x/sys/windows"
 )
 
@@ -107,24 +107,24 @@ func GetFileMetadata(path string) WindowsMetadata {
 
 	bufferSize := getFileVersionInfoSizeFunc(path)
 	if bufferSize <= 0 {
-		gorillalog.Info("No metadata found:", path)
+		slog.Info("No metadata found", "path", path)
 		return finalMetadata
 	}
 
 	rawMetadata := make([]byte, bufferSize)
 	if !getFileVersionInfoFunc(path, rawMetadata) {
-		gorillalog.Warn("Unable to get metadata:", path)
+		slog.Warn("Unable to get metadata", "path", path)
 		return finalMetadata
 	}
 
 	valuePtr, _, ok := verQueryValueFunc(rawMetadata, "\\")
 	if !ok {
-		gorillalog.Warn("Unable to get file version:", path)
+		slog.Warn("Unable to get file version", "path", path)
 		return finalMetadata
 	}
 	fixed := (*vsFixedFileInfo)(valuePtr)
 	if fixed.Signature != 0xFEEF04BD {
-		gorillalog.Warn("Invalid fixed metadata signature:", path)
+		slog.Warn("Invalid fixed metadata signature", "path", path)
 		return finalMetadata
 	}
 
@@ -142,18 +142,18 @@ func GetFileMetadata(path string) WindowsMetadata {
 
 	valuePtr, valueLen, ok := verQueryValueFunc(rawMetadata, "\\VarFileInfo\\Translation")
 	if !ok {
-		gorillalog.Warn("Unable to get 'translate' metadata:", path)
+		slog.Warn("Unable to get 'translate' metadata", "path", path)
 		return finalMetadata
 	}
 	translationSize := int(unsafe.Sizeof(langAndCodePage{}))
 	if valueLen < uint32(translationSize) {
-		gorillalog.Warn("Unable to get additional metadata:", path)
+		slog.Warn("Unable to get additional metadata", "path", path)
 		return finalMetadata
 	}
 	translationCount := int(valueLen) / translationSize
 	translations := unsafe.Slice((*langAndCodePage)(valuePtr), translationCount)
 	if len(translations) == 0 {
-		gorillalog.Warn("Unable to get additional metadata:", path)
+		slog.Warn("Unable to get additional metadata", "path", path)
 		return finalMetadata
 	}
 	translation := translations[0]
@@ -161,7 +161,7 @@ func GetFileMetadata(path string) WindowsMetadata {
 	productKey := fmt.Sprintf("\\StringFileInfo\\%04x%04x\\ProductName", translation.Lang, translation.CodePage)
 	valuePtr, _, ok = verQueryValueFunc(rawMetadata, productKey)
 	if !ok || valuePtr == nil {
-		gorillalog.Info("Unable to get product name from metadata:", path)
+		slog.Info("Unable to get product name from metadata", "path", path)
 		return finalMetadata
 	}
 	finalMetadata.productName = windows.UTF16PtrToString((*uint16)(valuePtr))

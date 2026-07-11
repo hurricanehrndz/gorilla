@@ -500,7 +500,7 @@ func TestCheckStatusScript(t *testing.T) {
 	// Run CheckStatus with an item that has a script check
 	CheckStatus(scriptCheckItem, "install", "testdata/")
 
-	if want := "Checking status via script: scriptCheckItem"; !strings.Contains(console.String(), want) {
+	if want := `msg="Checking status via script" item=scriptCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
 	}
 }
@@ -515,7 +515,7 @@ func TestCheckStatusFile(t *testing.T) {
 	// Run CheckStatus with an item that has a file check
 	CheckStatus(fileCheckItem, "install", "testdata/")
 
-	if want := "Checking status via file: fileCheckItem"; !strings.Contains(console.String(), want) {
+	if want := `msg="Checking status via file" item=fileCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
 	}
 }
@@ -530,7 +530,7 @@ func TestCheckStatusRegistry(t *testing.T) {
 	// Run CheckStatus with an item that has a registry check
 	CheckStatus(registryCheckItem, "install", "testdata/")
 
-	if want := "Checking status via registry: registryCheckItem"; !strings.Contains(console.String(), want) {
+	if want := `msg="Checking status via registry" item=registryCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
 	}
 }
@@ -543,7 +543,7 @@ func TestCheckStatusAppx(t *testing.T) {
 
 	CheckStatus(appxCheckItem, "install", "testdata/")
 
-	if want := "Checking status via appx: appxCheckItem"; !strings.Contains(console.String(), want) {
+	if want := `msg="Checking status via appx" item=appxCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
 	}
 }
@@ -558,7 +558,7 @@ func TestCheckStatusNone(t *testing.T) {
 	// Run CheckStatus with an item that has no check data
 	CheckStatus(noCheckItem, "install", "testdata/")
 
-	if want := "Not enough data to check the current status: noCheckItem"; !strings.Contains(console.String(), want) {
+	if want := `msg="Not enough data to check the current status" item=noCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
 	}
 }

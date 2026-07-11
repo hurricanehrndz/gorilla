@@ -3,10 +3,10 @@ package catalog
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"go.yaml.in/yaml/v4"
 )
 
@@ -81,7 +81,7 @@ func Get(cfg config.Configuration) (map[int]map[string]Item, error) {
 
 		// Download the catalog
 		catalogURL := cfg.URL + "catalogs/" + catalog + ".yaml"
-		gorillalog.Info("Catalog Url:", catalogURL)
+		slog.Info("Catalog Url", "url", catalogURL)
 		yamlFile, err := downloadGet(catalogURL)
 		if err != nil {
 			return nil, fmt.Errorf("unable to retrieve catalog %s: %w", catalogURL, err)

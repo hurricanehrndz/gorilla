@@ -3,6 +3,7 @@ package process
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
-	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
 )
@@ -60,14 +60,14 @@ func firstItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (ca
 
 	// No valid item found. Log why and continue processing other items.
 	if len(invalidReasons) > 0 {
-		gorillalog.Warn(fmt.Sprintf(
-			"skipping catalog item %q because it is missing required installer/uninstaller type/location fields (%s)",
-			itemName,
-			strings.Join(invalidReasons, "; "),
-		))
+		slog.Warn(
+			"skipping catalog item: missing required installer/uninstaller type/location fields",
+			"item", itemName,
+			"reasons", strings.Join(invalidReasons, "; "),
+		)
 		return catalog.Item{}, false
 	}
-	gorillalog.Warn(fmt.Sprintf("skipping item %q because it was not found in any catalog", itemName))
+	slog.Warn("skipping item: not found in any catalog", "item", itemName)
 	return catalog.Item{}, false
 }
 
@@ -210,32 +210,32 @@ func CleanUp(cachePath string) {
 	// Clean up old files
 	err := filepath.Walk(cachePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			gorillalog.Warn("Failed to access path:", path, err)
+			slog.Warn("Failed to access path", "path", path, "err", err)
 			return err
 		}
 		// If not a directory and older that our limit, delete
 		if !info.IsDir() && fileOld(info) {
-			gorillalog.Info("Cleaning old cached file:", info.Name())
+			slog.Info("Cleaning old cached file", "path", path)
 			osRemove(path)
 			return nil
 		}
 		return nil
 	})
 	if err != nil {
-		gorillalog.Warn("error walking path:", cachePath, err)
+		slog.Warn("error walking path", "path", cachePath, "err", err)
 		return
 	}
 
 	// Clean up empty directories
 	err = filepath.Walk(cachePath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			gorillalog.Warn("Failed to access path:", path, err)
+			slog.Warn("Failed to access path", "path", path, "err", err)
 			return err
 		}
 
 		// If a dir and empty, delete
 		if info.IsDir() && dirEmpty(path) {
-			gorillalog.Info("Cleaning empty directory:", info.Name())
+			slog.Info("Cleaning empty directory", "path", path)
 			osRemove(path)
 			return nil
 
@@ -243,7 +243,7 @@ func CleanUp(cachePath string) {
 		return nil
 	})
 	if err != nil {
-		gorillalog.Warn("error walking path:", cachePath, err)
+		slog.Warn("error walking path", "path", cachePath, "err", err)
 		return
 	}
 }
