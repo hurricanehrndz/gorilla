@@ -105,6 +105,45 @@ func TestFanoutSurvivesFailingChild(t *testing.T) {
 	}
 }
 
+// TestNewLogSkipsUnusableStdout encodes spec R5: an SCM-started Windows
+// service has no usable stdout, so NewLog must attach no console sink at all
+// (instead of one that fails every write) while the file sink keeps working.
+// A closed *os.File stands in for the NULL stdout handle: Stat fails on it.
+func TestNewLogSkipsUnusableStdout(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
+	}
+
+	orig := consoleOut
+	SetOutput(f)
+	t.Cleanup(func() {
+		SetOutput(orig)
+		Close()
+	})
+
+	dir := t.TempDir()
+	if err := NewLog(config.Configuration{AppDataPath: dir, Verbose: true}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+
+	fan, ok := slog.Default().Handler().(fanoutHandler)
+	if !ok {
+		t.Fatalf("default handler is %T, want fanoutHandler", slog.Default().Handler())
+	}
+	if len(fan.handlers) != 1 {
+		t.Errorf("expected only the file sink, got %d handlers", len(fan.handlers))
+	}
+
+	Warn("no-console")
+	if !strings.Contains(string(readLog(t, dir)), "no-console") {
+		t.Errorf("file sink missing record when console is skipped")
+	}
+}
+
 // TestFileEncodingJSONDefault asserts the file sink emits structured JSON.
 func TestFileEncodingJSONDefault(t *testing.T) {
 	setConsole(t)

@@ -32,6 +32,18 @@ func SetOutput(w io.Writer) {
 	consoleOut = w
 }
 
+// consoleHandler returns a text handler for consoleOut, or nil when consoleOut
+// is a real file with no usable handle — e.g. the NULL stdout of an
+// SCM-started Windows service. Non-file writers (test buffers) skip the probe.
+func consoleHandler(opts *slog.HandlerOptions) slog.Handler {
+	if f, ok := consoleOut.(*os.File); ok {
+		if _, err := f.Stat(); err != nil {
+			return nil
+		}
+	}
+	return slog.NewTextHandler(consoleOut, opts)
+}
+
 // fanoutHandler forwards each record to every child handler that has the
 // record's level enabled.
 type fanoutHandler struct {
@@ -98,8 +110,9 @@ func NewLog(cfg config.Configuration) error {
 	// here (alongside the console and file sinks) that renders records for the
 	// UI; D owns wiring that handler's transport. The fan-out handler already
 	// forwards every record to each enabled child, so no other change is needed.
-	handlers := []slog.Handler{
-		slog.NewTextHandler(consoleOut, &slog.HandlerOptions{Level: consoleLevel}),
+	var handlers []slog.Handler
+	if h := consoleHandler(&slog.HandlerOptions{Level: consoleLevel}); h != nil {
+		handlers = append(handlers, h)
 	}
 
 	if !checkonly {
@@ -134,6 +147,12 @@ func NewLog(cfg config.Configuration) error {
 		handlers = append(handlers, fileHandler)
 	}
 
+	if len(handlers) == 0 {
+		// checkonly with no usable stdout: nowhere to log, but slog.New
+		// requires a handler.
+		handlers = append(handlers, slog.DiscardHandler)
+	}
+
 	slog.SetDefault(slog.New(fanoutHandler{handlers: handlers}))
 	return nil
 }
@@ -148,7 +167,11 @@ func Close() {
 		logWriter = nil
 	}
 	checkonly = false
-	slog.SetDefault(slog.New(slog.NewTextHandler(consoleOut, nil)))
+	h := consoleHandler(nil)
+	if h == nil {
+		h = slog.DiscardHandler
+	}
+	slog.SetDefault(slog.New(h))
 }
 
 // join renders variadic args into a single message with space separation,
