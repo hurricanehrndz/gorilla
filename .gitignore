@@ -42,3 +42,6 @@ build/
 .devenv*
 .direnv
 devenv.local.nix
+
+# git-hooks.nix generates this as a machine-specific symlink into /nix/store
+.pre-commit-config.yaml

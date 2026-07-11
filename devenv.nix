@@ -10,4 +10,27 @@
     just
     golangci-lint
   ];
+
+  # https://devenv.sh/integrations/treefmt/
+  treefmt = {
+    enable = true;
+    config.programs = {
+      nixfmt.enable = true;
+      gofumpt.enable = true;
+      yamlfmt.enable = true;
+    };
+  };
+
+  # https://devenv.sh/git-hooks/
+  # Run treefmt on commit. Enabling the treefmt module above wires its
+  # config-baked wrapper into this hook, so we only switch the hook on.
+  git-hooks.hooks.treefmt.enable = true;
+
+  # Lint changed Go files on commit. Pin the hook to the same golangci-lint
+  # from `packages` above so the CLI and the hook never drift; config lives in
+  # .golangci.yml (v2 schema).
+  git-hooks.hooks.golangci-lint = {
+    enable = true;
+    package = pkgs.golangci-lint;
+  };
 }
