@@ -1,6 +1,7 @@
 package status
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -473,82 +474,91 @@ func TestCheckPath(t *testing.T) {
 	}
 }
 
-// ExampleCheckStatus_script validates that a script check is ran
-func ExampleCheckStatus_script() {
+// captureConsole redirects gorillalog's console sink to a buffer (verbose so
+// INFO-level status messages are visible) and restores it after the test.
+func captureConsole(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	gorillalog.SetOutput(buf)
+	t.Cleanup(func() {
+		gorillalog.SetOutput(os.Stdout)
+		gorillalog.Close()
+	})
+	if err := gorillalog.NewLog(cfgVerbose); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	return buf
+}
+
+// TestCheckStatusScript validates that a script check is ran
+func TestCheckStatusScript(t *testing.T) {
 	// Override execCommand with our fake version
 	execCommand = fakeExecCommand
-	// Override the verbose setting
-	_ = gorillalog.NewLog(cfgVerbose)
-	defer func() {
-		execCommand = origExec
-	}()
+	defer func() { execCommand = origExec }()
+	console := captureConsole(t)
 
 	// Run CheckStatus with an item that has a script check
 	CheckStatus(scriptCheckItem, "install", "testdata/")
 
-	// Output:
-	// Checking status via script: scriptCheckItem
+	if want := "Checking status via script: scriptCheckItem"; !strings.Contains(console.String(), want) {
+		t.Errorf("console output missing %q:\n%s", want, console.String())
+	}
 }
 
-// ExampleCheckStatus_file validates that a file check is ran
-func ExampleCheckStatus_file() {
+// TestCheckStatusFile validates that a file check is ran
+func TestCheckStatusFile(t *testing.T) {
 	// Override execCommand with our fake version
 	execCommand = fakeExecCommand
-	// Override the verbose setting
-	_ = gorillalog.NewLog(cfgVerbose)
-	defer func() {
-		execCommand = origExec
-	}()
+	defer func() { execCommand = origExec }()
+	console := captureConsole(t)
 
-	// Run CheckStatus with an item that has a script check
+	// Run CheckStatus with an item that has a file check
 	CheckStatus(fileCheckItem, "install", "testdata/")
 
-	// Output:
-	// Checking status via file: fileCheckItem
+	if want := "Checking status via file: fileCheckItem"; !strings.Contains(console.String(), want) {
+		t.Errorf("console output missing %q:\n%s", want, console.String())
+	}
 }
 
-// ExampleCheckStatus_registry validates that a registry check is ran
-func ExampleCheckStatus_registry() {
+// TestCheckStatusRegistry validates that a registry check is ran
+func TestCheckStatusRegistry(t *testing.T) {
 	// Override execCommand with our fake version
 	execCommand = fakeExecCommand
-	// Override the verbose setting
-	_ = gorillalog.NewLog(cfgVerbose)
-	defer func() {
-		execCommand = origExec
-	}()
+	defer func() { execCommand = origExec }()
+	console := captureConsole(t)
 
-	// Run CheckStatus with an item that has a script check
+	// Run CheckStatus with an item that has a registry check
 	CheckStatus(registryCheckItem, "install", "testdata/")
 
-	// Output:
-	// Checking status via registry: registryCheckItem
+	if want := "Checking status via registry: registryCheckItem"; !strings.Contains(console.String(), want) {
+		t.Errorf("console output missing %q:\n%s", want, console.String())
+	}
 }
 
-// ExampleCheckStatus_appx validates that an appx check is ran
-func ExampleCheckStatus_appx() {
+// TestCheckStatusAppx validates that an appx check is ran
+func TestCheckStatusAppx(t *testing.T) {
 	execCommand = fakeExecCommandAppx
-	_ = gorillalog.NewLog(cfgVerbose)
 	defer func() { execCommand = origExec }()
+	console := captureConsole(t)
 
 	CheckStatus(appxCheckItem, "install", "testdata/")
 
-	// Output:
-	// Checking status via appx: appxCheckItem
+	if want := "Checking status via appx: appxCheckItem"; !strings.Contains(console.String(), want) {
+		t.Errorf("console output missing %q:\n%s", want, console.String())
+	}
 }
 
-// ExampleCheckStatus_none validates that no check is ran
-func ExampleCheckStatus_none() {
+// TestCheckStatusNone validates that no check is ran
+func TestCheckStatusNone(t *testing.T) {
 	// Override execCommand with our fake version
 	execCommand = fakeExecCommand
-	// Override the verbose setting
-	_ = gorillalog.NewLog(cfgVerbose)
-	defer func() {
-		execCommand = origExec
-	}()
+	defer func() { execCommand = origExec }()
+	console := captureConsole(t)
 
-	// Run CheckStatus with an item that has a script check
+	// Run CheckStatus with an item that has no check data
 	CheckStatus(noCheckItem, "install", "testdata/")
 
-	// Output:
-	// Not enough data to check the current status: noCheckItem
+	if want := "Not enough data to check the current status: noCheckItem"; !strings.Contains(console.String(), want) {
+		t.Errorf("console output missing %q:\n%s", want, console.String())
+	}
 }

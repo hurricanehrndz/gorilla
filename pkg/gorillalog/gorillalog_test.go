@@ -1,9 +1,8 @@
 package gorillalog
 
 import (
-	"errors"
-	"fmt"
-	"log"
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,254 +11,197 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/config"
 )
 
-// TestNewLog tests the creation of the log and its directory
-func TestNewLog(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	// Set up a place for test data
-	tmpDir := filepath.Join(os.Getenv("TMPDIR"), "gorillalog")
-
-	cfg := config.Configuration{
-		AppDataPath: tmpDir,
-		Debug:       false,
-		Verbose:     false,
-	}
-
-	defer func() {
-		// Clean up when we are done
-		os.RemoveAll(tmpDir)
-		Close()
-		log.SetOutput(os.Stdout)
-	}()
-
-	// Run the function
-	if err := NewLog(cfg); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
-
-	// Check values
-	logDir := tmpDir
-	logFile := filepath.Join(tmpDir, "gorilla.log")
-	if _, err := os.Stat(logDir); os.IsNotExist(err) {
-		fmt.Println(err)
-		t.Errorf("Log Directory not created: %s", logDir)
-	}
-	if _, err := os.Stat(logFile); os.IsNotExist(err) {
-		t.Errorf("Log File not created: %s", logFile)
-	}
-}
-
-func TestNewLogRotatesOversizedFileOnStartup(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	tmpDir := t.TempDir()
-	originalMax := logMaxSizeBytes
-	logMaxSizeBytes = 16
+// setConsole redirects the console sink to a buffer and restores state on
+// cleanup so tests can assert what reaches stdout.
+func setConsole(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	orig := consoleOut
+	buf := &bytes.Buffer{}
+	consoleOut = buf
 	t.Cleanup(func() {
-		logMaxSizeBytes = originalMax
 		Close()
-		log.SetOutput(os.Stdout)
+		consoleOut = orig
 	})
-
-	activePath := filepath.Join(tmpDir, "gorilla.log")
-	if err := os.WriteFile(activePath, []byte(strings.Repeat("x", 64)), 0o644); err != nil {
-		t.Fatalf("seed log file: %v", err)
-	}
-
-	cfg := config.Configuration{
-		AppDataPath: tmpDir,
-	}
-	if err := NewLog(cfg); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
-
-	if _, err := os.Stat(activePath + ".1"); err != nil {
-		t.Fatalf("expected rotated backup log, got error: %v", err)
-	}
+	return buf
 }
 
-func TestInfoRotatesOversizedActiveFileBeforeWrite(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	tmpDir := t.TempDir()
-	originalMax := logMaxSizeBytes
-	logMaxSizeBytes = 40
-	t.Cleanup(func() {
-		logMaxSizeBytes = originalMax
-		Close()
-		log.SetOutput(os.Stdout)
-	})
-
-	cfg := config.Configuration{
-		AppDataPath: tmpDir,
-	}
-	if err := NewLog(cfg); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
-
-	Info(strings.Repeat("A", 128))
-	Info("second line triggers size check")
-
-	backupPath := filepath.Join(tmpDir, "gorilla.log.1")
-	if _, err := os.Stat(backupPath); err != nil {
-		t.Fatalf("expected rotated backup log, got error: %v", err)
-	}
-}
-
-func TestRotateLogIfNeededPreservesPreviousBackupWhenRenameFails(t *testing.T) {
-	tmpDir := t.TempDir()
-	activePath := filepath.Join(tmpDir, "gorilla.log")
-	backupPath := activePath + ".1"
-
-	if err := os.WriteFile(activePath, []byte(strings.Repeat("a", 128)), 0o644); err != nil {
-		t.Fatalf("write active log: %v", err)
-	}
-	if err := os.WriteFile(backupPath, []byte("previous-backup"), 0o644); err != nil {
-		t.Fatalf("write backup log: %v", err)
-	}
-
-	originalMax := logMaxSizeBytes
-	logMaxSizeBytes = 32
-	t.Cleanup(func() { logMaxSizeBytes = originalMax })
-
-	originalRename := osRename
-	osRename = func(oldpath, newpath string) error {
-		if oldpath == activePath && newpath == backupPath {
-			return errors.New("forced rename failure")
-		}
-		return originalRename(oldpath, newpath)
-	}
-	t.Cleanup(func() { osRename = originalRename })
-
-	if err := rotateLogIfNeeded(activePath); err == nil {
-		t.Fatalf("expected rotateLogIfNeeded to fail when active rename fails")
-	}
-
-	backupContent, err := os.ReadFile(backupPath)
+func readLog(t *testing.T, dir string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "gorilla.log"))
 	if err != nil {
-		t.Fatalf("expected backup to still exist: %v", err)
+		t.Fatalf("read log file: %v", err)
 	}
-	if string(backupContent) != "previous-backup" {
-		t.Fatalf("expected previous backup content to be preserved, got %q", string(backupContent))
-	}
+	return data
 }
 
-func TestRotateLogIfNeededReturnsStatErrorWithoutPanicking(t *testing.T) {
-	originalStat := osStat
-	osStat = func(string) (os.FileInfo, error) {
-		return nil, errors.New("forced stat failure")
+// TestNewLogCreatesDirAndFile verifies the log directory and file materialize
+// under AppDataPath.
+func TestNewLogCreatesDirAndFile(t *testing.T) {
+	setConsole(t)
+	dir := filepath.Join(t.TempDir(), "nested")
+
+	if err := NewLog(config.Configuration{AppDataPath: dir}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
 	}
-	t.Cleanup(func() { osStat = originalStat })
+	Info("seed") // lumberjack creates the file on first write
 
-	if err := rotateLogIfNeeded("/tmp/does-not-matter.log"); err == nil {
-		t.Fatalf("expected rotateLogIfNeeded to return stat error")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		t.Errorf("log directory not created: %s", dir)
 	}
-}
-
-func TestRotateCurrentLogIfNeededReopensWhenHandleMissing(t *testing.T) {
-	Close()
-	log.SetOutput(os.Stdout)
-
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "gorilla.log")
-	if err := os.WriteFile(path, []byte("seed"), 0o644); err != nil {
-		t.Fatalf("seed log: %v", err)
-	}
-
-	originalPath := logPath
-	originalFile := logFile
-	logPath = path
-	logFile = nil
-	t.Cleanup(func() {
-		logPath = originalPath
-		logFile = originalFile
-	})
-	t.Cleanup(func() {
-		Close()
-		log.SetOutput(os.Stdout)
-	})
-
-	rotateCurrentLogIfNeeded()
-	if logFile == nil {
-		t.Fatalf("expected rotateCurrentLogIfNeeded to reopen log file when handle is missing")
+	if _, err := os.Stat(filepath.Join(dir, "gorilla.log")); os.IsNotExist(err) {
+		t.Errorf("log file not created under %s", dir)
 	}
 }
 
-// ExampleDebug_off tests the output of a log sent to DEBUG while config.Debug is false
-func ExampleDebug_off() {
-	// Set up what we expect
-	logString := "Debug String!"
+// TestFanoutWritesToConsoleAndFile proves one call reaches every active sink.
+func TestFanoutWritesToConsoleAndFile(t *testing.T) {
+	console := setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function without debug
-	debug = false
-	Debug(logString)
+	if err := NewLog(config.Configuration{AppDataPath: dir, Verbose: true}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	Warn("fanout-message")
 
-	// Output:
+	if !strings.Contains(console.String(), "fanout-message") {
+		t.Errorf("console sink missing message: %q", console.String())
+	}
+	if !strings.Contains(string(readLog(t, dir)), "fanout-message") {
+		t.Errorf("file sink missing message")
+	}
 }
 
-// ExampleDebug_on tests the output of a log sent to DEBUG while config.Debug is true
-func ExampleDebug_on() {
-	// Set up what we expect
-	logString := "Debug String!"
+// TestFileEncodingJSONDefault asserts the file sink emits structured JSON.
+func TestFileEncodingJSONDefault(t *testing.T) {
+	setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function with debug
-	debug = true
-	Debug(logString)
+	if err := NewLog(config.Configuration{AppDataPath: dir}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	Warn("json-line")
 
-	// Output:
-	// Debug String!
+	line := bytes.TrimSpace(readLog(t, dir))
+	var rec map[string]any
+	if err := json.Unmarshal(line, &rec); err != nil {
+		t.Fatalf("file line is not JSON: %v (%q)", err, line)
+	}
+	if rec["level"] != "WARN" {
+		t.Errorf("level = %v, want WARN", rec["level"])
+	}
+	if rec["msg"] != "json-line" {
+		t.Errorf("msg = %v, want json-line", rec["msg"])
+	}
 }
 
-// ExampleInfo_verbose_off tests the output of a log sent to INFO while config.Verbose is false
-func ExampleInfo_verbose_off() {
-	// Set up what we expect
-	logString := "Info String!"
+// TestFileEncodingPlain asserts LogFilePlain swaps the file sink to text.
+func TestFileEncodingPlain(t *testing.T) {
+	setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function without verbose
-	verbose = false
+	if err := NewLog(config.Configuration{AppDataPath: dir, LogFilePlain: true}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	Warn("plain-line")
 
-	Info(logString)
-	// Output:
+	line := bytes.TrimSpace(readLog(t, dir))
+	if err := json.Unmarshal(line, &map[string]any{}); err == nil {
+		t.Errorf("expected non-JSON text line, got JSON: %q", line)
+	}
+	if !strings.Contains(string(line), "plain-line") {
+		t.Errorf("plain line missing message: %q", line)
+	}
 }
 
-// ExampleInfoVerboseOn tests the output of a log sent to INFO while config.Verbose is true
-func ExampleInfo_verbose_on() {
-	// Set up what we expect
-	logString := "Info String!"
+// TestConsoleLevelGating checks verbose/debug drive which levels reach console.
+func TestConsoleLevelGating(t *testing.T) {
+	tests := []struct {
+		name           string
+		verbose, debug bool
+		infoVisible    bool
+		debugVisible   bool
+	}{
+		{"default", false, false, false, false},
+		{"verbose", true, false, true, false},
+		{"debug", false, true, true, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			console := setConsole(t)
+			dir := t.TempDir()
+			if err := NewLog(config.Configuration{AppDataPath: dir, Verbose: tc.verbose, Debug: tc.debug}); err != nil {
+				t.Fatalf("NewLog failed: %v", err)
+			}
 
-	// Run the function with verbose
-	verbose = true
+			Debug("dbg-msg")
+			Info("info-msg")
+			Warn("warn-msg")
+			out := console.String()
 
-	Info(logString)
-	// Output:
-	// Info String!
+			if got := strings.Contains(out, "info-msg"); got != tc.infoVisible {
+				t.Errorf("info visible = %v, want %v: %q", got, tc.infoVisible, out)
+			}
+			if got := strings.Contains(out, "dbg-msg"); got != tc.debugVisible {
+				t.Errorf("debug visible = %v, want %v: %q", got, tc.debugVisible, out)
+			}
+			if !strings.Contains(out, "warn-msg") {
+				t.Errorf("warn must always reach console: %q", out)
+			}
+		})
+	}
 }
 
-// ExampleWarn tests the output of a log sent to WARN
-func ExampleWarn() {
-	// Set up what we expect
-	logString := "Warn String!"
+// TestCheckOnlyNoFileAndErrorNoPanic confirms checkonly suppresses the file
+// sink and neuters Error's panic.
+func TestCheckOnlyNoFileAndErrorNoPanic(t *testing.T) {
+	setConsole(t)
+	dir := t.TempDir()
 
-	// Run the function
-	Warn(logString)
-	// Output:
-	// Warn String!
+	if err := NewLog(config.Configuration{AppDataPath: dir, CheckOnly: true}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	if logWriter != nil {
+		t.Errorf("checkonly should not open a file writer")
+	}
+
+	Warn("checkonly-warn")
+	if _, err := os.Stat(filepath.Join(dir, "gorilla.log")); !os.IsNotExist(err) {
+		t.Errorf("checkonly must not create a log file, stat err = %v", err)
+	}
+
+	// Must not panic under checkonly.
+	Error("should-not-panic")
 }
 
-// ExampleError tests the output of a log sent to ERROR
-func ExampleError() {
-	// Set up what we expect
-	logString := "Error String!"
+// TestErrorPanicsAndLogs confirms Error logs to both sinks then panics, and
+// that the file sink is a lumberjack writer under AppDataPath.
+func TestErrorPanicsAndLogs(t *testing.T) {
+	console := setConsole(t)
+	dir := t.TempDir()
 
-	// Prepare to recover from a panic
-	defer func() {
-		recover()
+	if err := NewLog(config.Configuration{AppDataPath: dir}); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	if logWriter == nil {
+		t.Fatal("expected a lumberjack file writer")
+	}
+	if want := filepath.Join(dir, "gorilla.log"); logWriter.Filename != want {
+		t.Errorf("writer filename = %q, want %q", logWriter.Filename, want)
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Error did not panic")
+			}
+		}()
+		Error("boom")
 	}()
 
-	// Run the function
-	Error(logString)
-	// Output:
+	if !strings.Contains(console.String(), "boom") {
+		t.Errorf("Error missing from console: %q", console.String())
+	}
+	if !strings.Contains(string(readLog(t, dir)), "boom") {
+		t.Errorf("Error missing from file")
+	}
 }
