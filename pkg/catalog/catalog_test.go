@@ -54,7 +54,8 @@ If ($upToDate) {
 } Else {
   exit 0
 }
-`},
+`,
+		},
 		Installer: InstallerItem{
 			Arguments: []string{`/L=1033`, `/S`},
 			Hash:      `f5ef8c31898592824751ec2252fe317c0f667db25ac40452710c8ccf35a1b28d`,

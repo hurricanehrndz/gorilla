@@ -35,8 +35,8 @@ func Get(cfg config.Configuration) (manifests []Item, newCatalogs []string, err 
 
 	// Setup iteration tracking for manifests
 	var manifestsTotal int
-	var manifestsProcessed = 0
-	var manifestsRemaining = 1
+	manifestsProcessed := 0
+	manifestsRemaining := 1
 
 	// Add the top level manifest to the list
 	manifestsList = append(manifestsList, cfg.Manifest)
@@ -67,7 +67,7 @@ func Get(cfg config.Configuration) (manifests []Item, newCatalogs []string, err 
 		for _, item := range workingList {
 
 			// Check if unique in manifestsList
-			var uniqueInList = true
+			uniqueInList := true
 			for i := range manifestsList {
 				if manifestsList[i] == item {
 					uniqueInList = false
@@ -80,7 +80,7 @@ func Get(cfg config.Configuration) (manifests []Item, newCatalogs []string, err 
 		}
 
 		// Check if this is unique in manifests
-		var uniqueInManifests = true
+		uniqueInManifests := true
 		for i := range manifests {
 			if manifests[i].Name == newManifest.Name {
 				uniqueInManifests = false

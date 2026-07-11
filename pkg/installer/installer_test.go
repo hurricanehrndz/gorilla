@@ -306,7 +306,6 @@ func TestInstallItem(t *testing.T) {
 	if have, want := actualMsix, expectedMsix; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestInstallStatusError verifies that Install returns if status check fails
@@ -326,7 +325,6 @@ func TestInstallStatusError(t *testing.T) {
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestInstallStatusFalse verifies that Install returns if status check is false
@@ -346,7 +344,6 @@ func TestInstallStatusFalse(t *testing.T) {
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestUninstallItem validate the command that is passed to
@@ -437,7 +434,6 @@ func TestUninstallItem(t *testing.T) {
 	if have, want := actualMsix, expectedMsix; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 func TestInstallItemNupkgWithExplicitPackageID(t *testing.T) {
@@ -581,7 +577,6 @@ func TestUninstallStatusError(t *testing.T) {
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestUninstallStatusTrue verifies that Uninstall returns if status check is true
@@ -601,7 +596,6 @@ func TestUninstallStatusTrue(t *testing.T) {
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestUpdateStatusError verifies that Update returns if status check fails
@@ -621,7 +615,6 @@ func TestUpdateStatusError(t *testing.T) {
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestUpdateStatusFalse verifies that Update returns if status check is false
@@ -641,7 +634,6 @@ func TestUpdateStatusFalse(t *testing.T) {
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
-
 }
 
 // TestInstallReport verifies that an installed item is added to the report
@@ -667,7 +659,6 @@ func TestInstallReport(t *testing.T) {
 	if !structsMatch {
 		t.Errorf("\nExpected: %#v\nReceived: %#v", expectedReport, report.InstalledItems)
 	}
-
 }
 
 func fakeInstallItem(item catalog.Item, itemURL, cachePath string) string {
@@ -797,7 +788,6 @@ func Example_installItemSuccess() {
 	// Output:
 	// Installing msi for _gorilla_dev_action_noerror_
 	// _gorilla_dev_action_noerror_ 1.2.3 Installation SUCCESSFUL
-
 }
 
 func Example_installItemFailure() {
@@ -829,7 +819,6 @@ func Example_installItemFailure() {
 	// Output:
 	// Installing msi for _gorilla_dev_action_error_
 	// _gorilla_dev_action_error_ 1.2.3 Installation FAILED
-
 }
 
 func Example_uninstallItemSuccess() {
@@ -859,7 +848,6 @@ func Example_uninstallItemSuccess() {
 	// Output:
 	// Uninstalling msi for _gorilla_dev_action_noerror_
 	// _gorilla_dev_action_noerror_ 1.2.3 Uninstallation SUCCESSFUL
-
 }
 
 func Example_uninstallItemFailure() {
@@ -889,5 +877,4 @@ func Example_uninstallItemFailure() {
 	// Output:
 	// Uninstalling msi for _gorilla_dev_action_error_
 	// _gorilla_dev_action_error_ 1.2.3 Uninstallation FAILED
-
 }

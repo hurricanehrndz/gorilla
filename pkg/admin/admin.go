@@ -83,7 +83,7 @@ func BuildCatalogs(repoPath string) error {
 	if err := os.RemoveAll(catalogsPath); err != nil {
 		return fmt.Errorf("clean catalogs path %s: %w", catalogsPath, err)
 	}
-	if err := os.MkdirAll(catalogsPath, 0755); err != nil {
+	if err := os.MkdirAll(catalogsPath, 0o755); err != nil {
 		return fmt.Errorf("create catalogs path %s: %w", catalogsPath, err)
 	}
 
@@ -93,7 +93,7 @@ func BuildCatalogs(repoPath string) error {
 			return fmt.Errorf("marshal catalog %s: %w", catalogName, err)
 		}
 		catalogPath := filepath.Join(catalogsPath, catalogName+".yaml")
-		if err := os.WriteFile(catalogPath, catalogYAML, 0644); err != nil {
+		if err := os.WriteFile(catalogPath, catalogYAML, 0o644); err != nil {
 			return fmt.Errorf("write catalog %s: %w", catalogPath, err)
 		}
 	}

@@ -34,8 +34,10 @@ func getUninstallKeys() (installedItems map[string]RegistryApplication, checkErr
 	installedItems = make(map[string]RegistryApplication)
 
 	// Both Uninstall paths (64 & 32 bits apps)
-	regPaths := []string{`Software\Microsoft\Windows\CurrentVersion\Uninstall`,
-		`Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall`}
+	regPaths := []string{
+		`Software\Microsoft\Windows\CurrentVersion\Uninstall`,
+		`Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall`,
+	}
 
 	for _, regPath := range regPaths {
 

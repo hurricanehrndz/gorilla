@@ -22,37 +22,29 @@ on:
       - go.mod
       - go.sum
       - .github/workflows/go-test.yml
-
 permissions:
   contents: read
-
 jobs:
-
   build:
     name: Build
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-    - name: Set Git config
-      run: git config --global core.autocrlf false
-
-    - name: Check out code
-      uses: actions/checkout@v4
-
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version-file: go.mod
-        cache: true
-
-    - name: Install staticcheck
-      shell: pwsh
-      run: |
-        go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
-        "$(go env GOPATH)\bin" >> $env:GITHUB_PATH
-
-    - name: Lint
-      run: make lint
-
-    - name: Test
-      run: make test
+      - name: Set Git config
+        run: git config --global core.autocrlf false
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install staticcheck
+        shell: pwsh
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          "$(go env GOPATH)\bin" >> $env:GITHUB_PATH
+      - name: Lint
+        run: make lint
+      - name: Test
+        run: make test

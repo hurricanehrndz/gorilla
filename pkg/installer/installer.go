@@ -78,7 +78,6 @@ func runCMD(command string, arguments []string) (string, error) {
 
 // Get a Nupkg's id using `choco list`
 func getNupkgIDs(nupkgDir, versionArg string) ([]string, error) {
-
 	// Compile the arguments needed to get the id
 	command := commandNupkg
 	arguments := []string{"list", versionArg, "--id-only", "-r", "-s", nupkgDir}
@@ -125,7 +124,6 @@ func resolveNupkgID(itemName, nupkgDir, versionArg, packageID string) (string, e
 }
 
 func installItem(item catalog.Item, itemURL, cachePath string) string {
-
 	// Determine the paths needed for download and install
 	relPath, fileName := path.Split(item.Installer.Location)
 	absPath := filepath.Join(cachePath, relPath)
@@ -221,7 +219,6 @@ func installItem(item catalog.Item, itemURL, cachePath string) string {
 }
 
 func uninstallItem(item catalog.Item, itemURL, cachePath string) string {
-
 	// msix uninstall only needs the package name, no file download required
 	if item.Uninstaller.Type == "msix" || (item.Uninstaller.Type == "" && item.Installer.Type == "msix") {
 		gorillalog.Info("Uninstalling msix for", item.DisplayName)
@@ -332,13 +329,13 @@ func uninstallItem(item catalog.Item, itemURL, cachePath string) string {
 }
 
 func preinstallScript(catalogItem catalog.Item, cachePath string) (actionNeeded bool, checkErr error) {
-	if err := os.MkdirAll(cachePath, 0755); err != nil {
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
 		return false, err
 	}
 
 	// Write InstallCheckScript to disk as a Powershell file
 	tmpScript := filepath.Join(cachePath, "tmpPostScript.ps1")
-	if err := os.WriteFile(tmpScript, []byte(catalogItem.PreScript), 0755); err != nil {
+	if err := os.WriteFile(tmpScript, []byte(catalogItem.PreScript), 0o755); err != nil {
 		return false, err
 	}
 
@@ -369,13 +366,13 @@ func preinstallScript(catalogItem catalog.Item, cachePath string) (actionNeeded 
 }
 
 func postinstallScript(catalogItem catalog.Item, cachePath string) (actionNeeded bool, checkErr error) {
-	if err := os.MkdirAll(cachePath, 0755); err != nil {
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
 		return false, err
 	}
 
 	// Write InstallCheckScript to disk as a Powershell file
 	tmpScript := filepath.Join(cachePath, "tmpPostScript.ps1")
-	if err := os.WriteFile(tmpScript, []byte(catalogItem.PostScript), 0755); err != nil {
+	if err := os.WriteFile(tmpScript, []byte(catalogItem.PostScript), 0o755); err != nil {
 		return false, err
 	}
 

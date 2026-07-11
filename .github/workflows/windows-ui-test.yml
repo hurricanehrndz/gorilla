@@ -1,5 +1,4 @@
 name: Windows UI Tests
-
 on:
   push:
     branches:
@@ -15,10 +14,8 @@ on:
       - '!gorilla-ui/*.md'
       - '!gorilla-ui/**/*.md'
       - .github/workflows/windows-ui-test.yml
-
 permissions:
   contents: read
-
 jobs:
   windows-ui-tests:
     name: Windows UI Tests
@@ -28,27 +25,20 @@ jobs:
     steps:
       - name: Set Git config
         run: git config --global core.autocrlf false
-
       - name: Check out code
         uses: actions/checkout@v4
-
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
-
       - name: Restore WinUI app dependencies
         run: dotnet restore gorilla-ui/src/Gorilla.UI.App/Gorilla.UI.App.csproj
-
       - name: Restore Windows UI test dependencies
         run: dotnet restore gorilla-ui/tests/Gorilla.UI.App.WindowsUiTests/Gorilla.UI.App.WindowsUiTests.csproj
-
       - name: Build WinUI app
         run: dotnet build gorilla-ui/src/Gorilla.UI.App/Gorilla.UI.App.csproj -c Release -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true -p:PublishReadyToRun=false -p:PublishTrimmed=false --no-restore
-
       - name: Build Windows UI test project
         run: dotnet build gorilla-ui/tests/Gorilla.UI.App.WindowsUiTests/Gorilla.UI.App.WindowsUiTests.csproj -c Release --no-restore
-
       - name: Resolve WinUI app executable path
         shell: pwsh
         run: |
@@ -60,7 +50,6 @@ jobs:
           }
 
           "GORILLA_UI_APP_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Run FlaUI Windows UI tests with retry
         shell: pwsh
         env:
@@ -89,7 +78,6 @@ jobs:
           }
 
           throw "Windows UI tests failed after $maxAttempts attempts"
-
       - name: Upload Windows UI test artifacts
         if: always()
         uses: actions/upload-artifact@v4

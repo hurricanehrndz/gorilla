@@ -1,14 +1,11 @@
----
 ##
 ## Gorilla configuration template
 ## Only `url` and `manifest` are required
 ## More details at https://github.com/1dustindavis/gorilla/wiki/Client-Configuration
 ##
-
 ## `url` is the path on your server that contains the directories for
 ## manifests, catalogs, and packages.
 url: https://example.com/gorilla/
-
 ## `manifest` is the primary manifest that is assigned to this machine.
 manifest: employee
 

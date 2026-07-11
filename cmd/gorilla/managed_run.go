@@ -39,7 +39,7 @@ func managedRun(cfg config.Configuration) error {
 	}
 
 	// If needed, create the cache directory.
-	if err := mkdirAllFunc(filepath.Clean(cfg.CachePath), 0755); err != nil {
+	if err := mkdirAllFunc(filepath.Clean(cfg.CachePath), 0o755); err != nil {
 		return fmt.Errorf("unable to create cache directory: %w", err)
 	}
 

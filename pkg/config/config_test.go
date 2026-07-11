@@ -65,7 +65,7 @@ manifest: example_manifest
 app_data_path: c:/cpe/gorilla/
 repo_path: c:/repo/gorilla
 `)
-	if err := os.WriteFile(configPath, configYAML, 0644); err != nil {
+	if err := os.WriteFile(configPath, configYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -97,7 +97,6 @@ repo_path: c:/repo/gorilla
 
 // TestParseArguments tests if flag is parsed correctly
 func TestParseArguments(t *testing.T) {
-
 	// Set our expectations
 	expectedConfig := `.\fake.yaml`
 	expectedVerbose := true
@@ -149,7 +148,6 @@ func TestParseArguments(t *testing.T) {
 
 // Example tests if help is is parsed properly
 func Example() {
-
 	// Save the original osExit
 	origExit := osExit
 	defer func() { osExit = origExit }()

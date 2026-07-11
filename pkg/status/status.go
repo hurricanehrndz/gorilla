@@ -77,7 +77,6 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 			}
 			break
 		}
-
 	}
 
 	if installType == "update" && !installed {
@@ -94,13 +93,13 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 }
 
 func checkScript(catalogItem catalog.Item, cachePath string, installType string) (actionNeeded bool, checkErr error) {
-	if err := os.MkdirAll(cachePath, 0755); err != nil {
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
 		return false, err
 	}
 
 	// Write InstallCheckScript to disk as a Powershell file
 	tmpScript := filepath.Join(cachePath, "tmpCheckScript.ps1")
-	if err := os.WriteFile(tmpScript, []byte(catalogItem.Check.Script), 0755); err != nil {
+	if err := os.WriteFile(tmpScript, []byte(catalogItem.Check.Script), 0o755); err != nil {
 		return false, err
 	}
 
@@ -167,7 +166,6 @@ func checkPath(catalogItem catalog.Item, installType string) (actionNeeded bool,
 			break
 
 		} else if err == nil {
-
 			// When doing an uninstall, and the path exists
 			// perform uninstall
 			if installType == "uninstall" {
@@ -288,7 +286,6 @@ func checkAppx(catalogItem catalog.Item, installType string) (actionNeeded bool,
 
 // CheckStatus determines the method for checking status
 func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actionNeeded bool, checkErr error) {
-
 	if catalogItem.Check.Script != "" {
 		gorillalog.Info("Checking status via script:", catalogItem.DisplayName)
 		return checkScript(catalogItem, cachePath, installType)
@@ -308,5 +305,4 @@ func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actio
 
 	gorillalog.Warn("Not enough data to check the current status:", catalogItem.DisplayName)
 	return
-
 }

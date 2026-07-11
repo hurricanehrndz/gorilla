@@ -1,4 +1,3 @@
----
 name: service-manifest
 managed_installs:
   - GoogleChrome

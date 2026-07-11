@@ -29,7 +29,8 @@ func adminCheck() (bool, error) {
 		windows.SECURITY_BUILTIN_DOMAIN_RID,
 		windows.DOMAIN_ALIAS_RID_ADMINS,
 		0, 0, 0, 0, 0, 0,
-		&adminSid)
+		&adminSid,
+	)
 	if err != nil {
 		return false, fmt.Errorf("SID Error: %v", err)
 	}

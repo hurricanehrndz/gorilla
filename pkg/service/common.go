@@ -224,7 +224,7 @@ func loadServiceLocalManifest(cfg config.Configuration) (manifest.Item, error) {
 
 func saveServiceLocalManifest(cfg config.Configuration, entry manifest.Item) error {
 	path := serviceLocalManifestPath(cfg)
-	if err := mkdirAll(filepath.Clean(filepath.Dir(path)), 0755); err != nil {
+	if err := mkdirAll(filepath.Clean(filepath.Dir(path)), 0o755); err != nil {
 		return fmt.Errorf("unable to create local manifest directory: %w", err)
 	}
 
@@ -237,7 +237,7 @@ func saveServiceLocalManifest(cfg config.Configuration, entry manifest.Item) err
 	if err != nil {
 		return fmt.Errorf("unable to encode service local manifest: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("unable to write service local manifest %s: %w", path, err)
 	}
 	return nil

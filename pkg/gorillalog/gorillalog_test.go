@@ -64,7 +64,7 @@ func TestNewLogRotatesOversizedFileOnStartup(t *testing.T) {
 	})
 
 	activePath := filepath.Join(tmpDir, "gorilla.log")
-	if err := os.WriteFile(activePath, []byte(strings.Repeat("x", 64)), 0644); err != nil {
+	if err := os.WriteFile(activePath, []byte(strings.Repeat("x", 64)), 0o644); err != nil {
 		t.Fatalf("seed log file: %v", err)
 	}
 
@@ -114,10 +114,10 @@ func TestRotateLogIfNeededPreservesPreviousBackupWhenRenameFails(t *testing.T) {
 	activePath := filepath.Join(tmpDir, "gorilla.log")
 	backupPath := activePath + ".1"
 
-	if err := os.WriteFile(activePath, []byte(strings.Repeat("a", 128)), 0644); err != nil {
+	if err := os.WriteFile(activePath, []byte(strings.Repeat("a", 128)), 0o644); err != nil {
 		t.Fatalf("write active log: %v", err)
 	}
-	if err := os.WriteFile(backupPath, []byte("previous-backup"), 0644); err != nil {
+	if err := os.WriteFile(backupPath, []byte("previous-backup"), 0o644); err != nil {
 		t.Fatalf("write backup log: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestRotateCurrentLogIfNeededReopensWhenHandleMissing(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "gorilla.log")
-	if err := os.WriteFile(path, []byte("seed"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("seed"), 0o644); err != nil {
 		t.Fatalf("seed log: %v", err)
 	}
 
