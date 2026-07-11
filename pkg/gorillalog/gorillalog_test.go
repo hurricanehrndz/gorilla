@@ -29,6 +29,17 @@ func setConsole(t *testing.T) *bytes.Buffer {
 	return buf
 }
 
+// newLog calls NewLog and registers Close as a cleanup. Call it AFTER
+// t.TempDir(): cleanups run LIFO, so Close releases the lumberjack file
+// handle before TempDir's RemoveAll — Windows cannot delete an open file.
+func newLog(t *testing.T, cfg config.Configuration) {
+	t.Helper()
+	if err := NewLog(cfg); err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	t.Cleanup(Close)
+}
+
 func readLog(t *testing.T, dir string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dir, "gorilla.log"))
@@ -44,9 +55,7 @@ func TestNewLogCreatesDirAndFile(t *testing.T) {
 	setConsole(t)
 	dir := filepath.Join(t.TempDir(), "nested")
 
-	if err := NewLog(config.Configuration{AppDataPath: dir}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir})
 	Info("seed") // lumberjack creates the file on first write
 
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -62,9 +71,7 @@ func TestFanoutWritesToConsoleAndFile(t *testing.T) {
 	console := setConsole(t)
 	dir := t.TempDir()
 
-	if err := NewLog(config.Configuration{AppDataPath: dir, Verbose: true}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir, Verbose: true})
 	Warn("fanout-message")
 
 	if !strings.Contains(console.String(), "fanout-message") {
@@ -126,9 +133,7 @@ func TestNewLogSkipsUnusableStdout(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	if err := NewLog(config.Configuration{AppDataPath: dir, Verbose: true}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir, Verbose: true})
 
 	fan, ok := slog.Default().Handler().(fanoutHandler)
 	if !ok {
@@ -149,9 +154,7 @@ func TestFileEncodingJSONDefault(t *testing.T) {
 	setConsole(t)
 	dir := t.TempDir()
 
-	if err := NewLog(config.Configuration{AppDataPath: dir}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir})
 	Warn("json-line")
 
 	line := bytes.TrimSpace(readLog(t, dir))
@@ -172,9 +175,7 @@ func TestFileEncodingPlain(t *testing.T) {
 	setConsole(t)
 	dir := t.TempDir()
 
-	if err := NewLog(config.Configuration{AppDataPath: dir, LogFilePlain: true}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir, LogFilePlain: true})
 	Warn("plain-line")
 
 	line := bytes.TrimSpace(readLog(t, dir))
@@ -202,9 +203,7 @@ func TestConsoleLevelGating(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			console := setConsole(t)
 			dir := t.TempDir()
-			if err := NewLog(config.Configuration{AppDataPath: dir, Verbose: tc.verbose, Debug: tc.debug}); err != nil {
-				t.Fatalf("NewLog failed: %v", err)
-			}
+			newLog(t, config.Configuration{AppDataPath: dir, Verbose: tc.verbose, Debug: tc.debug})
 
 			Debug("dbg-msg")
 			Info("info-msg")
@@ -230,9 +229,7 @@ func TestCheckOnlyNoFileAndErrorNoPanic(t *testing.T) {
 	setConsole(t)
 	dir := t.TempDir()
 
-	if err := NewLog(config.Configuration{AppDataPath: dir, CheckOnly: true}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir, CheckOnly: true})
 	if logWriter != nil {
 		t.Errorf("checkonly should not open a file writer")
 	}
@@ -252,9 +249,7 @@ func TestErrorPanicsAndLogs(t *testing.T) {
 	console := setConsole(t)
 	dir := t.TempDir()
 
-	if err := NewLog(config.Configuration{AppDataPath: dir}); err != nil {
-		t.Fatalf("NewLog failed: %v", err)
-	}
+	newLog(t, config.Configuration{AppDataPath: dir})
 	if logWriter == nil {
 		t.Fatal("expected a lumberjack file writer")
 	}

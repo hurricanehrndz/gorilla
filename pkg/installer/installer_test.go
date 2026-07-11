@@ -732,15 +732,18 @@ func captureConsole(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	buf := &bytes.Buffer{}
 	gorillalog.SetOutput(buf)
-	t.Cleanup(func() {
-		gorillalog.SetOutput(os.Stdout)
-		gorillalog.Close()
-	})
 	cfg := config.Configuration{
 		Debug:       true,
 		Verbose:     true,
 		AppDataPath: t.TempDir(),
 	}
+	// Register the Close cleanup AFTER t.TempDir(): cleanups run LIFO, so
+	// Close releases the log file handle before TempDir's RemoveAll —
+	// Windows cannot delete an open file.
+	t.Cleanup(func() {
+		gorillalog.SetOutput(os.Stdout)
+		gorillalog.Close()
+	})
 	if err := gorillalog.NewLog(cfg); err != nil {
 		t.Fatalf("NewLog failed: %v", err)
 	}
