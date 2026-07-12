@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/1dustindavis/gorilla/pkg/config"
 )
 
 var (
@@ -406,5 +408,21 @@ func TestIfNeededInvalid(t *testing.T) {
 
 	if modTime.Equal(testTime) {
 		t.Error("IfNeeded() did *not* download a file when it *was* needed!")
+	}
+}
+
+// TestGetBadURL verifies that Get returns the request-construction error
+// instead of using a nil request (R10).
+func TestGetBadURL(t *testing.T) {
+	// Reset any config left behind by other tests so the error must come
+	// from building the request
+	SetConfig(config.Configuration{})
+
+	body, err := Get("://bad-url")
+	if err == nil {
+		t.Fatal("expected an error for a malformed url")
+	}
+	if body != nil {
+		t.Errorf("expected nil body, got %q", body)
 	}
 }

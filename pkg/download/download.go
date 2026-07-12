@@ -128,7 +128,7 @@ func Get(url string) ([]byte, error) {
 	// Build the request
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		slog.Warn("Unable to request url", "url", url, "err", err)
+		return nil, err
 	}
 
 	// If we have a user and pass, configure basic auth

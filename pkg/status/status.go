@@ -35,16 +35,18 @@ type WindowsMetadata struct {
 	versionBuild  int
 }
 
-var (
-	// RegistryItems contains the status of all of the applications in the registry
-	RegistryItems map[string]RegistryApplication
+// Abstracted functions so we can override these in unit tests
+var execCommand = exec.Command
 
-	// Abstracted functions so we can override these in unit tests
-	execCommand = exec.Command
-)
+// Checker holds the run-scoped status state (K7: no cross-run package globals)
+type Checker struct {
+	// registryItems caches the applications found in the registry,
+	// lazily populated on first registry check
+	registryItems map[string]RegistryApplication
+}
 
 // checkRegistry iterates through the local registry and compiles all installed software
-func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded bool, checkErr error) {
+func (c *Checker) checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded bool, checkErr error) {
 	// Iterate through the reg keys to compare with the catalog
 	checkReg := catalogItem.Check.Registry
 	catalogVersion, err := version.NewVersion(checkReg.Version)
@@ -54,28 +56,38 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 
 	slog.Debug("Check registry version", "version", checkReg.Version)
 	// If needed, populate applications status from the registry
-	if len(RegistryItems) == 0 {
-		RegistryItems, checkErr = getUninstallKeys()
+	if len(c.registryItems) == 0 {
+		c.registryItems, checkErr = getUninstallKeys()
 	}
 
 	var installed bool
 	var versionMatch bool
-	for _, regItem := range RegistryItems {
-		// Check if the catalog name is in the registry
-		if strings.Contains(regItem.Name, checkReg.Name) {
-			installed = true
-			slog.Debug("Current installed version", "version", regItem.Version)
+	for _, regItem := range c.registryItems {
+		// Check if the catalog name matches the registry name (K2: exact match, not substring)
+		if !strings.EqualFold(strings.TrimSpace(regItem.Name), strings.TrimSpace(checkReg.Name)) {
+			continue
+		}
+		installed = true
+		slog.Debug("Current installed version", "version", regItem.Version)
 
-			// Check if the catalog version matches the registry
-			currentVersion, err := version.NewVersion(regItem.Version)
-			if err != nil {
-				slog.Warn("Unable to parse current version", "err", err)
-			}
-			outdated := currentVersion.LessThan(catalogVersion)
-			if !outdated {
+		// If the catalog version is unparseable, fall back to exact string equality
+		if catalogVersion == nil {
+			if regItem.Version == checkReg.Version {
 				versionMatch = true
 			}
-			break
+			continue
+		}
+
+		// Check if the catalog version matches the registry
+		// K3: evaluate every matching entry (no break) and treat an unparseable
+		// installed version as not a match instead of dereferencing nil
+		currentVersion, err := version.NewVersion(regItem.Version)
+		if err != nil {
+			slog.Warn("Unable to parse current version", "version", regItem.Version, "err", err)
+			continue
+		}
+		if !currentVersion.LessThan(catalogVersion) {
+			versionMatch = true
 		}
 	}
 
@@ -98,9 +110,23 @@ func checkScript(catalogItem catalog.Item, cachePath string, installType string)
 	}
 
 	// Write InstallCheckScript to disk as a Powershell file
-	tmpScript := filepath.Join(cachePath, "tmpCheckScript.ps1")
-	if err := os.WriteFile(tmpScript, []byte(catalogItem.Check.Script), 0o755); err != nil {
+	tmpFile, err := os.CreateTemp(cachePath, "gorilla-check-*.ps1")
+	if err != nil {
 		return false, err
+	}
+	tmpScript := tmpFile.Name()
+	defer func() {
+		if removeErr := os.Remove(tmpScript); removeErr != nil && !os.IsNotExist(removeErr) {
+			slog.Warn("Unable to remove temporary check script", "path", tmpScript, "err", removeErr)
+		}
+	}()
+	_, writeErr := tmpFile.WriteString(catalogItem.Check.Script)
+	closeErr := tmpFile.Close()
+	if writeErr != nil {
+		return false, writeErr
+	}
+	if closeErr != nil {
+		return false, closeErr
 	}
 
 	// Build the command to execute the script
@@ -112,14 +138,9 @@ func checkScript(catalogItem catalog.Item, cachePath string, installType string)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	cmdSuccess := cmd.ProcessState.Success()
 	outStr, errStr := stdout.String(), stderr.String()
-
-	// Delete the temporary script
-	if err := os.Remove(tmpScript); err != nil && !os.IsNotExist(err) {
-		slog.Warn("Unable to remove temporary check script", "path", tmpScript, "err", err)
-	}
 
 	// Log results
 	slog.Debug("Command error", "err", err)
@@ -285,7 +306,7 @@ func checkAppx(catalogItem catalog.Item, installType string) (actionNeeded bool,
 }
 
 // CheckStatus determines the method for checking status
-func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actionNeeded bool, checkErr error) {
+func (c *Checker) CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actionNeeded bool, checkErr error) {
 	if catalogItem.Check.Script != "" {
 		slog.Info("Checking status via script", "item", catalogItem.DisplayName)
 		return checkScript(catalogItem, cachePath, installType)
@@ -296,7 +317,7 @@ func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actio
 
 	} else if catalogItem.Check.Registry.Version != "" {
 		slog.Info("Checking status via registry", "item", catalogItem.DisplayName)
-		return checkRegistry(catalogItem, installType)
+		return c.checkRegistry(catalogItem, installType)
 
 	} else if catalogItem.Check.Appx.Name != "" {
 		slog.Info("Checking status via appx", "item", catalogItem.DisplayName)

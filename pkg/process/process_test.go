@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,7 +9,9 @@ import (
 	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
+	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
 var (
@@ -120,6 +123,99 @@ var (
 				Location: "TestApp.msix",
 			},
 		},
+		"ChainA": catalog.Item{
+			DisplayName: "ChainA",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "ChainA.msi",
+			},
+			Dependencies: []string{"ChainB"},
+		},
+		"ChainB": catalog.Item{
+			DisplayName: "ChainB",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "ChainB.msi",
+			},
+			Dependencies: []string{"ChainC"},
+		},
+		"ChainC": catalog.Item{
+			DisplayName: "ChainC",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "ChainC.msi",
+			},
+		},
+		"DiamondA": catalog.Item{
+			DisplayName: "DiamondA",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "DiamondA.msi",
+			},
+			Dependencies: []string{"DiamondB", "DiamondC"},
+		},
+		"DiamondB": catalog.Item{
+			DisplayName: "DiamondB",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "DiamondB.msi",
+			},
+			Dependencies: []string{"DiamondD"},
+		},
+		"DiamondC": catalog.Item{
+			DisplayName: "DiamondC",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "DiamondC.msi",
+			},
+			Dependencies: []string{"DiamondD"},
+		},
+		"DiamondD": catalog.Item{
+			DisplayName: "DiamondD",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "DiamondD.msi",
+			},
+		},
+		"CycleA": catalog.Item{
+			DisplayName: "CycleA",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "CycleA.msi",
+			},
+			Dependencies: []string{"CycleB"},
+		},
+		"CycleB": catalog.Item{
+			DisplayName: "CycleB",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "CycleB.msi",
+			},
+			Dependencies: []string{"CycleA"},
+		},
+		"NeedsFailing": catalog.Item{
+			DisplayName: "NeedsFailing",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "NeedsFailing.msi",
+			},
+			Dependencies: []string{"FailingDep"},
+		},
+		"FailingDep": catalog.Item{
+			DisplayName: "FailingDep",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "FailingDep.msi",
+			},
+		},
+		"NeedsMissing": catalog.Item{
+			DisplayName: "NeedsMissing",
+			Installer: catalog.InstallerItem{
+				Type:     "msi",
+				Location: "NeedsMissing.msi",
+			},
+			Dependencies: []string{"MissingDep"},
+		},
 		"TestMsixUninstall": catalog.Item{
 			DisplayName: "TestMsixUninstall",
 			Check: catalog.InstallCheck{
@@ -133,8 +229,8 @@ var (
 		},
 	}}
 
-	// CheckOnly flag disabled for testing
-	checkOnlyMode bool = false
+	// A run context for tests; the install function itself is faked
+	testRunner = &installer.Runner{URLPackages: "URLPackages", CachePath: "CachePath"}
 
 	// Arrays of the test items
 	testInstalls   = []string{"Chocolatey", "GoogleChrome", "TestInstall1", "TestInstall2"}
@@ -253,7 +349,7 @@ func TestUninstallsMsixInferredFromInstaller(t *testing.T) {
 	}()
 
 	msixUninstalls := []string{"TestMsixInstallOnly"}
-	Uninstalls(msixUninstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Uninstalls(msixUninstalls, testCatalogs, testRunner)
 
 	expectedItems := msixUninstalls
 	matchItems := reflect.DeepEqual(expectedItems, actualUninstalledItems)
@@ -271,7 +367,7 @@ func TestUninstallsMsix(t *testing.T) {
 	}()
 
 	msixUninstalls := []string{"TestMsixUninstall"}
-	Uninstalls(msixUninstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Uninstalls(msixUninstalls, testCatalogs, testRunner)
 
 	expectedItems := msixUninstalls
 	matchItems := reflect.DeepEqual(expectedItems, actualUninstalledItems)
@@ -287,7 +383,7 @@ func TestInstalls(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Installs` with test data
-	Installs(testInstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Installs(testInstalls, testCatalogs, testRunner)
 
 	// Define what we expect to be in the list of installed items
 	// This ends up being the testInstalls slice *PLUS any dependencies*
@@ -302,6 +398,168 @@ func TestInstalls(t *testing.T) {
 	}
 }
 
+// TestInstallsContinuePastFailure verifies Munki semantics: an item failure
+// is logged and the run continues to the remaining items (K1), while a
+// dependent of a failed dependency is skipped and recorded (K4)
+func TestInstallsContinuePastFailure(t *testing.T) {
+	// Override the install function with one that always fails
+	installerInstall = func(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
+		actualInstalledItems = append(actualInstalledItems, item.DisplayName)
+		return "", errors.New("action failed")
+	}
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	// Run `Installs` with test data
+	r := &installer.Runner{Report: report.New()}
+	Installs(testInstalls, testCatalogs, r)
+
+	// Every independent item must still have been attempted despite the
+	// failures; Chocolatey is skipped because its dependency TestUpdate1 failed
+	expectedItems := []string{"TestUpdate1", "GoogleChrome", "TestInstall1", "TestInstall2"}
+	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
+		t.Errorf("\nExpected: %#v\nActual: %#v", expectedItems, actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{"Chocolatey": "dependency TestUpdate1 failed"})
+}
+
+// assertFailedItems checks that the report contains exactly the expected
+// failed items, each recorded once with the expected error
+func assertFailedItems(t *testing.T, r *installer.Runner, expected map[string]string) {
+	t.Helper()
+	actual := make(map[string]string)
+	for _, failed := range r.Report.FailedItems {
+		if _, dup := actual[failed.Name]; dup {
+			t.Errorf("item recorded in FailedItems more than once: %v", failed.Name)
+		}
+		actual[failed.Name] = failed.Error
+	}
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("FailedItems\nExpected: %#v\nActual: %#v", expected, actual)
+	}
+}
+
+// TestInstallsDependencyChain verifies that transitive dependencies install
+// depth-first before their dependents (K4)
+func TestInstallsDependencyChain(t *testing.T) {
+	installerInstall = fakeInstall
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"ChainA"}, testCatalogs, r)
+
+	expectedItems := []string{"ChainC", "ChainB", "ChainA"}
+	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
+		t.Errorf("\nExpected: %#v\nActual: %#v", expectedItems, actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{})
+}
+
+// TestInstallsSharedDependency verifies that a dependency shared by two
+// dependents is only processed once per run (K4)
+func TestInstallsSharedDependency(t *testing.T) {
+	installerInstall = fakeInstall
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"DiamondA"}, testCatalogs, r)
+
+	expectedItems := []string{"DiamondD", "DiamondB", "DiamondC", "DiamondA"}
+	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
+		t.Errorf("\nExpected: %#v\nActual: %#v", expectedItems, actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{})
+}
+
+// TestInstallsDependencyCycle verifies that a dependency cycle is detected,
+// the cycled items are recorded as failed and skipped, and the run continues
+// to other items (K4)
+func TestInstallsDependencyCycle(t *testing.T) {
+	installerInstall = fakeInstall
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"CycleA", "GoogleChrome"}, testCatalogs, r)
+
+	// Neither cycled item installs; the run continues to GoogleChrome
+	expectedItems := []string{"GoogleChrome"}
+	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
+		t.Errorf("\nExpected: %#v\nActual: %#v", expectedItems, actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{
+		"CycleA": "dependency cycle detected",
+		"CycleB": "dependency CycleA failed",
+	})
+}
+
+// TestInstallsFailedDependencyBlocksDependent verifies that a dependency whose
+// install fails causes its dependent to be skipped and recorded, while
+// independent items are still processed (K4)
+func TestInstallsFailedDependencyBlocksDependent(t *testing.T) {
+	installerInstall = func(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
+		actualInstalledItems = append(actualInstalledItems, item.DisplayName)
+		if item.DisplayName == "FailingDep" {
+			return "", errors.New("action failed")
+		}
+		return "", nil
+	}
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"NeedsFailing", "GoogleChrome"}, testCatalogs, r)
+
+	// FailingDep is attempted; NeedsFailing is skipped; GoogleChrome still runs
+	expectedItems := []string{"FailingDep", "GoogleChrome"}
+	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
+		t.Errorf("\nExpected: %#v\nActual: %#v", expectedItems, actualInstalledItems)
+	}
+	// Only the skipped dependent is recorded here; the real installer records
+	// the failing item itself
+	assertFailedItems(t, r, map[string]string{"NeedsFailing": "dependency FailingDep failed"})
+}
+
+// TestInstallsMissingDependencyBlocksDependent verifies that a dependency
+// missing from all catalogs is recorded as failed and its dependent is
+// skipped and recorded (K4)
+func TestInstallsMissingDependencyBlocksDependent(t *testing.T) {
+	installerInstall = fakeInstall
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"NeedsMissing"}, testCatalogs, r)
+
+	if len(actualInstalledItems) != 0 {
+		t.Errorf("\nExpected no installs\nActual: %#v", actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{
+		"MissingDep":   "not found or invalid in any catalog",
+		"NeedsMissing": "dependency MissingDep failed",
+	})
+}
+
 // TestUninstalls tests if uninstall items are processed correctly
 func TestUninstalls(t *testing.T) {
 	// Override the install function to use our fake function
@@ -309,7 +567,7 @@ func TestUninstalls(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Uninstalls` with test data
-	Uninstalls(testUninstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Uninstalls(testUninstalls, testCatalogs, testRunner)
 
 	// Define what we expect to be in the list of uninstalled items
 	expectedItems := testUninstalls
@@ -330,7 +588,7 @@ func TestUpdates(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Updates` with test data
-	Updates(testUpdates, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Updates(testUpdates, testCatalogs, testRunner)
 
 	// Define what we expect to be in the list of updated items
 	expectedItems := testUpdates
@@ -398,24 +656,24 @@ func TestCleanUp(t *testing.T) {
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualInstalledItems`
-func fakeInstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) string {
+func fakeInstall(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualInstalledItems = append(actualInstalledItems, item.DisplayName)
-	return ""
+	return "", nil
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualUninstalledItems`
-func fakeUninstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) string {
+func fakeUninstall(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualUninstalledItems = append(actualUninstalledItems, item.DisplayName)
-	return ""
+	return "", nil
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualUpdatedItems`
-func fakeUpdate(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) string {
+func fakeUpdate(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualUpdatedItems = append(actualUpdatedItems, item.DisplayName)
-	return ""
+	return "", nil
 }
 
 // Mock `os.Remove` so we dont delete files during testing
