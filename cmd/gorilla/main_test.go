@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/1dustindavis/gorilla/pkg/admin"
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"github.com/1dustindavis/gorilla/pkg/report"
@@ -20,6 +21,7 @@ func resetMainHooks() {
 	mkdirAllFunc = os.MkdirAll
 	buildCatalogsFunc = admin.BuildCatalogs
 	importItemFunc = admin.ImportItem
+	newReportFunc = report.New
 	managedRunFunc = managedRun
 	runServiceFunc = func(cfg config.Configuration) error { return service.Run(cfg, managedRunFunc) }
 	sendServiceCommandFunc = service.SendCommand
@@ -189,15 +191,12 @@ func TestManagedRunFinalizesReportOnManifestError(t *testing.T) {
 		Manifest:    "missing-manifest",
 	}
 
-	report.Items = make(map[string]interface{})
-	report.InstalledItems = nil
-	report.UninstalledItems = nil
-	t.Cleanup(func() {
-		gorillalog.Close()
-		report.Items = make(map[string]interface{})
-		report.InstalledItems = nil
-		report.UninstalledItems = nil
-	})
+	var captured *report.Report
+	newReportFunc = func() *report.Report {
+		captured = report.New()
+		return captured
+	}
+	t.Cleanup(gorillalog.Close)
 
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return nil }
@@ -207,8 +206,59 @@ func TestManagedRunFinalizesReportOnManifestError(t *testing.T) {
 		t.Fatalf("expected error from manifest retrieval")
 	}
 
-	if _, ok := report.Items["EndTime"]; !ok {
+	if captured == nil {
+		t.Fatalf("expected managedRun to build a run report")
+	}
+	if _, ok := captured.Items["EndTime"]; !ok {
 		t.Fatalf("expected report EndTime to be set on manifest retrieval failure")
+	}
+}
+
+// TestManagedRunStateIsRunScoped verifies that each managedRun builds a fresh
+// report, so a second run in the same process (service pipe `run` actions)
+// does not contain the previous run's items (K7)
+func TestManagedRunStateIsRunScoped(t *testing.T) {
+	resetMainHooks()
+	defer resetMainHooks()
+
+	cfg := config.Configuration{
+		CheckOnly:   false,
+		CachePath:   t.TempDir(),
+		AppDataPath: t.TempDir(),
+		URL:         "http://127.0.0.1:1/",
+		Manifest:    "missing-manifest",
+	}
+
+	var reports []*report.Report
+	newReportFunc = func() *report.Report {
+		r := report.New()
+		reports = append(reports, r)
+		return r
+	}
+	t.Cleanup(gorillalog.Close)
+
+	adminCheckFunc = func() (bool, error) { return true, nil }
+	mkdirAllFunc = func(path string, mode os.FileMode) error { return nil }
+
+	// Run 1 fails at manifest retrieval; simulate items recorded during it
+	if err := managedRun(cfg); err == nil {
+		t.Fatalf("expected error from manifest retrieval")
+	}
+	reports[0].InstalledItems = append(reports[0].InstalledItems, catalog.Item{DisplayName: "run1-item"})
+	reports[0].FailedItems = append(reports[0].FailedItems, report.FailedItem{Name: "run1-failure"})
+
+	// Run 2 must build fresh state that shares nothing with run 1
+	if err := managedRun(cfg); err == nil {
+		t.Fatalf("expected error from manifest retrieval")
+	}
+	if len(reports) != 2 {
+		t.Fatalf("expected 2 run reports, got %d", len(reports))
+	}
+	if reports[1] == reports[0] {
+		t.Fatalf("managedRun reused the previous run's report (K7)")
+	}
+	if len(reports[1].InstalledItems) != 0 || len(reports[1].FailedItems) != 0 {
+		t.Errorf("run 2 report contains run 1 items (K7): %#v", reports[1])
 	}
 }
 

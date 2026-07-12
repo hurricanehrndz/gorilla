@@ -113,19 +113,19 @@ func Manifests(manifests []manifest.Item, catalogsMap map[int]map[string]catalog
 }
 
 // This abstraction allows us to override when testing
-var installerInstall = installer.Install
+var installerInstall = (*installer.Runner).Install
 
 // installOne runs a single item action and logs failures; the run continues
 // past item failures (Munki semantics) — the installer already recorded the
 // failure in the report.
-func installOne(item catalog.Item, installerType, urlPackages, cachePath string, checkOnly bool) {
-	if _, err := installerInstall(item, installerType, urlPackages, cachePath, checkOnly); err != nil {
+func installOne(r *installer.Runner, item catalog.Item, installerType string) {
+	if _, err := installerInstall(r, item, installerType); err != nil {
 		slog.Warn("item action failed", "item", item.DisplayName, "err", err)
 	}
 }
 
 // Installs prepares and then installs an array of items
-func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, urlPackages, cachePath string, CheckOnly bool) {
+func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner) {
 	// Iterate through the installs array, install dependencies, and then the item itself
 	for _, item := range installs {
 		// Get the first valid item from our catalogs
@@ -141,16 +141,16 @@ func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, ur
 				if !ok {
 					continue
 				}
-				installOne(validDependency, "install", urlPackages, cachePath, CheckOnly)
+				installOne(r, validDependency, "install")
 			}
 		}
 		// Install the item
-		installOne(validItem, "install", urlPackages, cachePath, CheckOnly)
+		installOne(r, validItem, "install")
 	}
 }
 
 // Uninstalls prepares and then installs an array of items
-func Uninstalls(uninstalls []string, catalogsMap map[int]map[string]catalog.Item, urlPackages, cachePath string, CheckOnly bool) {
+func Uninstalls(uninstalls []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner) {
 	// Iterate through the uninstalls array and uninstall the item
 	for _, item := range uninstalls {
 		// Get the first valid item from our catalogs
@@ -160,12 +160,12 @@ func Uninstalls(uninstalls []string, catalogsMap map[int]map[string]catalog.Item
 			continue
 		}
 		// Uninstall the item
-		installOne(validItem, "uninstall", urlPackages, cachePath, CheckOnly)
+		installOne(r, validItem, "uninstall")
 	}
 }
 
 // Updates prepares and then installs an array of items
-func Updates(updates []string, catalogsMap map[int]map[string]catalog.Item, urlPackages, cachePath string, CheckOnly bool) {
+func Updates(updates []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner) {
 	// Iterate through the updates array and update the item **if it is already installed**
 	for _, item := range updates {
 		// Get the first valid item from our catalogs
@@ -175,7 +175,7 @@ func Updates(updates []string, catalogsMap map[int]map[string]catalog.Item, urlP
 			continue
 		}
 		// Update the item
-		installOne(validItem, "update", urlPackages, cachePath, CheckOnly)
+		installOne(r, validItem, "update")
 	}
 }
 

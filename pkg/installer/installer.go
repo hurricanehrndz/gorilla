@@ -22,8 +22,22 @@ import (
 // item: `downloading`, `installing`/`removing`, `done`/`failed`.
 type ProgressFn func(item catalog.Item, state string, percent int, message string)
 
-// Progress is the package-level progress sink; default is a no-op.
-var Progress ProgressFn = func(catalog.Item, string, int, string) {}
+// Runner is the run-scoped install context (K7: no cross-run package globals)
+type Runner struct {
+	Report      *report.Report
+	Checker     *status.Checker
+	Emit        ProgressFn // nil = no progress events
+	URLPackages string
+	CachePath   string
+	CheckOnly   bool
+}
+
+// emit sends a progress event if a sink is attached
+func (r *Runner) emit(item catalog.Item, state string, percent int, message string) {
+	if r.Emit != nil {
+		r.Emit(item, state, percent, message)
+	}
+}
 
 var (
 	// Base command for each installer type
@@ -33,7 +47,7 @@ var (
 
 	// These abstractions allows us to override when testing
 	execCommand       = exec.Command
-	statusCheckStatus = status.CheckStatus
+	statusCheckStatus = (*status.Checker).CheckStatus
 	runCommand        = runCMD
 )
 
@@ -241,9 +255,9 @@ func (nupkgInstaller) uninstallCommand(item catalog.Item, absFile string) (strin
 
 func (nupkgInstaller) uninstallNeedsFile() bool { return true }
 
-// recordFailure appends the item to report.FailedItems and returns the error.
-func recordFailure(item catalog.Item, action string, err error) error {
-	report.FailedItems = append(report.FailedItems, report.FailedItem{
+// recordFailure appends the item to the run report's FailedItems and returns the error.
+func (r *Runner) recordFailure(item catalog.Item, action string, err error) error {
+	r.Report.FailedItems = append(r.Report.FailedItems, report.FailedItem{
 		Name:    item.DisplayName,
 		Version: item.Version,
 		Action:  action,
@@ -255,7 +269,7 @@ func recordFailure(item catalog.Item, action string, err error) error {
 // actionItem is the shared execution path for installs and uninstalls:
 // download if needed, build the type-specific command, run it, and record the
 // honest result in the report.
-func actionItem(item catalog.Item, itemURL, cachePath, action string) (string, error) {
+func (r *Runner) actionItem(item catalog.Item, itemURL, action string) (string, error) {
 	var installerItem catalog.InstallerItem
 	var state, verb string
 	if action == "uninstall" {
@@ -273,8 +287,8 @@ func actionItem(item catalog.Item, itemURL, cachePath, action string) (string, e
 	impl, ok := typeInstallers[installerItem.Type]
 	if !ok {
 		err := fmt.Errorf("unsupported %ser type %q for %s", action, installerItem.Type, item.DisplayName)
-		Progress(item, "failed", 0, err.Error())
-		return "", recordFailure(item, action, err)
+		r.emit(item, "failed", 0, err.Error())
+		return "", r.recordFailure(item, action, err)
 	}
 
 	// Download the item if this action needs the file on disk
@@ -282,13 +296,13 @@ func actionItem(item catalog.Item, itemURL, cachePath, action string) (string, e
 	percent := 0
 	if action == "install" || impl.uninstallNeedsFile() {
 		relPath, fileName := path.Split(installerItem.Location)
-		absFile = filepath.Join(cachePath, relPath, fileName)
-		Progress(item, "downloading", percent, itemURL)
+		absFile = filepath.Join(r.CachePath, relPath, fileName)
+		r.emit(item, "downloading", percent, itemURL)
 		if valid := download.IfNeeded(absFile, itemURL, installerItem.Hash); !valid {
 			err := fmt.Errorf("unable to download valid file: %s", itemURL)
 			slog.Warn("Unable to download valid file", "item", item.DisplayName, "err", err)
-			Progress(item, "failed", percent, err.Error())
-			return "", recordFailure(item, action, err)
+			r.emit(item, "failed", percent, err.Error())
+			return "", r.recordFailure(item, action, err)
 		}
 		percent = 50
 	}
@@ -304,38 +318,38 @@ func actionItem(item catalog.Item, itemURL, cachePath, action string) (string, e
 	}
 	if err != nil {
 		slog.Warn("Unable to build command", "item", item.DisplayName, "installerType", installerItem.Type, "err", err)
-		Progress(item, "failed", percent, err.Error())
-		return "", recordFailure(item, action, err)
+		r.emit(item, "failed", percent, err.Error())
+		return "", r.recordFailure(item, action, err)
 	}
 
 	// Run the command
-	Progress(item, state, percent, item.DisplayName)
+	r.emit(item, state, percent, item.DisplayName)
 	slog.Info(verb+"ing", "item", item.DisplayName, "version", item.Version, "installerType", installerItem.Type)
 	out, err := runCommand(cmd, args)
 	if err != nil {
 		slog.Warn(verb+"ation FAILED", "item", item.DisplayName, "version", item.Version, "result", "error", "err", err)
-		Progress(item, "failed", percent, err.Error())
-		return out, recordFailure(item, action, err)
+		r.emit(item, "failed", percent, err.Error())
+		return out, r.recordFailure(item, action, err)
 	}
 	slog.Info(verb+"ation SUCCESSFUL", "item", item.DisplayName, "version", item.Version, "result", "success")
 
 	// Add the item to the report only after the command succeeded
 	if action == "uninstall" {
-		report.UninstalledItems = append(report.UninstalledItems, item)
+		r.Report.UninstalledItems = append(r.Report.UninstalledItems, item)
 	} else {
-		report.InstalledItems = append(report.InstalledItems, item)
+		r.Report.InstalledItems = append(r.Report.InstalledItems, item)
 	}
-	Progress(item, "done", 100, "")
+	r.emit(item, "done", 100, "")
 
 	return out, nil
 }
 
-func installItem(item catalog.Item, itemURL, cachePath string) (string, error) {
-	return actionItem(item, itemURL, cachePath, "install")
+func (r *Runner) installItem(item catalog.Item, itemURL string) (string, error) {
+	return r.actionItem(item, itemURL, "install")
 }
 
-func uninstallItem(item catalog.Item, itemURL, cachePath string) (string, error) {
-	return actionItem(item, itemURL, cachePath, "uninstall")
+func (r *Runner) uninstallItem(item catalog.Item, itemURL string) (string, error) {
+	return r.actionItem(item, itemURL, "uninstall")
 }
 
 // runScript writes the script to a unique temporary .ps1 under cachePath,
@@ -381,15 +395,15 @@ func runScript(script, kind, cachePath string) error {
 
 var (
 	// By putting the functions in a variable, we can override later in tests
-	installItemFunc   = installItem
-	uninstallItemFunc = uninstallItem
+	installItemFunc   = (*Runner).installItem
+	uninstallItemFunc = (*Runner).uninstallItem
 )
 
 // Install determines if action needs to be taken on a item and then
 // calls the appropriate function to install or uninstall
-func Install(item catalog.Item, installerType, urlPackages, cachePath string, checkOnly bool) (string, error) {
+func (r *Runner) Install(item catalog.Item, installerType string) (string, error) {
 	// Check the status and determine if any action is needed for this item
-	actionNeeded, err := statusCheckStatus(item, installerType, cachePath)
+	actionNeeded, err := statusCheckStatus(r.Checker, item, installerType, r.CachePath)
 	if err != nil {
 		return "", fmt.Errorf("unable to check status: %w", err)
 	}
@@ -403,26 +417,26 @@ func Install(item catalog.Item, installerType, urlPackages, cachePath string, ch
 	switch installerType {
 	case "install", "update":
 		// Check if checkonly mode is enabled
-		if checkOnly {
-			report.InstalledItems = append(report.InstalledItems, item)
+		if r.CheckOnly {
+			r.Report.InstalledItems = append(r.Report.InstalledItems, item)
 			slog.Info("[CHECK ONLY] Skipping actions", "item", item.DisplayName)
 			// Check only mode doesn't perform any action, return
 			return "Check only enabled", nil
 		}
 
 		// Compile the item's URL
-		itemURL := urlPackages + item.Installer.Location
+		itemURL := r.URLPackages + item.Installer.Location
 
 		// Run PreInstall_Script if needed
 		if item.PreScript != "" {
 			slog.Info("Running Pre-Install script", "item", item.DisplayName)
-			if err := runScript(item.PreScript, "preinstall", cachePath); err != nil {
-				return "", recordFailure(item, "install", fmt.Errorf("pre-install script error: %w", err))
+			if err := runScript(item.PreScript, "preinstall", r.CachePath); err != nil {
+				return "", r.recordFailure(item, "install", fmt.Errorf("pre-install script error: %w", err))
 			}
 		}
 
 		// Run the installer
-		out, err := installItemFunc(item, itemURL, cachePath)
+		out, err := installItemFunc(r, item, itemURL)
 		if err != nil {
 			return out, err
 		}
@@ -430,25 +444,25 @@ func Install(item catalog.Item, installerType, urlPackages, cachePath string, ch
 		// Run PostInstall_Script if needed
 		if item.PostScript != "" {
 			slog.Info("Running Post-Install script", "item", item.DisplayName)
-			if err := runScript(item.PostScript, "postinstall", cachePath); err != nil {
-				return out, recordFailure(item, "install", fmt.Errorf("post-install script error: %w", err))
+			if err := runScript(item.PostScript, "postinstall", r.CachePath); err != nil {
+				return out, r.recordFailure(item, "install", fmt.Errorf("post-install script error: %w", err))
 			}
 		}
 		return out, nil
 
 	case "uninstall":
-		if checkOnly {
-			report.InstalledItems = append(report.InstalledItems, item)
+		if r.CheckOnly {
+			r.Report.InstalledItems = append(r.Report.InstalledItems, item)
 			slog.Info("[CHECK ONLY] Skipping actions", "item", item.DisplayName)
 			// Check only mode doesn't perform any action, return
 			return "Check only enabled", nil
 		}
 
 		// Compile the item's URL
-		itemURL := urlPackages + item.Uninstaller.Location
+		itemURL := r.URLPackages + item.Uninstaller.Location
 
 		// Run the uninstaller
-		return uninstallItemFunc(item, itemURL, cachePath)
+		return uninstallItemFunc(r, item, itemURL)
 
 	default:
 		return "", fmt.Errorf("unsupported item type %q for %s", installerType, item.DisplayName)

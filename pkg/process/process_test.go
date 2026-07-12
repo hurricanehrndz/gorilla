@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
 )
 
@@ -134,8 +135,8 @@ var (
 		},
 	}}
 
-	// CheckOnly flag disabled for testing
-	checkOnlyMode bool = false
+	// A run context for tests; the install function itself is faked
+	testRunner = &installer.Runner{URLPackages: "URLPackages", CachePath: "CachePath"}
 
 	// Arrays of the test items
 	testInstalls   = []string{"Chocolatey", "GoogleChrome", "TestInstall1", "TestInstall2"}
@@ -254,7 +255,7 @@ func TestUninstallsMsixInferredFromInstaller(t *testing.T) {
 	}()
 
 	msixUninstalls := []string{"TestMsixInstallOnly"}
-	Uninstalls(msixUninstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Uninstalls(msixUninstalls, testCatalogs, testRunner)
 
 	expectedItems := msixUninstalls
 	matchItems := reflect.DeepEqual(expectedItems, actualUninstalledItems)
@@ -272,7 +273,7 @@ func TestUninstallsMsix(t *testing.T) {
 	}()
 
 	msixUninstalls := []string{"TestMsixUninstall"}
-	Uninstalls(msixUninstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Uninstalls(msixUninstalls, testCatalogs, testRunner)
 
 	expectedItems := msixUninstalls
 	matchItems := reflect.DeepEqual(expectedItems, actualUninstalledItems)
@@ -288,7 +289,7 @@ func TestInstalls(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Installs` with test data
-	Installs(testInstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Installs(testInstalls, testCatalogs, testRunner)
 
 	// Define what we expect to be in the list of installed items
 	// This ends up being the testInstalls slice *PLUS any dependencies*
@@ -307,7 +308,7 @@ func TestInstalls(t *testing.T) {
 // is logged and the run continues to the remaining items (K1)
 func TestInstallsContinuePastFailure(t *testing.T) {
 	// Override the install function with one that always fails
-	installerInstall = func(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
+	installerInstall = func(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 		actualInstalledItems = append(actualInstalledItems, item.DisplayName)
 		return "", errors.New("action failed")
 	}
@@ -318,7 +319,7 @@ func TestInstallsContinuePastFailure(t *testing.T) {
 	}()
 
 	// Run `Installs` with test data
-	Installs(testInstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Installs(testInstalls, testCatalogs, testRunner)
 
 	// Every item must still have been attempted despite the failures
 	expectedItems := append([]string{"TestUpdate1"}, testInstalls...)
@@ -334,7 +335,7 @@ func TestUninstalls(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Uninstalls` with test data
-	Uninstalls(testUninstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Uninstalls(testUninstalls, testCatalogs, testRunner)
 
 	// Define what we expect to be in the list of uninstalled items
 	expectedItems := testUninstalls
@@ -355,7 +356,7 @@ func TestUpdates(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Updates` with test data
-	Updates(testUpdates, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+	Updates(testUpdates, testCatalogs, testRunner)
 
 	// Define what we expect to be in the list of updated items
 	expectedItems := testUpdates
@@ -423,21 +424,21 @@ func TestCleanUp(t *testing.T) {
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualInstalledItems`
-func fakeInstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
+func fakeInstall(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualInstalledItems = append(actualInstalledItems, item.DisplayName)
 	return "", nil
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualUninstalledItems`
-func fakeUninstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
+func fakeUninstall(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualUninstalledItems = append(actualUninstalledItems, item.DisplayName)
 	return "", nil
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualUpdatedItems`
-func fakeUpdate(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
+func fakeUpdate(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualUpdatedItems = append(actualUpdatedItems, item.DisplayName)
 	return "", nil

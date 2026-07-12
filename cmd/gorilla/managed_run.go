@@ -12,9 +12,11 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
 	"github.com/1dustindavis/gorilla/pkg/process"
 	"github.com/1dustindavis/gorilla/pkg/report"
+	"github.com/1dustindavis/gorilla/pkg/status"
 )
 
 var (
@@ -22,6 +24,7 @@ var (
 	mkdirAllFunc      = os.MkdirAll
 	buildCatalogsFunc = admin.BuildCatalogs
 	importItemFunc    = admin.ImportItem
+	newReportFunc     = report.New
 )
 
 func managedRun(cfg config.Configuration) error {
@@ -65,10 +68,15 @@ func managedRun(cfg config.Configuration) error {
 		return nil
 	}
 
+	// Build the run-scoped state: report + status checker (K7)
+	run := newReportFunc()
+	run.Items["Manifest"] = cfg.Manifest
+	run.Items["Catalog"] = cfg.Catalogs
+
 	// Start creating GorillaReport
 	if !cfg.CheckOnly {
-		report.Start()
-		defer report.End()
+		run.Start()
+		defer run.End()
 	}
 
 	// Set the configuration that `download` will use
@@ -97,22 +105,31 @@ func managedRun(cfg config.Configuration) error {
 	slog.Info("Processing manifest...")
 	installs, uninstalls, updates := process.Manifests(manifests, catalogs)
 
+	// Build the run-scoped installer context (K7)
+	runner := &installer.Runner{
+		Report:      run,
+		Checker:     &status.Checker{},
+		URLPackages: cfg.URLPackages,
+		CachePath:   cfg.CachePath,
+		CheckOnly:   cfg.CheckOnly,
+	}
+
 	// Prepare and install
 	slog.Info("Processing managed installs...")
-	process.Installs(installs, catalogs, cfg.URLPackages, cfg.CachePath, cfg.CheckOnly)
+	process.Installs(installs, catalogs, runner)
 
 	// Prepare and uninstall
 	slog.Info("Processing managed uninstalls...")
-	process.Uninstalls(uninstalls, catalogs, cfg.URLPackages, cfg.CachePath, cfg.CheckOnly)
+	process.Uninstalls(uninstalls, catalogs, runner)
 
 	// Prepare and update
 	slog.Info("Processing managed updates...")
-	process.Updates(updates, catalogs, cfg.URLPackages, cfg.CachePath, cfg.CheckOnly)
+	process.Updates(updates, catalogs, runner)
 
 	// Save GorillaReport to disk
 	slog.Info("Saving GorillaReport.json...")
 	if cfg.CheckOnly {
-		report.Print()
+		run.Print()
 	}
 
 	// Run CleanUp to delete old cached items and empty directories

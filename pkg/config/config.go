@@ -8,7 +8,6 @@ import (
 
 	"go.yaml.in/yaml/v4"
 
-	"github.com/1dustindavis/gorilla/pkg/report"
 	"github.com/1dustindavis/gorilla/pkg/version"
 )
 
@@ -268,10 +267,6 @@ func Get() Configuration {
 	} else {
 		cfg.RepoPath = filepath.Clean(cfg.RepoPath)
 	}
-
-	// Add to GorillaReport
-	report.Items["Manifest"] = cfg.Manifest
-	report.Items["Catalog"] = cfg.Catalogs
 
 	// Configure service defaults.
 	if cfg.ServiceName == "" {

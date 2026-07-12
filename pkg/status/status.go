@@ -35,16 +35,18 @@ type WindowsMetadata struct {
 	versionBuild  int
 }
 
-var (
-	// RegistryItems contains the status of all of the applications in the registry
-	RegistryItems map[string]RegistryApplication
+// Abstracted functions so we can override these in unit tests
+var execCommand = exec.Command
 
-	// Abstracted functions so we can override these in unit tests
-	execCommand = exec.Command
-)
+// Checker holds the run-scoped status state (K7: no cross-run package globals)
+type Checker struct {
+	// registryItems caches the applications found in the registry,
+	// lazily populated on first registry check
+	registryItems map[string]RegistryApplication
+}
 
 // checkRegistry iterates through the local registry and compiles all installed software
-func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded bool, checkErr error) {
+func (c *Checker) checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded bool, checkErr error) {
 	// Iterate through the reg keys to compare with the catalog
 	checkReg := catalogItem.Check.Registry
 	catalogVersion, err := version.NewVersion(checkReg.Version)
@@ -54,13 +56,13 @@ func checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded b
 
 	slog.Debug("Check registry version", "version", checkReg.Version)
 	// If needed, populate applications status from the registry
-	if len(RegistryItems) == 0 {
-		RegistryItems, checkErr = getUninstallKeys()
+	if len(c.registryItems) == 0 {
+		c.registryItems, checkErr = getUninstallKeys()
 	}
 
 	var installed bool
 	var versionMatch bool
-	for _, regItem := range RegistryItems {
+	for _, regItem := range c.registryItems {
 		// Check if the catalog name matches the registry name (K2: exact match, not substring)
 		if !strings.EqualFold(strings.TrimSpace(regItem.Name), strings.TrimSpace(checkReg.Name)) {
 			continue
@@ -304,7 +306,7 @@ func checkAppx(catalogItem catalog.Item, installType string) (actionNeeded bool,
 }
 
 // CheckStatus determines the method for checking status
-func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actionNeeded bool, checkErr error) {
+func (c *Checker) CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actionNeeded bool, checkErr error) {
 	if catalogItem.Check.Script != "" {
 		slog.Info("Checking status via script", "item", catalogItem.DisplayName)
 		return checkScript(catalogItem, cachePath, installType)
@@ -315,7 +317,7 @@ func CheckStatus(catalogItem catalog.Item, installType, cachePath string) (actio
 
 	} else if catalogItem.Check.Registry.Version != "" {
 		slog.Info("Checking status via registry", "item", catalogItem.DisplayName)
-		return checkRegistry(catalogItem, installType)
+		return c.checkRegistry(catalogItem, installType)
 
 	} else if catalogItem.Check.Appx.Name != "" {
 		slog.Info("Checking status via appx", "item", catalogItem.DisplayName)

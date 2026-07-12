@@ -15,8 +15,7 @@ import (
 
 var (
 	// store original data to restore after each test
-	origExec          = execCommand
-	origRegistryItems = RegistryItems
+	origExec = execCommand
 
 	// Temp directory for logging
 	logTmp, _ = os.MkdirTemp("", "gorilla-status_test")
@@ -240,31 +239,28 @@ func TestHelperProcessAppx(t *testing.T) {
 
 // TestCheckRegistry validates that the registry entries are checked properly
 func TestCheckRegistry(t *testing.T) {
-	// Override execCommand with our fake version
-	RegistryItems = fakeRegistryItems
-	defer func() {
-		RegistryItems = origRegistryItems
-	}()
+	// Seed a run-scoped checker with our fake registry items
+	c := &Checker{registryItems: fakeRegistryItems}
 
 	// install
 
 	// Run checkRegistry with `registryCheckItem` as an `install`
 	// We expect no action needed; Only error if action needed is true
-	actionNeeded, _ := checkRegistry(registryCheckItem, "install")
+	actionNeeded, _ := c.checkRegistry(registryCheckItem, "install")
 	if actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return false", actionNeeded)
 	}
 
 	// Run checkRegistry with `registryCheckItemNotInstalled` as an `install`
 	// We expect action is needed; Only error if action needed is false
-	actionNeeded, _ = checkRegistry(registryCheckItemNotInstalled, "install")
+	actionNeeded, _ = c.checkRegistry(registryCheckItemNotInstalled, "install")
 	if !actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return true", actionNeeded)
 	}
 
 	// Run checkRegistry with `registryCheckItemOutdated` as an `install`
 	// We expect action is needed; Only error if action needed is false
-	actionNeeded, _ = checkRegistry(registryCheckItemOutdated, "install")
+	actionNeeded, _ = c.checkRegistry(registryCheckItemOutdated, "install")
 	if !actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return true", actionNeeded)
 	}
@@ -273,14 +269,14 @@ func TestCheckRegistry(t *testing.T) {
 
 	// Run checkRegistry with `registryCheckItem` as an `uninstall`
 	// We expect action is needed; Only error if action needed is false
-	actionNeeded, _ = checkRegistry(registryCheckItem, "uninstall")
+	actionNeeded, _ = c.checkRegistry(registryCheckItem, "uninstall")
 	if !actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return true", actionNeeded)
 	}
 
 	// Run checkRegistry with `registryCheckItemNotInstalled` as an `uninstall`
 	// We expect no action needed; Only error if action needed is true
-	actionNeeded, _ = checkRegistry(registryCheckItemNotInstalled, "uninstall")
+	actionNeeded, _ = c.checkRegistry(registryCheckItemNotInstalled, "uninstall")
 	if actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return false", actionNeeded)
 	}
@@ -289,23 +285,43 @@ func TestCheckRegistry(t *testing.T) {
 
 	// Run checkRegistry with `registryCheckItem` as an `update`
 	// We expect no action needed; Only error if action needed is true
-	actionNeeded, _ = checkRegistry(registryCheckItem, "update")
+	actionNeeded, _ = c.checkRegistry(registryCheckItem, "update")
 	if actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return false", actionNeeded)
 	}
 
 	// Run checkRegistry with `registryCheckItemNotInstalled` as an `update`
 	// We expect no action needed; Only error if action needed is true
-	actionNeeded, _ = checkRegistry(registryCheckItemNotInstalled, "update")
+	actionNeeded, _ = c.checkRegistry(registryCheckItemNotInstalled, "update")
 	if actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return false", actionNeeded)
 	}
 
 	// Run checkRegistry with `registryCheckItemOutdated` as an `update`
 	// We expect action is needed; Only error if action needed is false
-	actionNeeded, _ = checkRegistry(registryCheckItemOutdated, "update")
+	actionNeeded, _ = c.checkRegistry(registryCheckItemOutdated, "update")
 	if !actionNeeded {
 		t.Errorf("actionNeeded: %v; Expected checkRegistry to return true", actionNeeded)
+	}
+}
+
+// TestCheckerCacheIsRunScoped validates that the registry cache lives on the
+// Checker, so a fresh Checker for the next run re-populates instead of
+// reusing the previous run's registry snapshot (K7)
+func TestCheckerCacheIsRunScoped(t *testing.T) {
+	// Run 1: checker seeded with an installed item
+	run1 := &Checker{registryItems: fakeRegistryItems}
+	actionNeeded, _ := run1.checkRegistry(registryCheckItem, "uninstall")
+	if !actionNeeded {
+		t.Fatalf("expected run 1 to see the item as installed")
+	}
+
+	// Run 2: a fresh checker must not see run 1's cache; it re-populates from
+	// getUninstallKeys (empty on this platform), so the item is not installed
+	run2 := &Checker{}
+	actionNeeded, _ = run2.checkRegistry(registryCheckItem, "uninstall")
+	if actionNeeded {
+		t.Errorf("fresh Checker reused a previous run's registry cache (K7)")
 	}
 }
 
@@ -313,10 +329,6 @@ func TestCheckRegistry(t *testing.T) {
 // against defects K2 (substring name matches) and K3 (first-hit break and
 // nil-version panic), plus the install/update/uninstall decision table.
 func TestCheckRegistryMatching(t *testing.T) {
-	defer func() {
-		RegistryItems = origRegistryItems
-	}()
-
 	regCheckItem := func(name, version string) catalog.Item {
 		return catalog.Item{
 			Check: catalog.InstallCheck{
@@ -455,8 +467,8 @@ func TestCheckRegistryMatching(t *testing.T) {
 	// Repeat the table to shake out any dependence on map iteration order (K3)
 	for i := 0; i < 20; i++ {
 		for _, tt := range tests {
-			RegistryItems = tt.registry
-			actionNeeded, _ := checkRegistry(tt.item, tt.installType)
+			c := &Checker{registryItems: tt.registry}
+			actionNeeded, _ := c.checkRegistry(tt.item, tt.installType)
 			if actionNeeded != tt.want {
 				t.Errorf("%s: actionNeeded: %v; Expected checkRegistry to return %v", tt.desc, actionNeeded, tt.want)
 			}
@@ -653,7 +665,7 @@ func TestCheckStatusScript(t *testing.T) {
 	console := captureConsole(t)
 
 	// Run CheckStatus with an item that has a script check
-	CheckStatus(scriptCheckItem, "install", "testdata/")
+	_, _ = (&Checker{}).CheckStatus(scriptCheckItem, "install", "testdata/")
 
 	if want := `msg="Checking status via script" item=scriptCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
@@ -668,7 +680,7 @@ func TestCheckStatusFile(t *testing.T) {
 	console := captureConsole(t)
 
 	// Run CheckStatus with an item that has a file check
-	CheckStatus(fileCheckItem, "install", "testdata/")
+	_, _ = (&Checker{}).CheckStatus(fileCheckItem, "install", "testdata/")
 
 	if want := `msg="Checking status via file" item=fileCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
@@ -683,7 +695,7 @@ func TestCheckStatusRegistry(t *testing.T) {
 	console := captureConsole(t)
 
 	// Run CheckStatus with an item that has a registry check
-	CheckStatus(registryCheckItem, "install", "testdata/")
+	_, _ = (&Checker{}).CheckStatus(registryCheckItem, "install", "testdata/")
 
 	if want := `msg="Checking status via registry" item=registryCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
@@ -696,7 +708,7 @@ func TestCheckStatusAppx(t *testing.T) {
 	defer func() { execCommand = origExec }()
 	console := captureConsole(t)
 
-	CheckStatus(appxCheckItem, "install", "testdata/")
+	_, _ = (&Checker{}).CheckStatus(appxCheckItem, "install", "testdata/")
 
 	if want := `msg="Checking status via appx" item=appxCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
@@ -711,7 +723,7 @@ func TestCheckStatusNone(t *testing.T) {
 	console := captureConsole(t)
 
 	// Run CheckStatus with an item that has no check data
-	CheckStatus(noCheckItem, "install", "testdata/")
+	_, _ = (&Checker{}).CheckStatus(noCheckItem, "install", "testdata/")
 
 	if want := `msg="Not enough data to check the current status" item=noCheckItem`; !strings.Contains(console.String(), want) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())

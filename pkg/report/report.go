@@ -7,6 +7,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"time"
+
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 )
 
 // FailedItem records an item whose action failed during this run
@@ -17,25 +19,31 @@ type FailedItem struct {
 	Error   string
 }
 
-var (
+// Report holds the state of a single managed run (K7: no package globals)
+type Report struct {
 	// Items contains the data we will save to GorillaReport
-	Items = make(map[string]interface{})
+	Items map[string]any
 
 	// InstalledItems contains a list of items we successfully installed
-	InstalledItems []interface{}
+	InstalledItems []catalog.Item
 
 	// UninstalledItems contains a list of items we successfully uninstalled
-	UninstalledItems []interface{}
+	UninstalledItems []catalog.Item
 
 	// FailedItems contains a list of items whose actions failed
 	FailedItems []FailedItem
+}
 
-	// fakeTime is used to override currentTime when running tests
-	fakeTime time.Time
-)
+// New returns a fresh Report for one run
+func New() *Report {
+	return &Report{Items: make(map[string]any)}
+}
+
+// fakeTime is used to override currentTime when running tests
+var fakeTime time.Time
 
 // Start adds the data we already know at the beginning of a run
-func Start() {
+func (r *Report) Start() {
 	// Get the current time
 	currentTime := time.Now().UTC()
 
@@ -45,29 +53,34 @@ func Start() {
 	}
 
 	// Add the end time to our map
-	Items["StartTime"] = fmt.Sprint(currentTime.Format("2006-01-02 15:04:05 -0700"))
+	r.Items["StartTime"] = fmt.Sprint(currentTime.Format("2006-01-02 15:04:05 -0700"))
 
 	// Store the current user
 	currentUser, userErr := user.Current()
 	if userErr != nil {
 		fmt.Println("Unable to determine current user", userErr)
 	}
-	Items["CurrentUser"] = fmt.Sprint(currentUser.Username)
+	r.Items["CurrentUser"] = fmt.Sprint(currentUser.Username)
 
 	// Store the hostname
 	hostName, hostErr := os.Hostname()
 	if hostErr != nil {
 		fmt.Println("Unable to determine current time", hostErr)
 	}
-	Items["HostName"] = fmt.Sprint(hostName)
+	r.Items["HostName"] = fmt.Sprint(hostName)
+}
+
+// compile folds the run results into the Items map
+func (r *Report) compile() {
+	r.Items["InstalledItems"] = r.InstalledItems
+	r.Items["UninstalledItems"] = r.UninstalledItems
+	r.Items["FailedItems"] = r.FailedItems
 }
 
 // End will compile everything and save to disk
-func End() {
+func (r *Report) End() {
 	// Compile everything
-	Items["InstalledItems"] = InstalledItems
-	Items["UninstalledItems"] = UninstalledItems
-	Items["FailedItems"] = FailedItems
+	r.compile()
 
 	// Get the current time
 	currentTime := time.Now().UTC()
@@ -78,10 +91,10 @@ func End() {
 	}
 
 	// Add the end time to our map
-	Items["EndTime"] = fmt.Sprint(currentTime.Format("2006-01-02 15:04:05 -0700"))
+	r.Items["EndTime"] = fmt.Sprint(currentTime.Format("2006-01-02 15:04:05 -0700"))
 
 	// Convert it all to json
-	reportJSON, marshalErr := json.Marshal(Items)
+	reportJSON, marshalErr := json.Marshal(r.Items)
 	if marshalErr != nil {
 		fmt.Println("Unable to create GorillaReport json", marshalErr)
 	}
@@ -96,13 +109,11 @@ func End() {
 
 // Print writes the report to stdout instead of writing to disk
 // Used in check only mode
-func Print() {
+func (r *Report) Print() {
 	// Compile everything
-	Items["InstalledItems"] = InstalledItems
-	Items["UninstalledItems"] = UninstalledItems
-	Items["FailedItems"] = FailedItems
+	r.compile()
 
-	reportJSON, marshalErr := json.MarshalIndent(Items, "", "    ")
+	reportJSON, marshalErr := json.MarshalIndent(r.Items, "", "    ")
 	fmt.Println(string(reportJSON))
 	if marshalErr != nil {
 		fmt.Println("Unable to create GorillaReport json", marshalErr)
