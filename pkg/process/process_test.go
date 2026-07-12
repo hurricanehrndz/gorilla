@@ -555,7 +555,7 @@ func TestInstallsMissingDependencyBlocksDependent(t *testing.T) {
 		t.Errorf("\nExpected no installs\nActual: %#v", actualInstalledItems)
 	}
 	assertFailedItems(t, r, map[string]string{
-		"MissingDep":   "not found in any catalog",
+		"MissingDep":   "not found or invalid in any catalog",
 		"NeedsMissing": "dependency MissingDep failed",
 	})
 }

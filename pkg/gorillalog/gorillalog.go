@@ -16,7 +16,6 @@ import (
 
 var (
 	logMu     sync.Mutex
-	checkonly bool
 	logWriter *lumberjack.Logger
 
 	// consoleOut is the console sink; overridable in tests.
@@ -95,7 +94,7 @@ func NewLog(cfg config.Configuration) error {
 	logMu.Lock()
 	defer logMu.Unlock()
 
-	checkonly = cfg.CheckOnly
+	checkonly := cfg.CheckOnly
 
 	consoleLevel := slog.LevelWarn
 	if cfg.Verbose {
@@ -165,7 +164,6 @@ func Close() {
 		_ = logWriter.Close()
 		logWriter = nil
 	}
-	checkonly = false
 	h := consoleHandler(nil)
 	if h == nil {
 		h = slog.DiscardHandler

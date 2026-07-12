@@ -378,7 +378,8 @@ func TestInstallStatusError(t *testing.T) {
 	// Run the msi installer with this status bypass to trigger an error
 	msiItem.DisplayName = statusActionError
 	// Run Install
-	_, err := newTestRunner().Install(msiItem, "install")
+	r := newTestRunner()
+	_, err := r.Install(msiItem, "install")
 	// Check the result
 	if err == nil {
 		t.Fatalf("expected a status check error")
@@ -386,6 +387,13 @@ func TestInstallStatusError(t *testing.T) {
 	expectedOutput := "unable to check status: testing _gorilla_dev_action_error_"
 	if have, want := err.Error(), expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
+	}
+	// The failure must also land in the report
+	if len(r.Report.FailedItems) != 1 {
+		t.Fatalf("expected 1 failed item, got %#v", r.Report.FailedItems)
+	}
+	if have := r.Report.FailedItems[0]; have.Name != statusActionError || !strings.Contains(have.Error, "unable to check status") {
+		t.Errorf("unexpected failed item entry: %#v", have)
 	}
 }
 
@@ -1004,7 +1012,7 @@ func TestRunCommandDebugOutput(t *testing.T) {
 	out := console.String()
 	for _, want := range []string{
 		`msg="Running command" command="Command Test!" args="[arg1 arg2]"`,
-		`msg="Command output" result="[Command Test! arg1 arg2]"`,
+		`msg="Command output" output="[Command Test! arg1 arg2]"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console output missing %q:\n%s", want, out)

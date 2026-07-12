@@ -136,11 +136,13 @@ const (
 
 // recordFailedItem records a gating failure (cycle, missing dep, or skipped
 // dependent) that the installer never saw and so never recorded itself.
-func recordFailedItem(r *installer.Runner, name string, err error) {
+// version may be empty when the item was never resolved from a catalog.
+func recordFailedItem(r *installer.Runner, name, version string, err error) {
 	r.Report.FailedItems = append(r.Report.FailedItems, report.FailedItem{
-		Name:   name,
-		Action: "install",
-		Error:  err.Error(),
+		Name:    name,
+		Version: version,
+		Action:  "install",
+		Error:   err.Error(),
 	})
 }
 
@@ -159,7 +161,7 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 		// already succeeded there and silently returns the same item.
 		item, _ := firstItem(itemName, catalogsMap)
 		slog.Warn("dependency cycle detected, skipping item", "item", item.DisplayName)
-		recordFailedItem(r, item.DisplayName, fmt.Errorf("dependency cycle detected"))
+		recordFailedItem(r, item.DisplayName, item.Version, fmt.Errorf("dependency cycle detected"))
 		visited[itemName] = depFailed
 		return false
 	}
@@ -167,7 +169,7 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 	// firstItem logs why the item is missing or invalid
 	item, ok := firstItem(itemName, catalogsMap)
 	if !ok {
-		recordFailedItem(r, itemName, fmt.Errorf("not found in any catalog"))
+		recordFailedItem(r, itemName, "", fmt.Errorf("not found or invalid in any catalog"))
 		visited[itemName] = depFailed
 		return false
 	}
@@ -180,13 +182,13 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 				return false
 			}
 			slog.Warn("skipping item: dependency failed", "item", item.DisplayName, "dependency", dependency)
-			recordFailedItem(r, item.DisplayName, fmt.Errorf("dependency %s failed", dependency))
+			recordFailedItem(r, item.DisplayName, item.Version, fmt.Errorf("dependency %s failed", dependency))
 			visited[itemName] = depFailed
 			return false
 		}
 	}
 
-	// Install the item; the installer records its own command failures
+	// Install the item; the installer records its own failures in the report
 	if _, err := installerInstall(r, item, "install"); err != nil {
 		slog.Warn("item action failed", "item", item.DisplayName, "err", err)
 		visited[itemName] = depFailed

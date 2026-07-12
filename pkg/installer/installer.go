@@ -19,7 +19,8 @@ import (
 )
 
 // ProgressFn receives coarse per-item progress events. States emitted per
-// item: `downloading`, `installing`/`removing`, `done`/`failed`.
+// item: `downloading`, `installing`/`removing`, `done`/`failed`. This seam's
+// consumer is the UI/pipe wiring (Workstream D); until then only tests attach one.
 type ProgressFn func(item catalog.Item, state string, percent int, message string)
 
 // Runner is the run-scoped install context (K7: no cross-run package globals)
@@ -80,7 +81,7 @@ func runCMD(command string, arguments []string) (string, error) {
 	wg.Wait()
 	err = cmd.Wait()
 	output := strings.Join(cmdOutput, "\n")
-	slog.Debug("Command output", "result", output)
+	slog.Debug("Command output", "output", output)
 	if err != nil {
 		slog.Warn("Command error", "command", command, "args", arguments, "err", err)
 	}
@@ -405,7 +406,9 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 	// Check the status and determine if any action is needed for this item
 	actionNeeded, err := statusCheckStatus(r.Checker, item, installerType, r.CachePath)
 	if err != nil {
-		return "", fmt.Errorf("unable to check status: %w", err)
+		// installerType is the action selector (install/update/uninstall), so
+		// it is the honest Action value for the report.
+		return "", r.recordFailure(item, installerType, fmt.Errorf("unable to check status: %w", err))
 	}
 
 	// If no action is needed, return
@@ -444,6 +447,8 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 		// Run PostInstall_Script if needed
 		if item.PostScript != "" {
 			slog.Info("Running Post-Install script", "item", item.DisplayName)
+			// Deliberate double record: the item genuinely installed
+			// (InstalledItems) and the post-script genuinely failed (FailedItems).
 			if err := runScript(item.PostScript, "postinstall", r.CachePath); err != nil {
 				return out, r.recordFailure(item, "install", fmt.Errorf("post-install script error: %w", err))
 			}
@@ -465,6 +470,8 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 		return uninstallItemFunc(r, item, itemURL)
 
 	default:
+		// Programmer-error guard: process only ever passes install/update/uninstall,
+		// so this arm is deliberately exempt from report recording.
 		return "", fmt.Errorf("unsupported item type %q for %s", installerType, item.DisplayName)
 	}
 }
