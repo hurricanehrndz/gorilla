@@ -108,9 +108,23 @@ func checkScript(catalogItem catalog.Item, cachePath string, installType string)
 	}
 
 	// Write InstallCheckScript to disk as a Powershell file
-	tmpScript := filepath.Join(cachePath, "tmpCheckScript.ps1")
-	if err := os.WriteFile(tmpScript, []byte(catalogItem.Check.Script), 0o755); err != nil {
+	tmpFile, err := os.CreateTemp(cachePath, "gorilla-check-*.ps1")
+	if err != nil {
 		return false, err
+	}
+	tmpScript := tmpFile.Name()
+	defer func() {
+		if removeErr := os.Remove(tmpScript); removeErr != nil && !os.IsNotExist(removeErr) {
+			slog.Warn("Unable to remove temporary check script", "path", tmpScript, "err", removeErr)
+		}
+	}()
+	_, writeErr := tmpFile.WriteString(catalogItem.Check.Script)
+	closeErr := tmpFile.Close()
+	if writeErr != nil {
+		return false, writeErr
+	}
+	if closeErr != nil {
+		return false, closeErr
 	}
 
 	// Build the command to execute the script
@@ -122,14 +136,9 @@ func checkScript(catalogItem catalog.Item, cachePath string, installType string)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	cmdSuccess := cmd.ProcessState.Success()
 	outStr, errStr := stdout.String(), stderr.String()
-
-	// Delete the temporary script
-	if err := os.Remove(tmpScript); err != nil && !os.IsNotExist(err) {
-		slog.Warn("Unable to remove temporary check script", "path", tmpScript, "err", err)
-	}
 
 	// Log results
 	slog.Debug("Command error", "err", err)

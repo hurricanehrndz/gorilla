@@ -9,15 +9,26 @@ import (
 	"time"
 )
 
+// FailedItem records an item whose action failed during this run
+type FailedItem struct {
+	Name    string
+	Version string
+	Action  string
+	Error   string
+}
+
 var (
 	// Items contains the data we will save to GorillaReport
 	Items = make(map[string]interface{})
 
-	// InstalledItems contains a list of items we attempted to install
+	// InstalledItems contains a list of items we successfully installed
 	InstalledItems []interface{}
 
-	// UninstalledItems contains a list of items we attempted to uninstall
+	// UninstalledItems contains a list of items we successfully uninstalled
 	UninstalledItems []interface{}
+
+	// FailedItems contains a list of items whose actions failed
+	FailedItems []FailedItem
 
 	// fakeTime is used to override currentTime when running tests
 	fakeTime time.Time
@@ -56,6 +67,7 @@ func End() {
 	// Compile everything
 	Items["InstalledItems"] = InstalledItems
 	Items["UninstalledItems"] = UninstalledItems
+	Items["FailedItems"] = FailedItems
 
 	// Get the current time
 	currentTime := time.Now().UTC()
@@ -88,6 +100,7 @@ func Print() {
 	// Compile everything
 	Items["InstalledItems"] = InstalledItems
 	Items["UninstalledItems"] = UninstalledItems
+	Items["FailedItems"] = FailedItems
 
 	reportJSON, marshalErr := json.MarshalIndent(Items, "", "    ")
 	fmt.Println(string(reportJSON))

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
@@ -172,36 +171,4 @@ func Close() {
 		h = slog.DiscardHandler
 	}
 	slog.SetDefault(slog.New(h))
-}
-
-// join renders variadic args into a single message with space separation,
-// matching the historic log.Println formatting the call sites rely on.
-func join(args []interface{}) string {
-	return strings.TrimSuffix(fmt.Sprintln(args...), "\n")
-}
-
-// Debug logs at DEBUG level. Handler levels gate whether it is emitted.
-func Debug(logStrings ...interface{}) {
-	slog.Default().Debug(join(logStrings))
-}
-
-// Info logs at INFO level.
-func Info(logStrings ...interface{}) {
-	slog.Default().Info(join(logStrings))
-}
-
-// Warn logs at WARN level.
-func Warn(logStrings ...interface{}) {
-	slog.Default().Warn(join(logStrings))
-}
-
-// Error logs at ERROR level and then panics (recoverable). It is a no-op when
-// checkonly is active.
-func Error(logStrings ...interface{}) {
-	if checkonly {
-		return
-	}
-	msg := join(logStrings)
-	slog.Default().Error(msg)
-	panic(msg)
 }

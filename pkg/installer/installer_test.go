@@ -3,6 +3,7 @@ package installer
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,6 @@ var (
 	// store original data to restore after each test
 	origExec            = execCommand
 	origCheckStatus     = statusCheckStatus
-	origReportInstalled = report.InstalledItems
 	origInstallItemFunc = installItemFunc
 	origRunCommand      = runCommand
 
@@ -131,6 +131,13 @@ func fakeExecCommand(command string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// fakeExecCommandFail is fakeExecCommand except the helper process exits 1
+func fakeExecCommandFail(command string, args ...string) *exec.Cmd {
+	cmd := fakeExecCommand(command, args...)
+	cmd.Env = append(cmd.Env, "GO_HELPER_PROCESS_FAIL=1")
+	return cmd
+}
+
 // fakeRunCommand just returns a string and error interface
 func fakeRunCommand(command string, arguments []string) (string, error) {
 	cmdOutput := "This is a fake test command return"
@@ -151,32 +158,47 @@ func TestHelperProcess(t *testing.T) {
 	}
 	// print the command we received
 	fmt.Print(os.Args[3:])
+	if os.Getenv("GO_HELPER_PROCESS_FAIL") == "1" {
+		os.Exit(1)
+	}
 	os.Exit(0)
 }
 
 func fakeCheckStatus(catalogItem catalog.Item, installType string, cachePath string) (install bool, checkErr error) {
 	// Catch special names used in tests
 	if catalogItem.DisplayName == statusActionNoError {
-		gorillalog.Warn("Running Development Tests!")
-		gorillalog.Warn(catalogItem.DisplayName)
+		slog.Warn("Running Development Tests!", "item", catalogItem.DisplayName)
 		return true, nil
 	} else if catalogItem.DisplayName == statusNoActionNoError {
-		gorillalog.Warn("Running Development Tests!")
-		gorillalog.Warn(catalogItem.DisplayName)
+		slog.Warn("Running Development Tests!", "item", catalogItem.DisplayName)
 		return false, nil
 	} else if catalogItem.DisplayName == statusActionError {
-		gorillalog.Warn("Running Development Tests!")
-		gorillalog.Warn(catalogItem.DisplayName)
+		slog.Warn("Running Development Tests!", "item", catalogItem.DisplayName)
 		return true, fmt.Errorf("testing %v", catalogItem.DisplayName)
 	} else if catalogItem.DisplayName == statusNoActionError {
-		gorillalog.Warn("Running Development Tests!")
-		gorillalog.Warn(catalogItem.DisplayName)
+		slog.Warn("Running Development Tests!", "item", catalogItem.DisplayName)
 		return false, fmt.Errorf("testing %v", catalogItem.DisplayName)
 	}
 
 	fmt.Println(catalogItem.DisplayName)
 	fmt.Println(installType)
 	return false, nil
+}
+
+// resetReport empties the report globals and restores them after the test.
+func resetReport(t *testing.T) {
+	t.Helper()
+	origInstalled := report.InstalledItems
+	origUninstalled := report.UninstalledItems
+	origFailed := report.FailedItems
+	report.InstalledItems = nil
+	report.UninstalledItems = nil
+	report.FailedItems = nil
+	t.Cleanup(func() {
+		report.InstalledItems = origInstalled
+		report.UninstalledItems = origUninstalled
+		report.FailedItems = origFailed
+	})
 }
 
 // TestRunCommand verifies that the command and it's arguments are processed correctly
@@ -211,6 +233,7 @@ func TestInstallItem(t *testing.T) {
 		execCommand = origExec
 		statusCheckStatus = origCheckStatus
 	}()
+	resetReport(t)
 
 	// Set shared testing variables
 	cachePath := "testdata/"
@@ -225,7 +248,10 @@ func TestInstallItem(t *testing.T) {
 	nupkgURL := urlPackages + nupkgPath
 
 	// Run Install
-	actualNupkg := installItem(nupkgItem, nupkgURL, cachePath)
+	actualNupkg, nupkgErr := installItem(nupkgItem, nupkgURL, cachePath)
+	if nupkgErr != nil {
+		t.Errorf("installItem nupkg returned an error: %v", nupkgErr)
+	}
 
 	// Check the result
 	nupkgCmd := filepath.Join(os.Getenv("ProgramData"), "chocolatey/bin/choco.exe")
@@ -245,7 +271,10 @@ func TestInstallItem(t *testing.T) {
 	msiURL := urlPackages + msiPath
 
 	// Run Install
-	actualMsi := installItem(msiItem, msiURL, cachePath)
+	actualMsi, msiErr := installItem(msiItem, msiURL, cachePath)
+	if msiErr != nil {
+		t.Errorf("installItem msi returned an error: %v", msiErr)
+	}
 
 	// Check the result
 	msiCmd := filepath.Join(os.Getenv("WINDIR"), "system32/msiexec.exe")
@@ -263,7 +292,10 @@ func TestInstallItem(t *testing.T) {
 	exeURL := urlPackages + exePath
 
 	// Run Install
-	actualExe := installItem(exeItem, exeURL, cachePath)
+	actualExe, exeErr := installItem(exeItem, exeURL, cachePath)
+	if exeErr != nil {
+		t.Errorf("installItem exe returned an error: %v", exeErr)
+	}
 
 	// Check the result
 	exeFile := filepath.Join(pkgCache, exePath)
@@ -280,7 +312,10 @@ func TestInstallItem(t *testing.T) {
 	ps1URL := urlPackages + ps1Path
 
 	// Run Install
-	actualPs1 := installItem(ps1Item, ps1URL, cachePath)
+	actualPs1, ps1Err := installItem(ps1Item, ps1URL, cachePath)
+	if ps1Err != nil {
+		t.Errorf("installItem ps1 returned an error: %v", ps1Err)
+	}
 
 	// Check the result
 	ps1Cmd := filepath.Join(os.Getenv("WINDIR"), "system32/WindowsPowershell/v1.0/powershell.exe")
@@ -298,7 +333,10 @@ func TestInstallItem(t *testing.T) {
 	msixURL := urlPackages + msixPath
 
 	// Run Install
-	actualMsix := installItem(msixItem, msixURL, cachePath)
+	actualMsix, msixErr := installItem(msixItem, msixURL, cachePath)
+	if msixErr != nil {
+		t.Errorf("installItem msix returned an error: %v", msixErr)
+	}
 
 	// Check the result
 	msixCmd := filepath.Join(os.Getenv("WINDIR"), "system32/WindowsPowershell/v1.0/powershell.exe")
@@ -309,7 +347,34 @@ func TestInstallItem(t *testing.T) {
 	}
 }
 
-// TestInstallStatusError verifies that Install returns if status check fails
+// TestInstallItemUnsupportedType verifies an unknown installer type is an
+// error and lands in FailedItems (K1)
+func TestInstallItemUnsupportedType(t *testing.T) {
+	resetReport(t)
+
+	item := msiItem
+	item.DisplayName = "Unsupported Item"
+	item.Installer.Type = "flatpak"
+
+	out, err := installItem(item, "https://example.com/", "testdata/")
+	if err == nil {
+		t.Fatalf("expected an error for unsupported installer type, got output: %q", out)
+	}
+	if !strings.Contains(err.Error(), "unsupported installer type") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(report.InstalledItems) != 0 {
+		t.Errorf("unsupported item must not be reported as installed: %#v", report.InstalledItems)
+	}
+	if len(report.FailedItems) != 1 {
+		t.Fatalf("expected 1 failed item, got %#v", report.FailedItems)
+	}
+	if have := report.FailedItems[0]; have.Name != "Unsupported Item" || have.Action != "install" || have.Error == "" {
+		t.Errorf("unexpected failed item entry: %#v", have)
+	}
+}
+
+// TestInstallStatusError verifies that Install returns an error if the status check fails
 func TestInstallStatusError(t *testing.T) {
 	// Override checkStatus with our fake version
 	statusCheckStatus = fakeCheckStatus
@@ -320,10 +385,13 @@ func TestInstallStatusError(t *testing.T) {
 	// Run the msi installer with this status bypass to trigger an error
 	msiItem.DisplayName = statusActionError
 	// Run Install
-	actualOutput := Install(msiItem, "install", "https://example.com", "testdata/", checkOnlyMode)
+	_, err := Install(msiItem, "install", "https://example.com", "testdata/", checkOnlyMode)
 	// Check the result
-	expectedOutput := "Unable to check status: testing _gorilla_dev_action_error_"
-	if have, want := actualOutput, expectedOutput; have != want {
+	if err == nil {
+		t.Fatalf("expected a status check error")
+	}
+	expectedOutput := "unable to check status: testing _gorilla_dev_action_error_"
+	if have, want := err.Error(), expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
 }
@@ -339,11 +407,29 @@ func TestInstallStatusFalse(t *testing.T) {
 	// Run the msi installer with this status bypass to make status return false
 	msiItem.DisplayName = statusNoActionNoError
 	// Run Install
-	actualOutput := Install(msiItem, "install", "https://example.com/", "testdata/", checkOnlyMode)
+	actualOutput, err := Install(msiItem, "install", "https://example.com/", "testdata/", checkOnlyMode)
+	if err != nil {
+		t.Errorf("Install returned an error: %v", err)
+	}
 	// Check the result
 	expectedOutput := "Item not needed"
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
+	}
+}
+
+// TestInstallUnsupportedItemType verifies that Install errors on an unknown action
+func TestInstallUnsupportedItemType(t *testing.T) {
+	// Override checkStatus with our fake version
+	statusCheckStatus = fakeCheckStatus
+	defer func() {
+		statusCheckStatus = origCheckStatus
+	}()
+
+	msiItem.DisplayName = statusActionNoError
+	_, err := Install(msiItem, "sideload", "https://example.com/", "testdata/", checkOnlyMode)
+	if err == nil || !strings.Contains(err.Error(), "unsupported item type") {
+		t.Errorf("expected unsupported item type error, got: %v", err)
 	}
 }
 
@@ -358,6 +444,7 @@ func TestUninstallItem(t *testing.T) {
 		execCommand = origExec
 		statusCheckStatus = origCheckStatus
 	}()
+	resetReport(t)
 
 	// Set shared testing variables
 	cachePath := "testdata/"
@@ -371,7 +458,10 @@ func TestUninstallItem(t *testing.T) {
 	nupkgPath := "chef-client/chef-client-14.3.37-1-x64uninst.nupkg"
 	nupkgURL := urlPackages + nupkgPath
 	// Run Uninstall
-	actualNupkg := uninstallItem(nupkgItem, nupkgURL, cachePath)
+	actualNupkg, nupkgErr := uninstallItem(nupkgItem, nupkgURL, cachePath)
+	if nupkgErr != nil {
+		t.Errorf("uninstallItem nupkg returned an error: %v", nupkgErr)
+	}
 	// Check the result
 	nupkgCmd := filepath.Join(os.Getenv("ProgramData"), "chocolatey/bin/choco.exe")
 	nupkgFile := filepath.Join(pkgCache, nupkgPath)
@@ -387,7 +477,10 @@ func TestUninstallItem(t *testing.T) {
 	//
 	msiItem.DisplayName = statusNoActionNoError
 	// Run Uninstall
-	actualMsi := uninstallItem(msiItem, urlPackages, cachePath)
+	actualMsi, msiErr := uninstallItem(msiItem, urlPackages, cachePath)
+	if msiErr != nil {
+		t.Errorf("uninstallItem msi returned an error: %v", msiErr)
+	}
 	// Check the result
 	msiCmd := filepath.Join(os.Getenv("WINDIR"), "system32/msiexec.exe")
 	msiPath := filepath.Clean("testdata/packages/chef-client/chef-client-14.3.37-1-x64uninst.msi")
@@ -401,7 +494,10 @@ func TestUninstallItem(t *testing.T) {
 	//
 	exeItem.DisplayName = statusNoActionNoError
 	// Run Uninstall
-	actualExe := uninstallItem(exeItem, urlPackages, cachePath)
+	actualExe, exeErr := uninstallItem(exeItem, urlPackages, cachePath)
+	if exeErr != nil {
+		t.Errorf("uninstallItem exe returned an error: %v", exeErr)
+	}
 	// Check the result
 	exePath := filepath.Clean("testdata/packages/chef-client/chef-client-14.3.37-1-x64uninst.exe")
 	expectedExe := "[" + exePath + " /U=1033 /S]"
@@ -414,7 +510,10 @@ func TestUninstallItem(t *testing.T) {
 	//
 	ps1Item.DisplayName = statusNoActionNoError
 	// Run Uninstall
-	actualPs1 := uninstallItem(ps1Item, urlPackages, cachePath)
+	actualPs1, ps1Err := uninstallItem(ps1Item, urlPackages, cachePath)
+	if ps1Err != nil {
+		t.Errorf("uninstallItem ps1 returned an error: %v", ps1Err)
+	}
 	// Check the result
 	ps1Cmd := filepath.Join(os.Getenv("WINDIR"), "system32/WindowsPowershell/v1.0/powershell.exe")
 	ps1Path := filepath.Clean("testdata/packages/chef-client/chef-client-14.3.37-1-x64uninst.ps1")
@@ -428,7 +527,10 @@ func TestUninstallItem(t *testing.T) {
 	//
 	msixItem.DisplayName = statusNoActionNoError
 	// Run Uninstall (msix uses Check.Appx.Name, no file download needed)
-	actualMsix := uninstallItem(msixItem, "", cachePath)
+	actualMsix, msixErr := uninstallItem(msixItem, "", cachePath)
+	if msixErr != nil {
+		t.Errorf("uninstallItem msix returned an error: %v", msixErr)
+	}
 	// Check the result
 	msixCmd := filepath.Join(os.Getenv("WINDIR"), "system32/WindowsPowershell/v1.0/powershell.exe")
 	expectedMsix := "[" + msixCmd + " -NoProfile -NoLogo -NonInteractive -ExecutionPolicy Bypass -Command $pkg = Get-AppxProvisionedPackage -Online | Where-Object { $_.DisplayName -eq 'Gorilla.Test.App' }; if ($pkg) { Remove-AppxProvisionedPackage -Online -PackageName $pkg.PackageName }; Get-AppxPackage -Name 'Gorilla.Test.App' -AllUsers | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue]"
@@ -444,6 +546,7 @@ func TestInstallItemNupkgWithExplicitPackageID(t *testing.T) {
 		execCommand = origExec
 		runCommand = origRunCommand
 	}()
+	resetReport(t)
 
 	cachePath := "testdata/"
 	pkgCache := "testdata/packages/"
@@ -458,7 +561,10 @@ func TestInstallItemNupkgWithExplicitPackageID(t *testing.T) {
 	item.DisplayName = statusActionNoError
 	item.Installer.PackageID = "chef-client"
 
-	actual := installItem(item, nupkgURL, cachePath)
+	actual, err := installItem(item, nupkgURL, cachePath)
+	if err != nil {
+		t.Errorf("installItem returned an error: %v", err)
+	}
 	expected := fmt.Sprintf("[%s install chef-client -s %s --version=1.2.3 -f -y -r]", commandNupkg, nupkgDir)
 
 	if have, want := actual, expected; have != want {
@@ -475,6 +581,7 @@ func TestInstallItemNupkgAmbiguousPackageID(t *testing.T) {
 		return "", nil
 	}
 	defer func() { runCommand = origRunCommand }()
+	resetReport(t)
 
 	cachePath := "testdata/"
 	urlPackages := "https://example.com/"
@@ -485,9 +592,16 @@ func TestInstallItemNupkgAmbiguousPackageID(t *testing.T) {
 	item.DisplayName = "Ambiguous Package"
 	item.Installer.PackageID = ""
 
-	actual := installItem(item, nupkgURL, cachePath)
-	if !strings.Contains(actual, "Unable to determine nupkg id") || !strings.Contains(actual, "multiple package ids were found") {
-		t.Fatalf("expected ambiguity error message, got: %s", actual)
+	_, err := installItem(item, nupkgURL, cachePath)
+	if err == nil {
+		t.Fatalf("expected an id-resolution error")
+	}
+	if !strings.Contains(err.Error(), "unable to determine nupkg id") || !strings.Contains(err.Error(), "multiple package ids were found") {
+		t.Fatalf("expected ambiguity error, got: %v", err)
+	}
+	// id-resolution failure is an honest failure (K1)
+	if len(report.FailedItems) != 1 {
+		t.Fatalf("expected 1 failed item, got %#v", report.FailedItems)
 	}
 }
 
@@ -498,6 +612,7 @@ func TestUninstallItemNupkgWithExplicitPackageID(t *testing.T) {
 		execCommand = origExec
 		runCommand = origRunCommand
 	}()
+	resetReport(t)
 
 	cachePath := "testdata/"
 	pkgCache := "testdata/packages/"
@@ -512,7 +627,10 @@ func TestUninstallItemNupkgWithExplicitPackageID(t *testing.T) {
 	item.DisplayName = statusNoActionNoError
 	item.Uninstaller.PackageID = "chef-client"
 
-	actual := uninstallItem(item, nupkgURL, cachePath)
+	actual, err := uninstallItem(item, nupkgURL, cachePath)
+	if err != nil {
+		t.Errorf("uninstallItem returned an error: %v", err)
+	}
 	expected := fmt.Sprintf("[%s uninstall chef-client -s %s --version=1.2.3 -f -y -r]", commandNupkg, nupkgDir)
 
 	if have, want := actual, expected; have != want {
@@ -529,6 +647,7 @@ func TestUninstallItemNupkgAmbiguousPackageID(t *testing.T) {
 		return "", nil
 	}
 	defer func() { runCommand = origRunCommand }()
+	resetReport(t)
 
 	cachePath := "testdata/"
 	urlPackages := "https://example.com/"
@@ -539,9 +658,12 @@ func TestUninstallItemNupkgAmbiguousPackageID(t *testing.T) {
 	item.DisplayName = "Ambiguous Uninstall Package"
 	item.Uninstaller.PackageID = ""
 
-	actual := uninstallItem(item, nupkgURL, cachePath)
-	if !strings.Contains(actual, "Unable to determine nupkg id") || !strings.Contains(actual, "multiple package ids were found") {
-		t.Fatalf("expected ambiguity error message, got: %s", actual)
+	_, err := uninstallItem(item, nupkgURL, cachePath)
+	if err == nil {
+		t.Fatalf("expected an id-resolution error")
+	}
+	if !strings.Contains(err.Error(), "unable to determine nupkg id") || !strings.Contains(err.Error(), "multiple package ids were found") {
+		t.Fatalf("expected ambiguity error, got: %v", err)
 	}
 }
 
@@ -549,19 +671,26 @@ func TestUninstallItemNupkgAmbiguousPackageID(t *testing.T) {
 func TestUninstallItemMsixMissingName(t *testing.T) {
 	execCommand = fakeExecCommand
 	defer func() { execCommand = origExec }()
+	resetReport(t)
 
 	item := msixItem
 	item.DisplayName = "Missing Name App"
 	item.Check.Appx.Name = ""
 
-	actual := uninstallItem(item, "", "testdata/")
+	_, err := uninstallItem(item, "", "testdata/")
+	if err == nil {
+		t.Fatalf("expected an error for missing Check.Appx.Name")
+	}
 	expected := "Check.Appx.Name is required for msix uninstall of Missing Name App"
-	if have, want := actual, expected; have != want {
+	if have, want := err.Error(), expected; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
+	}
+	if len(report.UninstalledItems) != 0 {
+		t.Errorf("failed msix uninstall must not be reported as uninstalled: %#v", report.UninstalledItems)
 	}
 }
 
-// TestUninstallStatusError verifies that Uninstall returns if status check fails
+// TestUninstallStatusError verifies that Uninstall returns an error if the status check fails
 func TestUninstallStatusError(t *testing.T) {
 	// Override checkStatus with our fake version
 	statusCheckStatus = fakeCheckStatus
@@ -572,10 +701,13 @@ func TestUninstallStatusError(t *testing.T) {
 	// Run the msi uninstaller with this status bypass to trigger an error
 	msiItem.DisplayName = statusNoActionError
 	// Run Uninstall
-	actualOutput := Install(msiItem, "uninstall", "https://example.com", "testdata/", checkOnlyMode)
+	_, err := Install(msiItem, "uninstall", "https://example.com", "testdata/", checkOnlyMode)
 	// Check the result
-	expectedOutput := "Unable to check status: testing _gorilla_dev_noaction_error_"
-	if have, want := actualOutput, expectedOutput; have != want {
+	if err == nil {
+		t.Fatalf("expected a status check error")
+	}
+	expectedOutput := "unable to check status: testing _gorilla_dev_noaction_error_"
+	if have, want := err.Error(), expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
 }
@@ -591,7 +723,10 @@ func TestUninstallStatusTrue(t *testing.T) {
 	// Run the msi uninstaller with this status bypass to make status return true
 	msiItem.DisplayName = statusNoActionNoError
 	// Run Uninstall
-	actualOutput := Install(msiItem, "uninstall", "https://example.com", "testdata/", checkOnlyMode)
+	actualOutput, err := Install(msiItem, "uninstall", "https://example.com", "testdata/", checkOnlyMode)
+	if err != nil {
+		t.Errorf("Install returned an error: %v", err)
+	}
 	// Check the result
 	expectedOutput := "Item not needed"
 	if have, want := actualOutput, expectedOutput; have != want {
@@ -599,7 +734,7 @@ func TestUninstallStatusTrue(t *testing.T) {
 	}
 }
 
-// TestUpdateStatusError verifies that Update returns if status check fails
+// TestUpdateStatusError verifies that Update returns an error if the status check fails
 func TestUpdateStatusError(t *testing.T) {
 	// Override checkStatus with our fake version
 	statusCheckStatus = fakeCheckStatus
@@ -610,10 +745,13 @@ func TestUpdateStatusError(t *testing.T) {
 	// Run the msi installer with this status bypass to trigger an error
 	msiItem.DisplayName = statusActionError
 	// Run Update
-	actualOutput := Install(msiItem, "update", "https://example.com", "testdata/", checkOnlyMode)
+	_, err := Install(msiItem, "update", "https://example.com", "testdata/", checkOnlyMode)
 	// Check the result
-	expectedOutput := "Unable to check status: testing _gorilla_dev_action_error_"
-	if have, want := actualOutput, expectedOutput; have != want {
+	if err == nil {
+		t.Fatalf("expected a status check error")
+	}
+	expectedOutput := "unable to check status: testing _gorilla_dev_action_error_"
+	if have, want := err.Error(), expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
 }
@@ -629,7 +767,10 @@ func TestUpdateStatusFalse(t *testing.T) {
 	// Run the msi installer with this status bypass to make status return dalse
 	msiItem.DisplayName = statusNoActionNoError
 	// Run Update
-	actualOutput := Install(msiItem, "update", "https://example.com", "testdata/", checkOnlyMode)
+	actualOutput, err := Install(msiItem, "update", "https://example.com", "testdata/", checkOnlyMode)
+	if err != nil {
+		t.Errorf("Install returned an error: %v", err)
+	}
 	// Check the result
 	expectedOutput := "Item not needed"
 	if have, want := actualOutput, expectedOutput; have != want {
@@ -637,19 +778,22 @@ func TestUpdateStatusFalse(t *testing.T) {
 	}
 }
 
-// TestInstallReport verifies that an installed item is added to the report
+// TestInstallReport verifies that a successfully installed item is added to
+// the report and not to FailedItems (K1)
 func TestInstallReport(t *testing.T) {
 	// Override execCommand with our fake version
 	execCommand = fakeExecCommand
-	// Override the report.InstalledItems to be empty
-	report.InstalledItems = []interface{}{}
 	defer func() {
 		execCommand = origExec
-		report.InstalledItems = origReportInstalled
 	}()
+	resetReport(t)
 
 	// Run the installer
-	installItem(msiItem, "https://example.com", "testdata/")
+	msiItem.DisplayName = statusActionNoError
+	_, err := installItem(msiItem, "https://example.com", "testdata/")
+	if err != nil {
+		t.Errorf("installItem returned an error: %v", err)
+	}
 
 	// Check the result
 	expectedReport := []interface{}{msiItem}
@@ -660,11 +804,85 @@ func TestInstallReport(t *testing.T) {
 	if !structsMatch {
 		t.Errorf("\nExpected: %#v\nReceived: %#v", expectedReport, report.InstalledItems)
 	}
+	if len(report.FailedItems) != 0 {
+		t.Errorf("successful install must not be in FailedItems: %#v", report.FailedItems)
+	}
 }
 
-func fakeInstallItem(item catalog.Item, itemURL, cachePath string) string {
+// TestInstallItemFailureReport verifies that a failing installer command is
+// returned as an error and the item lands in FailedItems, not InstalledItems (K1)
+func TestInstallItemFailureReport(t *testing.T) {
+	installTestOverrides(t)
+	resetReport(t)
+
+	// fakeRunCommand returns an error for this display name
+	msiItem.DisplayName = statusActionError
+
+	_, err := installItem(msiItem, "https://example.com/", "testdata/")
+	if err == nil {
+		t.Fatalf("expected an error from a failing installer command")
+	}
+	if len(report.InstalledItems) != 0 {
+		t.Errorf("failed item must not be reported as installed: %#v", report.InstalledItems)
+	}
+	if len(report.FailedItems) != 1 {
+		t.Fatalf("expected 1 failed item, got %#v", report.FailedItems)
+	}
+	have := report.FailedItems[0]
+	if have.Name != statusActionError || have.Version != "1.2.3" || have.Action != "install" || have.Error == "" {
+		t.Errorf("unexpected failed item entry: %#v", have)
+	}
+}
+
+// TestProgressEvents verifies ordered real progress events reach the
+// ProgressFn seam, including `failed` on error (K8-seam)
+func TestProgressEvents(t *testing.T) {
+	installTestOverrides(t)
+	resetReport(t)
+
+	var events []string
+	origProgress := Progress
+	Progress = func(item catalog.Item, state string, percent int, message string) {
+		events = append(events, fmt.Sprintf("%s:%d", state, percent))
+	}
+	t.Cleanup(func() { Progress = origProgress })
+
+	// Success emits downloading -> installing -> done
+	msiItem.DisplayName = statusActionNoError
+	if _, err := installItem(msiItem, "https://example.com/", "testdata/"); err != nil {
+		t.Fatalf("installItem returned an error: %v", err)
+	}
+	want := []string{"downloading:0", "installing:50", "done:100"}
+	if !reflect.DeepEqual(want, events) {
+		t.Errorf("\nExpected: %#v\nReceived: %#v", want, events)
+	}
+
+	// Failure emits downloading -> installing -> failed
+	events = nil
+	msiItem.DisplayName = statusActionError
+	if _, err := installItem(msiItem, "https://example.com/", "testdata/"); err == nil {
+		t.Fatalf("expected an error from a failing installer command")
+	}
+	want = []string{"downloading:0", "installing:50", "failed:50"}
+	if !reflect.DeepEqual(want, events) {
+		t.Errorf("\nExpected: %#v\nReceived: %#v", want, events)
+	}
+
+	// Uninstall emits removing
+	events = nil
+	msiItem.DisplayName = statusActionNoError
+	if _, err := uninstallItem(msiItem, "https://example.com/", "testdata/"); err != nil {
+		t.Fatalf("uninstallItem returned an error: %v", err)
+	}
+	want = []string{"downloading:0", "removing:50", "done:100"}
+	if !reflect.DeepEqual(want, events) {
+		t.Errorf("\nExpected: %#v\nReceived: %#v", want, events)
+	}
+}
+
+func fakeInstallItem(item catalog.Item, itemURL, cachePath string) (string, error) {
 	installItemURL = itemURL
-	return ""
+	return "", nil
 }
 
 // TestInstallURL validates that the url for an installer is properly generated
@@ -684,7 +902,9 @@ func TestInstallURL(t *testing.T) {
 	msiItem.DisplayName = statusActionNoError
 
 	// Run Install
-	Install(msiItem, "install", "https://example.com/", "testdata/", checkOnlyMode)
+	if _, err := Install(msiItem, "install", "https://example.com/", "testdata/", checkOnlyMode); err != nil {
+		t.Errorf("Install returned an error: %v", err)
+	}
 
 	// Check the result
 	expectedURL := "https://example.com/packages/chef-client/chef-client-14.3.37-1-x64.msi"
@@ -694,34 +914,36 @@ func TestInstallURL(t *testing.T) {
 	}
 }
 
-func fakeUninstallItem(item catalog.Item, itemURL, cachePath string) string {
+func fakeUninstallItem(item catalog.Item, itemURL, cachePath string) (string, error) {
 	uninstallItemURL = itemURL
-	return ""
+	return "", nil
 }
 
-// TestUninstallURL validates that the url for an installer is properly generated
+// TestUninstallURL validates that the url for an uninstaller is properly generated
 func TestUninstallURL(t *testing.T) {
-	// Override checkStatus and installItemFunc with our fake versions
+	// Override checkStatus and uninstallItemFunc with our fake versions
 	statusCheckStatus = fakeCheckStatus
 	uninstallItemFunc = fakeUninstallItem
 	defer func() {
 		statusCheckStatus = origCheckStatus
-		installItemFunc = origInstallItemFunc
+		uninstallItemFunc = uninstallItem
 	}()
 
-	// Make sure the `installItemURL` variable is blank before we start
+	// Make sure the `uninstallItemURL` variable is blank before we start
 	uninstallItemURL = ""
 
-	// Run the msi installer with this status bypass checks
+	// Run the msi uninstaller with this status bypass checks
 	msiItem.DisplayName = statusActionNoError
 
 	// Run Install
-	Install(msiItem, "uninstall", "https://example.com/", "testdata/", checkOnlyMode)
+	if _, err := Install(msiItem, "uninstall", "https://example.com/", "testdata/", checkOnlyMode); err != nil {
+		t.Errorf("Install returned an error: %v", err)
+	}
 
 	// Check the result
-	expectedURL := "https://example.com/packages/chef-client/chef-client-14.3.37-1-x64.msi"
+	expectedURL := "https://example.com/packages/chef-client/chef-client-14.3.37-1-x64uninst.msi"
 
-	if have, want := installItemURL, expectedURL; have != want {
+	if have, want := uninstallItemURL, expectedURL; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
 	}
 }
@@ -767,9 +989,8 @@ func TestRunCommandDebugOutput(t *testing.T) {
 
 	out := console.String()
 	for _, want := range []string{
-		"command: Command Test! [arg1 arg2]",
-		"Command Output:",
-		"[Command Test! arg1 arg2]",
+		`msg="Running command" command="Command Test!" args="[arg1 arg2]"`,
+		`msg="Command output" result="[Command Test! arg1 arg2]"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console output missing %q:\n%s", want, out)
@@ -795,6 +1016,7 @@ func installTestOverrides(t *testing.T) {
 func TestInstallItemSuccess(t *testing.T) {
 	console := captureConsole(t)
 	installTestOverrides(t)
+	resetReport(t)
 
 	// Msi
 	msiItem.DisplayName = statusActionNoError
@@ -804,8 +1026,8 @@ func TestInstallItemSuccess(t *testing.T) {
 
 	out := console.String()
 	for _, want := range []string{
-		"Installing msi for _gorilla_dev_action_noerror_",
-		"_gorilla_dev_action_noerror_ 1.2.3 Installation SUCCESSFUL",
+		`msg=Installing item=_gorilla_dev_action_noerror_ version=1.2.3 installerType=msi`,
+		`msg="Installation SUCCESSFUL" item=_gorilla_dev_action_noerror_ version=1.2.3 result=success`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console output missing %q:\n%s", want, out)
@@ -816,6 +1038,7 @@ func TestInstallItemSuccess(t *testing.T) {
 func TestInstallItemFailure(t *testing.T) {
 	console := captureConsole(t)
 	installTestOverrides(t)
+	resetReport(t)
 
 	// Msi
 	msiItem.DisplayName = statusActionError
@@ -825,8 +1048,8 @@ func TestInstallItemFailure(t *testing.T) {
 
 	out := console.String()
 	for _, want := range []string{
-		"Installing msi for _gorilla_dev_action_error_",
-		"_gorilla_dev_action_error_ 1.2.3 Installation FAILED",
+		`msg=Installing item=_gorilla_dev_action_error_ version=1.2.3 installerType=msi`,
+		`msg="Installation FAILED" item=_gorilla_dev_action_error_ version=1.2.3 result=error err="Deliberate test error has occurred!!"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console output missing %q:\n%s", want, out)
@@ -837,6 +1060,7 @@ func TestInstallItemFailure(t *testing.T) {
 func TestUninstallItemSuccess(t *testing.T) {
 	console := captureConsole(t)
 	installTestOverrides(t)
+	resetReport(t)
 
 	// Msi
 	msiItem.DisplayName = statusActionNoError
@@ -846,8 +1070,8 @@ func TestUninstallItemSuccess(t *testing.T) {
 
 	out := console.String()
 	for _, want := range []string{
-		"Uninstalling msi for _gorilla_dev_action_noerror_",
-		"_gorilla_dev_action_noerror_ 1.2.3 Uninstallation SUCCESSFUL",
+		`msg=Uninstalling item=_gorilla_dev_action_noerror_ version=1.2.3 installerType=msi`,
+		`msg="Uninstallation SUCCESSFUL" item=_gorilla_dev_action_noerror_ version=1.2.3 result=success`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console output missing %q:\n%s", want, out)
@@ -858,6 +1082,7 @@ func TestUninstallItemSuccess(t *testing.T) {
 func TestUninstallItemFailure(t *testing.T) {
 	console := captureConsole(t)
 	installTestOverrides(t)
+	resetReport(t)
 
 	// Msi
 	msiItem.DisplayName = statusActionError
@@ -867,11 +1092,116 @@ func TestUninstallItemFailure(t *testing.T) {
 
 	out := console.String()
 	for _, want := range []string{
-		"Uninstalling msi for _gorilla_dev_action_error_",
-		"_gorilla_dev_action_error_ 1.2.3 Uninstallation FAILED",
+		`msg=Uninstalling item=_gorilla_dev_action_error_ version=1.2.3 installerType=msi`,
+		`msg="Uninstallation FAILED" item=_gorilla_dev_action_error_ version=1.2.3 result=error err="Deliberate test error has occurred!!"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("console output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestPrePostScriptsDistinctTempFiles verifies that pre- and post-install
+// scripts run from distinct temporary files that are removed afterwards (K6)
+func TestPrePostScriptsDistinctTempFiles(t *testing.T) {
+	statusCheckStatus = fakeCheckStatus
+	installItemFunc = fakeInstallItem
+	var scriptFiles []string
+	execCommand = func(command string, args ...string) *exec.Cmd {
+		// The script path is the final argument (after -File)
+		scriptFiles = append(scriptFiles, args[len(args)-1])
+		return fakeExecCommand(command, args...)
+	}
+	defer func() {
+		statusCheckStatus = origCheckStatus
+		installItemFunc = origInstallItemFunc
+		execCommand = origExec
+	}()
+
+	item := msiItem
+	item.DisplayName = statusActionNoError
+	item.PreScript = "Write-Output pre"
+	item.PostScript = "Write-Output post"
+
+	if _, err := Install(item, "install", "https://example.com/", "testdata/", checkOnlyMode); err != nil {
+		t.Fatalf("Install returned an error: %v", err)
+	}
+
+	if len(scriptFiles) != 2 {
+		t.Fatalf("expected 2 script executions, got %d: %#v", len(scriptFiles), scriptFiles)
+	}
+	pre, post := scriptFiles[0], scriptFiles[1]
+	if pre == post {
+		t.Errorf("pre and post scripts shared the same temp file: %s", pre)
+	}
+	if !strings.HasPrefix(filepath.Base(pre), "gorilla-preinstall-") {
+		t.Errorf("unexpected preinstall temp file name: %s", pre)
+	}
+	if !strings.HasPrefix(filepath.Base(post), "gorilla-postinstall-") {
+		t.Errorf("unexpected postinstall temp file name: %s", post)
+	}
+	// Both temp files must be removed after the run
+	for _, f := range scriptFiles {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("temp script was not removed: %s", f)
+		}
+	}
+}
+
+// TestPreScriptFailure verifies that a failing pre-install script returns an
+// error (no panic) and skips the installer
+func TestPreScriptFailure(t *testing.T) {
+	statusCheckStatus = fakeCheckStatus
+	installItemFunc = func(item catalog.Item, itemURL, cachePath string) (string, error) {
+		t.Error("installer ran despite pre-install script failure")
+		return "", nil
+	}
+	execCommand = fakeExecCommandFail
+	defer func() {
+		statusCheckStatus = origCheckStatus
+		installItemFunc = origInstallItemFunc
+		execCommand = origExec
+	}()
+	resetReport(t)
+
+	item := msiItem
+	item.DisplayName = statusActionNoError
+	item.PreScript = "exit 1"
+
+	_, err := Install(item, "install", "https://example.com/", "testdata/", checkOnlyMode)
+	if err == nil {
+		t.Fatalf("expected a pre-install script error")
+	}
+	if !strings.Contains(err.Error(), "pre-install script error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(report.FailedItems) != 1 {
+		t.Errorf("expected 1 failed item, got %#v", report.FailedItems)
+	}
+}
+
+// TestPostScriptFailure verifies that a failing post-install script returns
+// an error (no panic)
+func TestPostScriptFailure(t *testing.T) {
+	statusCheckStatus = fakeCheckStatus
+	installItemFunc = fakeInstallItem
+	execCommand = fakeExecCommandFail
+	defer func() {
+		statusCheckStatus = origCheckStatus
+		installItemFunc = origInstallItemFunc
+		execCommand = origExec
+	}()
+	resetReport(t)
+
+	item := msiItem
+	item.DisplayName = statusActionNoError
+	item.PostScript = "exit 1"
+
+	_, err := Install(item, "install", "https://example.com/", "testdata/", checkOnlyMode)
+	if err == nil {
+		t.Fatalf("expected a post-install script error")
+	}
+	if !strings.Contains(err.Error(), "post-install script error") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }

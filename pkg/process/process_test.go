@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -302,6 +303,30 @@ func TestInstalls(t *testing.T) {
 	}
 }
 
+// TestInstallsContinuePastFailure verifies Munki semantics: an item failure
+// is logged and the run continues to the remaining items (K1)
+func TestInstallsContinuePastFailure(t *testing.T) {
+	// Override the install function with one that always fails
+	installerInstall = func(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
+		actualInstalledItems = append(actualInstalledItems, item.DisplayName)
+		return "", errors.New("action failed")
+	}
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	// Run `Installs` with test data
+	Installs(testInstalls, testCatalogs, "URLPackages", "CachePath", checkOnlyMode)
+
+	// Every item must still have been attempted despite the failures
+	expectedItems := append([]string{"TestUpdate1"}, testInstalls...)
+	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
+		t.Errorf("\nExpected: %#v\nActual: %#v", expectedItems, actualInstalledItems)
+	}
+}
+
 // TestUninstalls tests if uninstall items are processed correctly
 func TestUninstalls(t *testing.T) {
 	// Override the install function to use our fake function
@@ -398,24 +423,24 @@ func TestCleanUp(t *testing.T) {
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualInstalledItems`
-func fakeInstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) string {
+func fakeInstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualInstalledItems = append(actualInstalledItems, item.DisplayName)
-	return ""
+	return "", nil
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualUninstalledItems`
-func fakeUninstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) string {
+func fakeUninstall(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualUninstalledItems = append(actualUninstalledItems, item.DisplayName)
-	return ""
+	return "", nil
 }
 
 // Mocks the actual `installer.Install` function and saves what it receives to `actualUpdatedItems`
-func fakeUpdate(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) string {
+func fakeUpdate(item catalog.Item, installerType string, urlPackages string, cachePath string, checkOnly bool) (string, error) {
 	// Append any item we are passed to a slice for later comparison
 	actualUpdatedItems = append(actualUpdatedItems, item.DisplayName)
-	return ""
+	return "", nil
 }
 
 // Mock `os.Remove` so we dont delete files during testing

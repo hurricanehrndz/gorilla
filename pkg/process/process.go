@@ -115,6 +115,15 @@ func Manifests(manifests []manifest.Item, catalogsMap map[int]map[string]catalog
 // This abstraction allows us to override when testing
 var installerInstall = installer.Install
 
+// installOne runs a single item action and logs failures; the run continues
+// past item failures (Munki semantics) — the installer already recorded the
+// failure in the report.
+func installOne(item catalog.Item, installerType, urlPackages, cachePath string, checkOnly bool) {
+	if _, err := installerInstall(item, installerType, urlPackages, cachePath, checkOnly); err != nil {
+		slog.Warn("item action failed", "item", item.DisplayName, "err", err)
+	}
+}
+
 // Installs prepares and then installs an array of items
 func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, urlPackages, cachePath string, CheckOnly bool) {
 	// Iterate through the installs array, install dependencies, and then the item itself
@@ -132,11 +141,11 @@ func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, ur
 				if !ok {
 					continue
 				}
-				installerInstall(validDependency, "install", urlPackages, cachePath, CheckOnly)
+				installOne(validDependency, "install", urlPackages, cachePath, CheckOnly)
 			}
 		}
 		// Install the item
-		installerInstall(validItem, "install", urlPackages, cachePath, CheckOnly)
+		installOne(validItem, "install", urlPackages, cachePath, CheckOnly)
 	}
 }
 
@@ -151,7 +160,7 @@ func Uninstalls(uninstalls []string, catalogsMap map[int]map[string]catalog.Item
 			continue
 		}
 		// Uninstall the item
-		installerInstall(validItem, "uninstall", urlPackages, cachePath, CheckOnly)
+		installOne(validItem, "uninstall", urlPackages, cachePath, CheckOnly)
 	}
 }
 
@@ -166,7 +175,7 @@ func Updates(updates []string, catalogsMap map[int]map[string]catalog.Item, urlP
 			continue
 		}
 		// Update the item
-		installerInstall(validItem, "update", urlPackages, cachePath, CheckOnly)
+		installOne(validItem, "update", urlPackages, cachePath, CheckOnly)
 	}
 }
 

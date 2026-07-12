@@ -56,7 +56,7 @@ func TestNewLogCreatesDirAndFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested")
 
 	newLog(t, config.Configuration{AppDataPath: dir})
-	Info("seed") // lumberjack creates the file on first write
+	slog.Info("seed") // lumberjack creates the file on first write
 
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Errorf("log directory not created: %s", dir)
@@ -72,7 +72,7 @@ func TestFanoutWritesToConsoleAndFile(t *testing.T) {
 	dir := t.TempDir()
 
 	newLog(t, config.Configuration{AppDataPath: dir, Verbose: true})
-	Warn("fanout-message")
+	slog.Warn("fanout-message")
 
 	if !strings.Contains(console.String(), "fanout-message") {
 		t.Errorf("console sink missing message: %q", console.String())
@@ -143,7 +143,7 @@ func TestNewLogSkipsUnusableStdout(t *testing.T) {
 		t.Errorf("expected only the file sink, got %d handlers", len(fan.handlers))
 	}
 
-	Warn("no-console")
+	slog.Warn("no-console")
 	if !strings.Contains(string(readLog(t, dir)), "no-console") {
 		t.Errorf("file sink missing record when console is skipped")
 	}
@@ -155,7 +155,7 @@ func TestFileEncodingJSONDefault(t *testing.T) {
 	dir := t.TempDir()
 
 	newLog(t, config.Configuration{AppDataPath: dir})
-	Warn("json-line")
+	slog.Warn("json-line")
 
 	line := bytes.TrimSpace(readLog(t, dir))
 	var rec map[string]any
@@ -176,7 +176,7 @@ func TestFileEncodingPlain(t *testing.T) {
 	dir := t.TempDir()
 
 	newLog(t, config.Configuration{AppDataPath: dir, LogFilePlain: true})
-	Warn("plain-line")
+	slog.Warn("plain-line")
 
 	line := bytes.TrimSpace(readLog(t, dir))
 	if err := json.Unmarshal(line, &map[string]any{}); err == nil {
@@ -205,9 +205,9 @@ func TestConsoleLevelGating(t *testing.T) {
 			dir := t.TempDir()
 			newLog(t, config.Configuration{AppDataPath: dir, Verbose: tc.verbose, Debug: tc.debug})
 
-			Debug("dbg-msg")
-			Info("info-msg")
-			Warn("warn-msg")
+			slog.Debug("dbg-msg")
+			slog.Info("info-msg")
+			slog.Warn("warn-msg")
 			out := console.String()
 
 			if got := strings.Contains(out, "info-msg"); got != tc.infoVisible {
@@ -223,9 +223,8 @@ func TestConsoleLevelGating(t *testing.T) {
 	}
 }
 
-// TestCheckOnlyNoFileAndErrorNoPanic confirms checkonly suppresses the file
-// sink and neuters Error's panic.
-func TestCheckOnlyNoFileAndErrorNoPanic(t *testing.T) {
+// TestCheckOnlyNoFile confirms checkonly suppresses the file sink.
+func TestCheckOnlyNoFile(t *testing.T) {
 	setConsole(t)
 	dir := t.TempDir()
 
@@ -234,18 +233,15 @@ func TestCheckOnlyNoFileAndErrorNoPanic(t *testing.T) {
 		t.Errorf("checkonly should not open a file writer")
 	}
 
-	Warn("checkonly-warn")
+	slog.Warn("checkonly-warn")
 	if _, err := os.Stat(filepath.Join(dir, "gorilla.log")); !os.IsNotExist(err) {
 		t.Errorf("checkonly must not create a log file, stat err = %v", err)
 	}
-
-	// Must not panic under checkonly.
-	Error("should-not-panic")
 }
 
-// TestErrorPanicsAndLogs confirms Error logs to both sinks then panics, and
-// that the file sink is a lumberjack writer under AppDataPath.
-func TestErrorPanicsAndLogs(t *testing.T) {
+// TestErrorLevelLogs confirms ERROR records reach both sinks and that the
+// file sink is a lumberjack writer under AppDataPath.
+func TestErrorLevelLogs(t *testing.T) {
 	console := setConsole(t)
 	dir := t.TempDir()
 
@@ -257,14 +253,7 @@ func TestErrorPanicsAndLogs(t *testing.T) {
 		t.Errorf("writer filename = %q, want %q", logWriter.Filename, want)
 	}
 
-	func() {
-		defer func() {
-			if r := recover(); r == nil {
-				t.Errorf("Error did not panic")
-			}
-		}()
-		Error("boom")
-	}()
+	slog.Error("boom")
 
 	if !strings.Contains(console.String(), "boom") {
 		t.Errorf("Error missing from console: %q", console.String())
