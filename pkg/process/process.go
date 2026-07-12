@@ -13,6 +13,7 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
+	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
 // firstItem returns the first valid occurrence of an item in a map of catalogs.
@@ -124,28 +125,83 @@ func installOne(r *installer.Runner, item catalog.Item, installerType string) {
 	}
 }
 
-// Installs prepares and then installs an array of items
-func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner) {
-	// Iterate through the installs array, install dependencies, and then the item itself
-	for _, item := range installs {
-		// Get the first valid item from our catalogs
-		// Continue to the next item in the loop if we get an error
-		validItem, ok := firstItem(item, catalogsMap)
-		if !ok {
-			continue
-		}
-		// Check for dependencies and install if found
-		if len(validItem.Dependencies) > 0 {
-			for _, dependency := range validItem.Dependencies {
-				validDependency, ok := firstItem(dependency, catalogsMap)
-				if !ok {
-					continue
-				}
-				installOne(r, validDependency, "install")
+// depState tracks an item's progress in the per-run dependency walk (K4)
+type depState int
+
+const (
+	depInProgress depState = iota + 1
+	depSucceeded
+	depFailed
+)
+
+// recordFailedItem records a gating failure (cycle, missing dep, or skipped
+// dependent) that the installer never saw and so never recorded itself.
+func recordFailedItem(r *installer.Runner, name string, err error) {
+	r.Report.FailedItems = append(r.Report.FailedItems, report.FailedItem{
+		Name:   name,
+		Action: "install",
+		Error:  err.Error(),
+	})
+}
+
+// installWithDeps installs itemName's dependencies depth-first and then the
+// item itself (K4, spec R6). visited gates each item to one attempt per run
+// and detects cycles; a failed, invalid, or missing dependency skips its
+// dependents. Returns true if the item installed (or was already up to date).
+func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner, visited map[string]depState) bool {
+	switch visited[itemName] {
+	case depSucceeded:
+		return true
+	case depFailed:
+		return false
+	case depInProgress:
+		// Cycle: the item's own frame is still on the stack, so this lookup
+		// already succeeded there and silently returns the same item.
+		item, _ := firstItem(itemName, catalogsMap)
+		slog.Warn("dependency cycle detected, skipping item", "item", item.DisplayName)
+		recordFailedItem(r, item.DisplayName, fmt.Errorf("dependency cycle detected"))
+		visited[itemName] = depFailed
+		return false
+	}
+
+	// firstItem logs why the item is missing or invalid
+	item, ok := firstItem(itemName, catalogsMap)
+	if !ok {
+		recordFailedItem(r, itemName, fmt.Errorf("not found in any catalog"))
+		visited[itemName] = depFailed
+		return false
+	}
+
+	visited[itemName] = depInProgress
+	for _, dependency := range item.Dependencies {
+		if !installWithDeps(dependency, catalogsMap, r, visited) {
+			if visited[itemName] == depFailed {
+				// a cycle back to this item already recorded it
+				return false
 			}
+			slog.Warn("skipping item: dependency failed", "item", item.DisplayName, "dependency", dependency)
+			recordFailedItem(r, item.DisplayName, fmt.Errorf("dependency %s failed", dependency))
+			visited[itemName] = depFailed
+			return false
 		}
-		// Install the item
-		installOne(r, validItem, "install")
+	}
+
+	// Install the item; the installer records its own command failures
+	if _, err := installerInstall(r, item, "install"); err != nil {
+		slog.Warn("item action failed", "item", item.DisplayName, "err", err)
+		visited[itemName] = depFailed
+		return false
+	}
+	visited[itemName] = depSucceeded
+	return true
+}
+
+// Installs prepares and then installs an array of items with their
+// dependencies resolved recursively (K4, spec R6)
+func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner) {
+	visited := make(map[string]depState)
+	for _, item := range installs {
+		installWithDeps(item, catalogsMap, r, visited)
 	}
 }
 
