@@ -210,6 +210,26 @@ Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
 Wait-For { Test-Path $blockedTxt } "blocked.txt to appear after the blocker stopped"
 Write-Host "    blocked.txt present after retry" -ForegroundColor Green
 
+$optionalUpdateTxt = Join-Path $MarkerDir "optional-update.txt"
+
+# --- Step 10: update_for -- installing a referent rides its updater along
+# Earlier runs predate this feature, so the updater may never have been pulled
+# in. InstallItem:DemoOptional is idempotent -- it triggers a run that installs
+# both the referent (optional.txt) and its updater (optional-update.txt).
+Write-Step "InstallItem:DemoOptional rides DemoUpdater along (optional-update.txt appears)"
+Invoke-Gorilla "InstallItem:DemoOptional" | Out-Null
+Wait-For { Test-Path $optionalTxt } "optional.txt to exist"
+Wait-For { Test-Path $optionalUpdateTxt } "optional-update.txt to exist (updater rode along)"
+Write-Host "    optional.txt and optional-update.txt both present" -ForegroundColor Green
+
+# --- Step 11: removal coupling -- removing the referent removes its updater
+Write-Step "RemoveItem:DemoOptional removes both markers (removal coupling)"
+Invoke-Gorilla "RemoveItem:DemoOptional" | Out-Null
+Wait-For { -not (Test-Path $optionalTxt) } "optional.txt to be removed"
+Wait-For { -not (Test-Path $optionalUpdateTxt) } "optional-update.txt to be removed (coupled)"
+Wait-For { (Get-YamlList $SelfServe "managed_uninstalls").Count -eq 0 } "managed_uninstalls to be pruned empty"
+Write-Host "    both markers gone and managed_uninstalls pruned" -ForegroundColor Green
+
 Write-Host ""
 Write-Host "SELF-SERVE SMOKE PASSED" -ForegroundColor Green
 exit 0

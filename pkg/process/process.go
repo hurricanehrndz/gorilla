@@ -169,7 +169,7 @@ func recordDeferredItem(r *installer.Runner, name, version, reason string) {
 // item itself (K4, spec R6). visited gates each item to one attempt per run
 // and detects cycles; a failed, invalid, or missing dependency skips its
 // dependents. Returns true if the item installed (or was already up to date).
-func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner, visited map[string]depState) bool {
+func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner, visited map[string]depState, index map[string][]string) bool {
 	switch visited[itemName] {
 	case depSucceeded:
 		return true
@@ -195,7 +195,7 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 
 	visited[itemName] = depInProgress
 	for _, dependency := range item.Dependencies {
-		if !installWithDeps(dependency, catalogsMap, r, visited) {
+		if !installWithDeps(dependency, catalogsMap, r, visited, index) {
 			if visited[itemName] == depFailed {
 				// a cycle back to this item already recorded it
 				return false
@@ -228,15 +228,24 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 		return false
 	}
 	visited[itemName] = depSucceeded
+
+	// update_for (R7): now that this referent installed, its updaters are
+	// processed as installs through the same walk. visited keeps this cycle-safe
+	// and once-per-run; a deferred or failed referent never reaches here, so its
+	// updaters are skipped (Munki: dependents of skipped work are skipped).
+	for _, updater := range index[itemName] {
+		installWithDeps(updater, catalogsMap, r, visited, index)
+	}
 	return true
 }
 
 // Installs prepares and then installs an array of items with their
-// dependencies resolved recursively (K4, spec R6)
-func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner) {
+// dependencies resolved recursively (K4, spec R6). index maps referent names to
+// their update_for updaters so updaters ride along after their referent (R7).
+func Installs(installs []string, catalogsMap map[int]map[string]catalog.Item, r *installer.Runner, index map[string][]string) {
 	visited := make(map[string]depState)
 	for _, item := range installs {
-		installWithDeps(item, catalogsMap, r, visited)
+		installWithDeps(item, catalogsMap, r, visited, index)
 	}
 }
 

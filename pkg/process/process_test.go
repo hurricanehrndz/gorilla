@@ -383,7 +383,7 @@ func TestInstalls(t *testing.T) {
 	defer func() { installerInstall = origInstall }()
 
 	// Run `Installs` with test data
-	Installs(testInstalls, testCatalogs, testRunner)
+	Installs(testInstalls, testCatalogs, testRunner, nil)
 
 	// Define what we expect to be in the list of installed items
 	// This ends up being the testInstalls slice *PLUS any dependencies*
@@ -415,7 +415,7 @@ func TestInstallsContinuePastFailure(t *testing.T) {
 
 	// Run `Installs` with test data
 	r := &installer.Runner{Report: report.New()}
-	Installs(testInstalls, testCatalogs, r)
+	Installs(testInstalls, testCatalogs, r, nil)
 
 	// Every independent item must still have been attempted despite the
 	// failures; Chocolatey is skipped because its dependency TestUpdate1 failed
@@ -453,7 +453,7 @@ func TestInstallsDependencyChain(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"ChainA"}, testCatalogs, r)
+	Installs([]string{"ChainA"}, testCatalogs, r, nil)
 
 	expectedItems := []string{"ChainC", "ChainB", "ChainA"}
 	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
@@ -473,7 +473,7 @@ func TestInstallsSharedDependency(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"DiamondA"}, testCatalogs, r)
+	Installs([]string{"DiamondA"}, testCatalogs, r, nil)
 
 	expectedItems := []string{"DiamondD", "DiamondB", "DiamondC", "DiamondA"}
 	if !reflect.DeepEqual(expectedItems, actualInstalledItems) {
@@ -494,7 +494,7 @@ func TestInstallsDependencyCycle(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"CycleA", "GoogleChrome"}, testCatalogs, r)
+	Installs([]string{"CycleA", "GoogleChrome"}, testCatalogs, r, nil)
 
 	// Neither cycled item installs; the run continues to GoogleChrome
 	expectedItems := []string{"GoogleChrome"}
@@ -525,7 +525,7 @@ func TestInstallsFailedDependencyBlocksDependent(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"NeedsFailing", "GoogleChrome"}, testCatalogs, r)
+	Installs([]string{"NeedsFailing", "GoogleChrome"}, testCatalogs, r, nil)
 
 	// FailingDep is attempted; NeedsFailing is skipped; GoogleChrome still runs
 	expectedItems := []string{"FailingDep", "GoogleChrome"}
@@ -549,7 +549,7 @@ func TestInstallsMissingDependencyBlocksDependent(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"NeedsMissing"}, testCatalogs, r)
+	Installs([]string{"NeedsMissing"}, testCatalogs, r, nil)
 
 	if len(actualInstalledItems) != 0 {
 		t.Errorf("\nExpected no installs\nActual: %#v", actualInstalledItems)
@@ -750,7 +750,7 @@ func TestInstallsDeferredDependencyCascadesOneLevel(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"BlockMid"}, blockingCascadeCatalog(), r)
+	Installs([]string{"BlockMid"}, blockingCascadeCatalog(), r, nil)
 
 	// Only the leaf is attempted; the dependent is skipped and deferred.
 	if !reflect.DeepEqual([]string{"BlockLeaf"}, actualInstalledItems) {
@@ -774,7 +774,7 @@ func TestInstallsDeferredDependencyCascadesTwoLevels(t *testing.T) {
 	}()
 
 	r := &installer.Runner{Report: report.New()}
-	Installs([]string{"BlockTop"}, blockingCascadeCatalog(), r)
+	Installs([]string{"BlockTop"}, blockingCascadeCatalog(), r, nil)
 
 	if !reflect.DeepEqual([]string{"BlockLeaf"}, actualInstalledItems) {
 		t.Errorf("attempted items\nExpected: %#v\nActual: %#v", []string{"BlockLeaf"}, actualInstalledItems)

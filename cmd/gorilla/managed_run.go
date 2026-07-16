@@ -133,9 +133,21 @@ func managedRun(cfg config.Configuration) error {
 		CheckOnly:   cfg.CheckOnly,
 	}
 
+	// Expand update_for (R7): build the updater index once, ride updaters of
+	// referents merely installed on disk into the install list (referents being
+	// installed this run are expanded in-walk), and couple updater removals to
+	// their referent's removal.
+	index := process.UpdaterIndex(catalogs)
+	installsSet := make(map[string]bool, len(installs))
+	for _, name := range installs {
+		installsSet[name] = true
+	}
+	installs = append(installs, process.InstalledReferentUpdaters(catalogs, index, installsSet, runner.Checker, cfg.CachePath)...)
+	uninstalls = process.ExpandUninstallsWithUpdaters(uninstalls, index)
+
 	// Prepare and install
 	slog.Info("Processing managed installs...")
-	process.Installs(installs, catalogs, runner)
+	process.Installs(installs, catalogs, runner, index)
 
 	// Prepare and uninstall
 	slog.Info("Processing managed uninstalls...")
