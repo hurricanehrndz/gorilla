@@ -1,0 +1,84 @@
+# Self-serve smoke catalog (Workstream C E2E). Marker installers write files
+# under C:\ProgramData\gorilla-c-smoke\; uninstallers delete them. The installer
+# hashes below are the SHA256 of the ps1 files in packages/scripts — regenerate
+# them (sha256sum) whenever a script changes or the download hash check fails.
+DemoOptional:
+  display_name: Demo Optional
+  description: A self-service optional install used by the Workstream C smoke test
+  category: Smoke
+  developer: Gorilla
+  icon_name: demo-optional.png
+  restart_action: None
+  check:
+    file:
+      - path: C:\ProgramData\gorilla-c-smoke\optional.txt
+  installer:
+    type: ps1
+    location: packages/scripts/demooptional-install.ps1
+    hash: 9a430cbbbe3258d0bd44cce0f1f2ea61a5283a6ddbb65db0cf494a5788e57acf
+  uninstaller:
+    type: ps1
+    location: packages/scripts/demooptional-uninstall.ps1
+    hash: a2981def3ade212d8d875c0e263fde861c5ebb64c3b28432b9f44b4aac95bd4d
+  version: "1.0"
+DemoDefault:
+  display_name: Demo Default
+  check:
+    file:
+      - path: C:\ProgramData\gorilla-c-smoke\default.txt
+  installer:
+    type: ps1
+    location: packages/scripts/demodefault-install.ps1
+    hash: 32774fa0552591e0a5f66a1ff382bb528bcfb32410c64388526d726bb4d36aa3
+  uninstaller:
+    type: ps1
+    location: packages/scripts/demodefault-uninstall.ps1
+    hash: 7efabc3552fb0774eae48e7eda8bc4efd6d94b435446958ac86e736c0eea3eb1
+  version: "1.0"
+DemoBlocked:
+  display_name: Demo Blocked
+  # blocking_apps without .exe deliberately exercises the name contract (P4).
+  blocking_apps:
+    - notepad
+  check:
+    file:
+      - path: C:\ProgramData\gorilla-c-smoke\blocked.txt
+  installer:
+    type: ps1
+    location: packages/scripts/demoblocked-install.ps1
+    hash: 4cbbc99ebd062b2bb51156368df7a003b0f315e4965b1d679c306272fced04e1
+  uninstaller:
+    type: ps1
+    location: packages/scripts/demoblocked-uninstall.ps1
+    hash: 8b8c8f2d54fb64e0b4f42e166bb4c31c8fc46887dff92753dbc10abea7e94736
+  version: "1.0"
+# DemoUpdater rides along with DemoOptional (update_for). It is NOT offered in
+# optional_installs — updaters are pulled in by their referent (P5).
+DemoUpdater:
+  display_name: Demo Updater
+  update_for:
+    - DemoOptional
+  check:
+    file:
+      - path: C:\ProgramData\gorilla-c-smoke\optional-update.txt
+  installer:
+    type: ps1
+    location: packages/scripts/demoupdater-install.ps1
+    hash: 8a587e66994e6a4c09e6fc77b35636f3405e7d738928dd82042b6cb044c7cad6
+  uninstaller:
+    type: ps1
+    location: packages/scripts/demoupdater-uninstall.ps1
+    hash: e1866b01e59750f207294334f5d11d7371dab4e7431ae4bc90f008d144e80b02
+  version: "1.0"
+# DemoFailing's installer exits 1 and its file check points at a path the
+# installer never creates, so the run records an honest failure (P6).
+DemoFailing:
+  display_name: Demo Failing
+  check:
+    file:
+      - path: C:\ProgramData\gorilla-c-smoke\never-created.txt
+  installer:
+    type: ps1
+    location: packages/scripts/demofailing-install.ps1
+    hash: d7e53b61d6ec34f5dee0cea5ec0a4e1b4f22a13d2238393e63d843e1086455de
+  version: "1.0"

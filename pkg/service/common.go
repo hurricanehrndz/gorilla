@@ -151,15 +151,20 @@ func serviceLocalManifestPath(cfg config.Configuration) string {
 	return manifest.SelfServePath(cfg.AppDataPath)
 }
 
-func listServiceManagedInstalls(cfg config.Configuration) ([]string, error) {
-	item, err := loadServiceLocalManifest(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return item.Installs, nil
-}
-
 func addServiceManagedInstalls(cfg config.Configuration, items []string) error {
+	// Authorize each requested name against the currently available optional
+	// installs before writing anything (R3). An unknown name is rejected and the
+	// file is left untouched; the pipe layer maps the error to an error envelope.
+	available, err := getOptionalItems(cfg)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if !slices.Contains(available, item) {
+			return fmt.Errorf("item %q is not available for self-service", item)
+		}
+	}
+
 	entry, err := loadServiceLocalManifest(cfg)
 	if err != nil {
 		return err
@@ -169,6 +174,9 @@ func addServiceManagedInstalls(cfg config.Configuration, items []string) error {
 		if !slices.Contains(entry.Installs, item) {
 			entry.Installs = append(entry.Installs, item)
 		}
+		// Re-selecting an item pending removal cancels the removal; Munki keeps
+		// managed_installs and managed_uninstalls disjoint.
+		entry.Uninstalls = slices.DeleteFunc(entry.Uninstalls, func(u string) bool { return u == item })
 	}
 	slices.Sort(entry.Installs)
 
@@ -188,6 +196,16 @@ func removeServiceManagedInstalls(cfg config.Configuration, items []string) erro
 		}
 	}
 	entry.Installs = filtered
+
+	// Deselecting drives a real removal: queue the item in managed_uninstalls
+	// (dedup, sorted) so the next run uninstalls it (R3).
+	for _, item := range items {
+		if !slices.Contains(entry.Uninstalls, item) {
+			entry.Uninstalls = append(entry.Uninstalls, item)
+		}
+	}
+	slices.Sort(entry.Uninstalls)
+
 	return saveServiceLocalManifest(cfg, entry)
 }
 

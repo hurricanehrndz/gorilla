@@ -1,1 +1,5 @@
 pkg/download/testdata/hashtest.txt text eol=lf
+
+# Self-serve smoke marker scripts are hash-pinned in selfserve_catalog.yaml;
+# keep LF so the served bytes match the catalog hashes on every platform.
+utils/manual-test/fixtures/selfserve/packages/scripts/*.ps1 text eol=lf

@@ -105,6 +105,25 @@ func managedRun(cfg config.Configuration) error {
 	slog.Info("Processing manifest...")
 	installs, uninstalls, updates := process.Manifests(manifests, catalogs)
 
+	// Reconcile the self-serve manifest: assert once-only defaults, authorize
+	// user selections against the admin optional_installs, and queue deselected
+	// items for removal (R2, R4, R5).
+	selfServePath := manifest.SelfServePath(cfg.AppDataPath)
+	selfServe, err := manifest.LoadSelfServe(selfServePath)
+	if err != nil {
+		return fmt.Errorf("unable to load self-serve manifest: %w", err)
+	}
+	ssInstalls, ssUninstalls, changed := process.ReconcileSelfServe(&selfServe, manifests)
+	if changed {
+		// Defaults are asserted on every run, including check-only (Munki asserts
+		// during updatecheck), so save regardless of CheckOnly.
+		if err := manifest.SaveSelfServe(selfServePath, selfServe); err != nil {
+			return fmt.Errorf("unable to save self-serve manifest: %w", err)
+		}
+	}
+	installs = append(installs, ssInstalls...)
+	uninstalls = append(uninstalls, ssUninstalls...)
+
 	// Build the run-scoped installer context (K7)
 	runner := &installer.Runner{
 		Report:      run,
@@ -121,6 +140,16 @@ func managedRun(cfg config.Configuration) error {
 	// Prepare and uninstall
 	slog.Info("Processing managed uninstalls...")
 	process.Uninstalls(uninstalls, catalogs, runner)
+
+	// Prune self-serve uninstalls that are confirmed gone so the user can
+	// reinstall later (R5). Only after a real run, never in check-only.
+	if !cfg.CheckOnly {
+		if process.PruneSelfServeUninstalls(&selfServe, catalogs, runner.Checker, cfg.CachePath) {
+			if err := manifest.SaveSelfServe(selfServePath, selfServe); err != nil {
+				return fmt.Errorf("unable to save self-serve manifest after prune: %w", err)
+			}
+		}
+	}
 
 	// Prepare and update
 	slog.Info("Processing managed updates...")
