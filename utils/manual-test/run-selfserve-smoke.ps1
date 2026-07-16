@@ -173,6 +173,43 @@ if ((Get-YamlList $SelfServe "default_installs") -notcontains "DemoDefault") {
 }
 Write-Host "    default stayed removed and is still recorded (once-only)" -ForegroundColor Green
 
+$blockedTxt = Join-Path $MarkerDir "blocked.txt"
+$reportPath = "$env:ProgramData\gorilla\GorillaReport.json"
+
+# Report-Defers returns $true when GorillaReport.json's DeferredItems names $Item.
+# The report is rewritten at the end of every run.
+function Report-Defers {
+    param([string]$Item)
+    if (-not (Test-Path $reportPath)) { return $false }
+    try {
+        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    $deferred = $report.DeferredItems
+    if (-not $deferred) { return $false }
+    return @($deferred | Where-Object { $_.Name -eq $Item }).Count -gt 0
+}
+
+# --- Step 8: a running blocking app defers the install (never killed)
+Write-Step "InstallItem:DemoBlocked with notepad running is deferred, not installed"
+if (Test-Path $blockedTxt) { Remove-Item -LiteralPath $blockedTxt -Force }
+Start-Process notepad | Out-Null
+Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
+Wait-For { Report-Defers "DemoBlocked" } "GorillaReport.json DeferredItems to name DemoBlocked"
+if (Test-Path $blockedTxt) {
+    Fail "blocked.txt was created while notepad was running (item not deferred)"
+}
+Write-Host "    DemoBlocked deferred and blocked.txt absent" -ForegroundColor Green
+
+# --- Step 9: with the blocker gone, the next run installs (retry works)
+Write-Step "Stop notepad, InstallItem:DemoBlocked now installs (blocked.txt appears)"
+Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
+Wait-For { Test-Path $blockedTxt } "blocked.txt to appear after the blocker stopped"
+Write-Host "    blocked.txt present after retry" -ForegroundColor Green
+
 Write-Host ""
 Write-Host "SELF-SERVE SMOKE PASSED" -ForegroundColor Green
 exit 0

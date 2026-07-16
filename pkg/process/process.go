@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -121,6 +122,11 @@ var installerInstall = (*installer.Runner).Install
 // failure in the report.
 func installOne(r *installer.Runner, item catalog.Item, installerType string) {
 	if _, err := installerInstall(r, item, installerType); err != nil {
+		if errors.Is(err, installer.ErrBlockingApps) {
+			// The installer already recorded the deferral; not a failure (R6).
+			slog.Info("item deferred: blocking application(s) running", "item", item.DisplayName)
+			return
+		}
 		slog.Warn("item action failed", "item", item.DisplayName, "err", err)
 	}
 }
@@ -132,6 +138,7 @@ const (
 	depInProgress depState = iota + 1
 	depSucceeded
 	depFailed
+	depDeferred
 )
 
 // recordFailedItem records a gating failure (cycle, missing dep, or skipped
@@ -146,6 +153,18 @@ func recordFailedItem(r *installer.Runner, name, version string, err error) {
 	})
 }
 
+// recordDeferredItem records a cascade deferral: a dependent skipped because
+// one of its dependencies was deferred (R6/R12). The installer records its own
+// direct deferrals; this covers only the walk's cascade.
+func recordDeferredItem(r *installer.Runner, name, version, reason string) {
+	r.Report.DeferredItems = append(r.Report.DeferredItems, report.DeferredItem{
+		Name:    name,
+		Version: version,
+		Action:  "install",
+		Reason:  reason,
+	})
+}
+
 // installWithDeps installs itemName's dependencies depth-first and then the
 // item itself (K4, spec R6). visited gates each item to one attempt per run
 // and detects cycles; a failed, invalid, or missing dependency skips its
@@ -154,7 +173,7 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 	switch visited[itemName] {
 	case depSucceeded:
 		return true
-	case depFailed:
+	case depFailed, depDeferred:
 		return false
 	case depInProgress:
 		// Cycle: the item's own frame is still on the stack, so this lookup
@@ -181,6 +200,14 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 				// a cycle back to this item already recorded it
 				return false
 			}
+			// A deferred dependency cascades: the dependent is deferred, not
+			// failed, and retried next run (R6).
+			if visited[dependency] == depDeferred {
+				slog.Info("deferring item: dependency deferred", "item", item.DisplayName, "dependency", dependency)
+				recordDeferredItem(r, item.Name, item.Version, fmt.Sprintf("dependency %s deferred", dependency))
+				visited[itemName] = depDeferred
+				return false
+			}
 			slog.Warn("skipping item: dependency failed", "item", item.DisplayName, "dependency", dependency)
 			recordFailedItem(r, item.DisplayName, item.Version, fmt.Errorf("dependency %s failed", dependency))
 			visited[itemName] = depFailed
@@ -190,6 +217,12 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 
 	// Install the item; the installer records its own failures in the report
 	if _, err := installerInstall(r, item, "install"); err != nil {
+		if errors.Is(err, installer.ErrBlockingApps) {
+			// The installer already recorded the deferral (R6); mark deferred
+			// so dependents cascade rather than fail.
+			visited[itemName] = depDeferred
+			return false
+		}
 		slog.Warn("item action failed", "item", item.DisplayName, "err", err)
 		visited[itemName] = depFailed
 		return false

@@ -681,3 +681,138 @@ func fakeOsRemove(name string) error {
 	actualRemovedFiles = append(actualRemovedFiles, name)
 	return nil
 }
+
+// blockingCascadeCatalog is a self-contained catalog whose items carry Name
+// (stamped at load in production) so deferred records can be asserted by name.
+func blockingCascadeCatalog() map[int]map[string]catalog.Item {
+	return map[int]map[string]catalog.Item{1: {
+		"BlockLeaf": {
+			Name:         "BlockLeaf",
+			DisplayName:  "BlockLeaf",
+			Installer:    catalog.InstallerItem{Type: "msi", Location: "BlockLeaf.msi"},
+			BlockingApps: []string{"notepad"},
+		},
+		"BlockMid": {
+			Name:         "BlockMid",
+			DisplayName:  "BlockMid",
+			Installer:    catalog.InstallerItem{Type: "msi", Location: "BlockMid.msi"},
+			Dependencies: []string{"BlockLeaf"},
+		},
+		"BlockTop": {
+			Name:         "BlockTop",
+			DisplayName:  "BlockTop",
+			Installer:    catalog.InstallerItem{Type: "msi", Location: "BlockTop.msi"},
+			Dependencies: []string{"BlockMid"},
+		},
+	}}
+}
+
+// deferOnBlocking mimics the real installer: an item with blocking_apps records
+// its own deferral and returns ErrBlockingApps; anything else succeeds.
+func deferOnBlocking(r *installer.Runner, item catalog.Item, installerType string) (string, error) {
+	actualInstalledItems = append(actualInstalledItems, item.DisplayName)
+	if len(item.BlockingApps) > 0 {
+		r.Report.DeferredItems = append(r.Report.DeferredItems, report.DeferredItem{
+			Name:    item.Name,
+			Version: item.Version,
+			Action:  installerType,
+			Reason:  "blocking application(s) running: notepad.exe",
+		})
+		return "", installer.ErrBlockingApps
+	}
+	return "", nil
+}
+
+// assertDeferredItems checks the report contains exactly the expected deferred
+// items, each recorded once with the expected reason.
+func assertDeferredItems(t *testing.T, r *installer.Runner, expected map[string]string) {
+	t.Helper()
+	actual := make(map[string]string)
+	for _, d := range r.Report.DeferredItems {
+		if _, dup := actual[d.Name]; dup {
+			t.Errorf("item recorded in DeferredItems more than once: %v", d.Name)
+		}
+		actual[d.Name] = d.Reason
+	}
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("DeferredItems\nExpected: %#v\nActual: %#v", expected, actual)
+	}
+}
+
+// TestInstallsDeferredDependencyCascadesOneLevel verifies a deferred dependency
+// defers its direct dependent (recorded deferred, not failed) — spec R6.
+func TestInstallsDeferredDependencyCascadesOneLevel(t *testing.T) {
+	installerInstall = deferOnBlocking
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"BlockMid"}, blockingCascadeCatalog(), r)
+
+	// Only the leaf is attempted; the dependent is skipped and deferred.
+	if !reflect.DeepEqual([]string{"BlockLeaf"}, actualInstalledItems) {
+		t.Errorf("attempted items\nExpected: %#v\nActual: %#v", []string{"BlockLeaf"}, actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{})
+	assertDeferredItems(t, r, map[string]string{
+		"BlockLeaf": "blocking application(s) running: notepad.exe",
+		"BlockMid":  "dependency BlockLeaf deferred",
+	})
+}
+
+// TestInstallsDeferredDependencyCascadesTwoLevels verifies the deferral cascades
+// transitively through two dependency levels, never landing in FailedItems.
+func TestInstallsDeferredDependencyCascadesTwoLevels(t *testing.T) {
+	installerInstall = deferOnBlocking
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	r := &installer.Runner{Report: report.New()}
+	Installs([]string{"BlockTop"}, blockingCascadeCatalog(), r)
+
+	if !reflect.DeepEqual([]string{"BlockLeaf"}, actualInstalledItems) {
+		t.Errorf("attempted items\nExpected: %#v\nActual: %#v", []string{"BlockLeaf"}, actualInstalledItems)
+	}
+	assertFailedItems(t, r, map[string]string{})
+	assertDeferredItems(t, r, map[string]string{
+		"BlockLeaf": "blocking application(s) running: notepad.exe",
+		"BlockMid":  "dependency BlockLeaf deferred",
+		"BlockTop":  "dependency BlockMid deferred",
+	})
+}
+
+// TestUninstallsDeferredNotFailure verifies a deferred item in the Uninstalls
+// loop is not recorded as a failure (the installer already recorded it) — R6.
+func TestUninstallsDeferredNotFailure(t *testing.T) {
+	installerInstall = deferOnBlocking
+	actualInstalledItems = nil
+	defer func() {
+		installerInstall = origInstall
+		actualInstalledItems = nil
+	}()
+
+	catalogs := map[int]map[string]catalog.Item{1: {
+		"BlockUninstall": {
+			Name:         "BlockUninstall",
+			DisplayName:  "BlockUninstall",
+			Uninstaller:  catalog.InstallerItem{Type: "msi", Location: "BlockUninstall.msi"},
+			BlockingApps: []string{"notepad"},
+		},
+	}}
+
+	r := &installer.Runner{Report: report.New()}
+	Uninstalls([]string{"BlockUninstall"}, catalogs, r)
+
+	if len(r.Report.FailedItems) != 0 {
+		t.Errorf("deferred uninstall must not be a failure: %#v", r.Report.FailedItems)
+	}
+	assertDeferredItems(t, r, map[string]string{
+		"BlockUninstall": "blocking application(s) running: notepad.exe",
+	})
+}

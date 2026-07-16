@@ -3,6 +3,7 @@ package installer
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,15 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/report"
 	"github.com/1dustindavis/gorilla/pkg/status"
 )
+
+// ErrBlockingApps is returned by Install when a listed blocking application is
+// running: the action was skipped and recorded in the report's DeferredItems
+// (spec R6). It is errors.Is-able so the dependency walk can cascade the
+// deferral instead of treating it as a failure.
+var ErrBlockingApps = errors.New("blocking applications running")
+
+// runningBlockingApps is a seam so tests can stub the process snapshot.
+var runningBlockingApps = status.RunningBlockingApps
 
 // ProgressFn receives coarse per-item progress events. States emitted per
 // item: `downloading`, `installing`/`removing`, `done`/`failed`. This seam's
@@ -267,6 +277,33 @@ func (r *Runner) recordFailure(item catalog.Item, action string, err error) erro
 	return err
 }
 
+// blockingGate defers the item when any of its explicit blocking_apps are
+// running (spec R6): it records a DeferredItem and returns ErrBlockingApps so
+// the caller skips — never kills — the action. An empty list means no check. A
+// snapshot failure proceeds (does not block the run), matching Munki, which
+// treats a failed process listing as "none running".
+func (r *Runner) blockingGate(item catalog.Item, action string) error {
+	if len(item.BlockingApps) == 0 {
+		return nil
+	}
+	running, err := runningBlockingApps(item.BlockingApps)
+	if err != nil {
+		slog.Warn("unable to check blocking apps, proceeding", "item", item.DisplayName, "err", err)
+		return nil
+	}
+	if len(running) == 0 {
+		return nil
+	}
+	r.Report.DeferredItems = append(r.Report.DeferredItems, report.DeferredItem{
+		Name:    item.Name,
+		Version: item.Version,
+		Action:  action,
+		Reason:  "blocking application(s) running: " + strings.Join(running, ", "),
+	})
+	slog.Info("Deferring item: blocking application(s) running", "item", item.DisplayName, "apps", strings.Join(running, ", "))
+	return ErrBlockingApps
+}
+
 // actionItem is the shared execution path for installs and uninstalls:
 // download if needed, build the type-specific command, run it, and record the
 // honest result in the report.
@@ -427,6 +464,11 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 			return "Check only enabled", nil
 		}
 
+		// Defer instead of acting if a blocking app is running (R6)
+		if err := r.blockingGate(item, installerType); err != nil {
+			return "", err
+		}
+
 		// Compile the item's URL
 		itemURL := r.URLPackages + item.Installer.Location
 
@@ -461,6 +503,11 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 			slog.Info("[CHECK ONLY] Skipping actions", "item", item.DisplayName)
 			// Check only mode doesn't perform any action, return
 			return "Check only enabled", nil
+		}
+
+		// Defer instead of acting if a blocking app is running (R6)
+		if err := r.blockingGate(item, installerType); err != nil {
+			return "", err
 		}
 
 		// Compile the item's URL
