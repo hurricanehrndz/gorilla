@@ -3,8 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,13 +10,9 @@ import (
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
-	"go.yaml.in/yaml/v4"
 )
 
-var (
-	manifestGet = manifest.Get
-	mkdirAll    = os.MkdirAll
-)
+var manifestGet = manifest.Get
 
 type Command struct {
 	Action string   `json:"action"`
@@ -154,7 +148,7 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 }
 
 func serviceLocalManifestPath(cfg config.Configuration) string {
-	return filepath.Join(cfg.AppDataPath, "service-manifest.yaml")
+	return manifest.SelfServePath(cfg.AppDataPath)
 }
 
 func listServiceManagedInstalls(cfg config.Configuration) ([]string, error) {
@@ -198,49 +192,11 @@ func removeServiceManagedInstalls(cfg config.Configuration, items []string) erro
 }
 
 func loadServiceLocalManifest(cfg config.Configuration) (manifest.Item, error) {
-	path := serviceLocalManifestPath(cfg)
-	defaultManifest := manifest.Item{
-		Name:     "service-manifest",
-		Installs: []string{},
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return defaultManifest, nil
-		}
-		return manifest.Item{}, fmt.Errorf("unable to read service local manifest %s: %w", path, err)
-	}
-
-	entry := defaultManifest
-	if err := yaml.Unmarshal(data, &entry); err != nil {
-		return manifest.Item{}, fmt.Errorf("unable to parse service local manifest %s: %w", path, err)
-	}
-	if entry.Name == "" {
-		entry.Name = defaultManifest.Name
-	}
-	return entry, nil
+	return manifest.LoadSelfServe(serviceLocalManifestPath(cfg))
 }
 
 func saveServiceLocalManifest(cfg config.Configuration, entry manifest.Item) error {
-	path := serviceLocalManifestPath(cfg)
-	if err := mkdirAll(filepath.Clean(filepath.Dir(path)), 0o755); err != nil {
-		return fmt.Errorf("unable to create local manifest directory: %w", err)
-	}
-
-	entry.Includes = nil
-	entry.Uninstalls = nil
-	entry.Updates = nil
-	entry.Catalogs = nil
-
-	data, err := yaml.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("unable to encode service local manifest: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("unable to write service local manifest %s: %w", path, err)
-	}
-	return nil
+	return manifest.SaveSelfServe(serviceLocalManifestPath(cfg), entry)
 }
 
 func getOptionalItems(cfg config.Configuration) ([]string, error) {

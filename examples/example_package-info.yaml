@@ -1,5 +1,14 @@
 item_name: GoogleChrome
 display_name: Google Chrome
+description: A fast, secure, and free web browser
+category: Browsers
+developer: Google
+icon_name: googlechrome.png
+restart_action: None
+# update_for: names of items this package is an update for
+# blocking_apps: process image names, case-insensitive, trailing `.exe` optional
+blocking_apps:
+  - chrome
 check:
   registry:
     name: Google Chrome
@@ -9,5 +18,10 @@ installer:
   location: packages/google-chrome/GoogleChrome.68.0.3440.106.nupkg
   package_id: GoogleChrome
   type: nupkg
+# Uninstall-side scripts, mirroring preinstall_script/postinstall_script
+preuninstall_script: |
+  Stop-Process -Name chrome -ErrorAction SilentlyContinue
+postuninstall_script: |
+  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Google\Chrome" -ErrorAction SilentlyContinue
 version: 68.0.3440.106
 catalog: testcatalog
