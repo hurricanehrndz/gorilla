@@ -3,16 +3,24 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
+	"github.com/1dustindavis/gorilla/pkg/download"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
+	"github.com/1dustindavis/gorilla/pkg/report"
+	"github.com/1dustindavis/gorilla/pkg/status"
 )
 
-var manifestGet = manifest.Get
+var (
+	manifestGet = manifest.Get
+	catalogGet  = catalog.Get
+)
 
 type Command struct {
 	Action string   `json:"action"`
@@ -20,10 +28,16 @@ type Command struct {
 }
 
 type CommandResponse struct {
-	Status      string   `json:"status"`
-	Message     string   `json:"message,omitempty"`
-	Items       []string `json:"items,omitempty"`
-	OperationID string   `json:"operationId,omitempty"`
+	Status        string                        `json:"status"`
+	Message       string                        `json:"message,omitempty"`
+	Items         []string                      `json:"items,omitempty"`
+	OptionalItems []optionalInstallResponseItem `json:"optionalItems,omitempty"`
+	OperationID   string                        `json:"operationId,omitempty"`
+
+	// report carries the managed run's per-run report from an actionRun back to
+	// the caller so scheduleRunAfterMutation can emit an honest terminal event
+	// (R10). Unexported so it is skipped by JSON and never crosses the pipe.
+	report *report.Report
 }
 
 const (
@@ -115,10 +129,11 @@ func serviceInstallArgs(configPath string) []string {
 	return []string{"-c", configPath, "-service"}
 }
 
-func executeCommand(cfg config.Configuration, cmd Command, managedRun func(config.Configuration) error) (CommandResponse, error) {
+func executeCommand(cfg config.Configuration, cmd Command, managedRun func(config.Configuration) (*report.Report, error)) (CommandResponse, error) {
 	switch cmd.Action {
 	case actionRun:
-		return CommandResponse{Status: "ok"}, managedRun(cfg)
+		rep, err := managedRun(cfg)
+		return CommandResponse{Status: "ok", report: rep}, err
 	case actionInstallItem:
 		if err := addServiceManagedInstalls(cfg, cmd.Items); err != nil {
 			return CommandResponse{}, err
@@ -136,7 +151,11 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 		if err != nil {
 			return CommandResponse{}, err
 		}
-		return CommandResponse{Status: "ok", Items: items}, nil
+		names := make([]string, 0, len(items))
+		for _, it := range items {
+			names = append(names, it.ItemName)
+		}
+		return CommandResponse{Status: "ok", Items: names, OptionalItems: items}, nil
 	case actionStreamOperationStatus:
 		return CommandResponse{
 			Status:  "ok",
@@ -159,8 +178,12 @@ func addServiceManagedInstalls(cfg config.Configuration, items []string) error {
 	if err != nil {
 		return err
 	}
+	availableNames := make(map[string]bool, len(available))
+	for _, it := range available {
+		availableNames[it.ItemName] = true
+	}
 	for _, item := range items {
-		if !slices.Contains(available, item) {
+		if !availableNames[item] {
 			return fmt.Errorf("item %q is not available for self-service", item)
 		}
 	}
@@ -217,22 +240,147 @@ func saveServiceLocalManifest(cfg config.Configuration, entry manifest.Item) err
 	return manifest.SaveSelfServe(serviceLocalManifestPath(cfg), entry)
 }
 
-func getOptionalItems(cfg config.Configuration) ([]string, error) {
-	manifests, _, err := manifestGet(cfg)
+// getOptionalItems builds the honest ListOptionalInstalls payload (R9): it
+// fetches the admin manifests and catalogs, loads the self-serve manifest, and
+// for every offered optional name resolves the catalog metadata and real
+// install status. The list call must stand on its own, so it seeds download's
+// config rather than relying on a prior run.
+func getOptionalItems(cfg config.Configuration) ([]optionalInstallResponseItem, error) {
+	download.SetConfig(cfg)
+
+	manifests, newCatalogs, err := manifestGet(cfg)
 	if err != nil {
 		return nil, err
 	}
-	options := make([]string, 0)
+	if newCatalogs != nil {
+		cfg.Catalogs = append(cfg.Catalogs, newCatalogs...)
+	}
+
+	catalogs, err := catalogGet(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	selfServe, err := manifest.LoadSelfServe(manifest.SelfServePath(cfg.AppDataPath))
+	if err != nil {
+		return nil, err
+	}
+	selected := sliceSet(selfServe.Installs)
+	pendingRemoval := sliceSet(selfServe.Uninstalls)
+
+	// Union of offered optional names, deduped and sorted for a stable payload.
+	names := make([]string, 0)
 	seen := make(map[string]bool)
 	for _, m := range manifests {
-		for _, item := range m.OptionalInstalls {
-			if item == "" || seen[item] {
+		for _, name := range m.OptionalInstalls {
+			if name == "" || seen[name] {
 				continue
 			}
-			seen[item] = true
-			options = append(options, item)
+			seen[name] = true
+			names = append(names, name)
 		}
 	}
-	slices.Sort(options)
-	return options, nil
+	slices.Sort(names)
+
+	// One shared checker so the registry snapshot amortizes across items.
+	checker := &status.Checker{}
+	now := nowRFC3339UTC()
+
+	items := make([]optionalInstallResponseItem, 0, len(names))
+	for _, name := range names {
+		item := optionalInstallResponseItem{
+			ItemName:           name,
+			DisplayName:        name,
+			IsManaged:          selected[name],
+			Status:             "Unknown",
+			StatusUpdatedAtUTC: now,
+		}
+
+		catItem, catName, ok := firstCatalogItem(name, catalogs, cfg.Catalogs)
+		if !ok {
+			// No valid catalog item anywhere — still listed, status Unknown (R9).
+			slog.Warn("optional item has no catalog entry", "item", name)
+			items = append(items, item)
+			continue
+		}
+
+		item.DisplayName = orDefault(catItem.DisplayName, name)
+		item.Version = catItem.Version
+		item.Catalog = catName
+		item.InstallerType = catItem.Installer.Type
+		item.InstallerLocation = catItem.Installer.Location
+		item.InstallerPackageID = catItem.Installer.PackageID
+		item.Description = catItem.Description
+		item.Category = catItem.Category
+		item.Developer = catItem.Developer
+		item.IconName = catItem.IconName
+		item.RestartAction = catItem.RestartAction
+
+		// Script-only checks are not run on a list call (R9/OQ-C4): report Unknown.
+		if catItem.Check.Script != "" &&
+			catItem.Check.File == nil &&
+			catItem.Check.Registry.Version == "" &&
+			catItem.Check.Appx.Name == "" {
+			items = append(items, item)
+			continue
+		}
+
+		// CheckStatus(uninstall) reports true when the item is still installed.
+		installed, checkErr := checker.CheckStatus(catItem, "uninstall", cfg.CachePath)
+		if checkErr != nil {
+			slog.Warn("unable to check optional item status", "item", name, "err", checkErr)
+			items = append(items, item)
+			continue
+		}
+		item.IsInstalled = installed
+		switch {
+		case installed && pendingRemoval[name]:
+			item.Status = "WillBeRemoved"
+		case installed:
+			item.Status = "Installed"
+		case item.IsManaged:
+			item.Status = "WillBeInstalled"
+		default:
+			item.Status = "NotInstalled"
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// firstCatalogItem returns the first-catalog-wins catalog item for name and the
+// name of the catalog it came from. Unlike process.firstItem it applies no
+// installer-validity rules — the list is a display surface. catalogNames maps a
+// catalog index (1-based, as catalog.Get keys them) to its configured name.
+func firstCatalogItem(name string, catalogs map[int]map[string]catalog.Item, catalogNames []string) (catalog.Item, string, bool) {
+	indexes := make([]int, 0, len(catalogs))
+	for k := range catalogs {
+		indexes = append(indexes, k)
+	}
+	slices.Sort(indexes)
+	for _, k := range indexes {
+		if item, ok := catalogs[k][name]; ok {
+			catName := ""
+			if idx := k - 1; idx >= 0 && idx < len(catalogNames) {
+				catName = catalogNames[idx]
+			}
+			return item, catName, true
+		}
+	}
+	return catalog.Item{}, "", false
+}
+
+func sliceSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		set[v] = true
+	}
+	return set
+}
+
+func orDefault(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }

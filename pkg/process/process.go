@@ -180,7 +180,7 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 		// already succeeded there and silently returns the same item.
 		item, _ := firstItem(itemName, catalogsMap)
 		slog.Warn("dependency cycle detected, skipping item", "item", item.DisplayName)
-		recordFailedItem(r, item.DisplayName, item.Version, fmt.Errorf("dependency cycle detected"))
+		recordFailedItem(r, item.Name, item.Version, fmt.Errorf("dependency cycle detected"))
 		visited[itemName] = depFailed
 		return false
 	}
@@ -209,7 +209,7 @@ func installWithDeps(itemName string, catalogsMap map[int]map[string]catalog.Ite
 				return false
 			}
 			slog.Warn("skipping item: dependency failed", "item", item.DisplayName, "dependency", dependency)
-			recordFailedItem(r, item.DisplayName, item.Version, fmt.Errorf("dependency %s failed", dependency))
+			recordFailedItem(r, item.Name, item.Version, fmt.Errorf("dependency %s failed", dependency))
 			visited[itemName] = depFailed
 			return false
 		}

@@ -111,5 +111,6 @@ func route(cfg config.Configuration) error {
 		return runServiceFunc(cfg)
 	}
 
-	return managedRunFunc(cfg)
+	_, err := managedRunFunc(cfg)
+	return err
 }

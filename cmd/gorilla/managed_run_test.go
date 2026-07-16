@@ -70,7 +70,7 @@ DemoOptional:
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(string, os.FileMode) error { return nil }
 
-	if err := managedRun(cfg); err != nil {
+	if _, err := managedRun(cfg); err != nil {
 		t.Fatalf("managedRun failed: %v", err)
 	}
 

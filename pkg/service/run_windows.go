@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"runtime/debug"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
+	"github.com/1dustindavis/gorilla/pkg/report"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
@@ -35,7 +35,7 @@ type queuedResult struct {
 
 type serviceRunner struct {
 	cfg                config.Configuration
-	managedRun         func(config.Configuration) error
+	managedRun         func(config.Configuration) (*report.Report, error)
 	queue              chan queuedCommand
 	handlerSem         chan struct{}
 	wg                 sync.WaitGroup
@@ -67,7 +67,7 @@ type trackedOperation struct {
 	completedAt time.Time
 }
 
-func newServiceRunner(cfg config.Configuration, managedRun func(config.Configuration) error) *serviceRunner {
+func newServiceRunner(cfg config.Configuration, managedRun func(config.Configuration) (*report.Report, error)) *serviceRunner {
 	return &serviceRunner{
 		cfg:         cfg,
 		managedRun:  managedRun,
@@ -362,10 +362,14 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 		result = "ok"
 		logger.Debug("named pipe response sent", "state", "responded")
 	}
-	sr.scheduleRunAfterMutation(ctx, cmd.Action, resp.OperationID)
+	var itemName string
+	if len(cmd.Items) > 0 {
+		itemName = cmd.Items[0]
+	}
+	sr.scheduleRunAfterMutation(ctx, cmd.Action, itemName, resp.OperationID)
 }
 
-func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, operationID string) {
+func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, itemName, operationID string) {
 	if action != actionInstallItem && action != actionRemoveItem {
 		return
 	}
@@ -387,7 +391,8 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, o
 			ProgressPercent: 60,
 			Message:         fmt.Sprintf("%s item via managed run", inProgressState),
 		})
-		if _, err := sr.submit(ctx, Command{Action: actionRun}); err != nil {
+		resp, err := sr.submit(ctx, Command{Action: actionRun})
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				sr.appendOperationEvent(operationID, operationStatusEventPayload{
 					State:           "Canceled",
@@ -412,12 +417,44 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, o
 			})
 			return
 		}
-		sr.appendOperationEvent(operationID, operationStatusEventPayload{
-			State:           "Succeeded",
-			ProgressPercent: 100,
-			Message:         "Operation completed",
-		})
+		sr.appendOperationEvent(operationID, resolveTerminalEvent(itemName, resp.report))
 	}()
+}
+
+// resolveTerminalEvent reads the mutated item's real outcome from the run report
+// (keyed by catalog name, R13) and returns the honest terminal event (R10). A
+// nil report (unexpected, but a nil error means the run succeeded) resolves to
+// Succeeded.
+func resolveTerminalEvent(itemName string, rep *report.Report) operationStatusEventPayload {
+	if rep != nil {
+		for _, failed := range rep.FailedItems {
+			if failed.Name == itemName {
+				return operationStatusEventPayload{
+					State:           "Failed",
+					ProgressPercent: 100,
+					Message:         "Operation failed",
+					ErrorCode:       "item_failed",
+					ErrorMessage:    failed.Error,
+				}
+			}
+		}
+		for _, deferred := range rep.DeferredItems {
+			if deferred.Name == itemName {
+				return operationStatusEventPayload{
+					State:           "Deferred",
+					ProgressPercent: 100,
+					Message:         deferred.Reason,
+					ErrorCode:       "blocked_by_running_app",
+					ErrorMessage:    deferred.Reason,
+				}
+			}
+		}
+	}
+	return operationStatusEventPayload{
+		State:           "Succeeded",
+		ProgressPercent: 100,
+		Message:         "Operation completed",
+	}
 }
 
 func commandFromRequestEnvelope(req serviceEnvelope[json.RawMessage]) (Command, error) {
@@ -467,25 +504,6 @@ func commandFromRequestEnvelope(req serviceEnvelope[json.RawMessage]) (Command, 
 func (sr *serviceRunner) writeSuccessEnvelope(file *os.File, req serviceEnvelope[json.RawMessage], cmd Command, resp CommandResponse) error {
 	switch cmd.Action {
 	case actionListOptionalInstalls:
-		items := make([]optionalInstallResponseItem, 0, len(resp.Items))
-		sorted := append([]string(nil), resp.Items...)
-		slices.Sort(sorted)
-		for _, name := range sorted {
-			items = append(items, optionalInstallResponseItem{
-				ItemName:           name,
-				DisplayName:        name,
-				Version:            "",
-				Catalog:            "",
-				InstallerType:      "",
-				InstallerPackageID: name,
-				InstallerLocation:  "",
-				IsManaged:          true,
-				IsInstalled:        false,
-				Status:             "Unknown",
-				StatusUpdatedAtUTC: nowRFC3339UTC(),
-			})
-		}
-
 		if err := json.NewEncoder(file).Encode(serviceEnvelope[listOptionalInstallsResponse]{
 			Version:      pipeProtocolVersion,
 			MessageType:  messageTypeResponse,
@@ -493,7 +511,7 @@ func (sr *serviceRunner) writeSuccessEnvelope(file *os.File, req serviceEnvelope
 			RequestID:    req.RequestID,
 			OperationID:  "",
 			TimestampUTC: nowRFC3339UTC(),
-			Payload:      listOptionalInstallsResponse{Items: items},
+			Payload:      listOptionalInstallsResponse{Items: resp.OptionalItems},
 		}); err != nil {
 			return err
 		}
@@ -614,7 +632,7 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event operatio
 		"state", event.State,
 		"progressPercent", event.ProgressPercent,
 	)
-	if event.State == "Succeeded" || event.State == "Failed" || event.State == "Canceled" {
+	if event.State == "Succeeded" || event.State == "Failed" || event.State == "Deferred" || event.State == "Canceled" {
 		op.done = true
 		op.completedAt = now
 	}
@@ -741,7 +759,7 @@ func (sr *serviceRunner) clearListenerPipe(handle windows.Handle) {
 
 type gorillaWindowsService struct {
 	cfg        config.Configuration
-	managedRun func(config.Configuration) error
+	managedRun func(config.Configuration) (*report.Report, error)
 }
 
 func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
@@ -781,6 +799,6 @@ func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRe
 	return false, 0
 }
 
-func Run(cfg config.Configuration, managedRun func(config.Configuration) error) error {
+func Run(cfg config.Configuration, managedRun func(config.Configuration) (*report.Report, error)) error {
 	return svc.Run(cfg.ServiceName, &gorillaWindowsService{cfg: cfg, managedRun: managedRun})
 }

@@ -269,7 +269,7 @@ func (nupkgInstaller) uninstallNeedsFile() bool { return true }
 // recordFailure appends the item to the run report's FailedItems and returns the error.
 func (r *Runner) recordFailure(item catalog.Item, action string, err error) error {
 	r.Report.FailedItems = append(r.Report.FailedItems, report.FailedItem{
-		Name:    item.DisplayName,
+		Name:    item.Name,
 		Version: item.Version,
 		Action:  action,
 		Error:   err.Error(),

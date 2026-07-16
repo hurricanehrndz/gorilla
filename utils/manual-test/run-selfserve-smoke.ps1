@@ -230,6 +230,135 @@ Wait-For { -not (Test-Path $optionalUpdateTxt) } "optional-update.txt to be remo
 Wait-For { (Get-YamlList $SelfServe "managed_uninstalls").Count -eq 0 } "managed_uninstalls to be pruned empty"
 Write-Host "    both markers gone and managed_uninstalls pruned" -ForegroundColor Green
 
+# --- Honest pipe surface helpers (P6) -----------------------------------------
+
+# Get-OptionalItem returns the parsed JSON object for one item from
+# ListOptionalInstalls (the client now prints one compact JSON object per item).
+function Get-OptionalItem {
+    param([string]$Name)
+    $res = Invoke-Gorilla "ListOptionalInstalls"
+    foreach ($l in $res.Out) {
+        $t = "$l".Trim()
+        if (-not $t.StartsWith('{')) { continue }
+        try { $obj = $t | ConvertFrom-Json } catch { continue }
+        if ($obj.itemName -eq $Name) { return $obj }
+    }
+    return $null
+}
+
+# Parse-OperationId pulls the operationId the service returned for an accepted
+# InstallItem/RemoveItem command ("operationId: <id>").
+function Parse-OperationId {
+    param([string[]]$Lines)
+    foreach ($l in $Lines) {
+        if ("$l" -match 'operationId:\s*(\S+)') { return $Matches[1] }
+    }
+    return $null
+}
+
+# Stream-TerminalEvent streams an operation to completion and returns the parsed
+# terminal event object (the client prints each event payload as JSON and returns
+# when a terminal state arrives).
+function Stream-TerminalEvent {
+    param([string]$OpId)
+    $res = Invoke-Gorilla "StreamOperationStatus:$OpId"
+    $terminal = $null
+    foreach ($l in $res.Out) {
+        $t = "$l".Trim()
+        if (-not $t.StartsWith('{')) { continue }
+        try { $ev = $t | ConvertFrom-Json } catch { continue }
+        if (@('Succeeded','Failed','Deferred','Canceled') -contains $ev.state) { $terminal = $ev }
+    }
+    return $terminal
+}
+
+# --- Step 12: honest ListOptionalInstalls -- metadata + real status
+Write-Step "ListOptionalInstalls carries DemoOptional R8 metadata and an honest status"
+# Step 11 removed optional.txt, so the honest status must be NotInstalled.
+$demo = Get-OptionalItem "DemoOptional"
+if (-not $demo) { Fail "DemoOptional not present in ListOptionalInstalls payload" }
+if ($demo.description -ne "A self-service optional install used by the Workstream C smoke test") {
+    Fail "DemoOptional description mismatch: '$($demo.description)'"
+}
+if ($demo.category -ne "Smoke")   { Fail "DemoOptional category mismatch: '$($demo.category)'" }
+if ($demo.developer -ne "Gorilla") { Fail "DemoOptional developer mismatch: '$($demo.developer)'" }
+$expectStatus = if (Test-Path $optionalTxt) { "Installed" } else { "NotInstalled" }
+if ($demo.status -ne $expectStatus) {
+    Fail "DemoOptional status '$($demo.status)' does not match marker state (expected $expectStatus)"
+}
+Write-Host "    DemoOptional metadata present and status=$($demo.status) matches disk" -ForegroundColor Green
+
+# --- Step 13: honest terminal event for a failing install
+Write-Step "InstallItem:DemoFailing then StreamOperationStatus reports terminal Failed/item_failed"
+$installOut = Invoke-Gorilla "InstallItem:DemoFailing"
+$opId = Parse-OperationId $installOut.Out
+if (-not $opId) { Fail "no operationId returned for InstallItem:DemoFailing" }
+$terminal = Stream-TerminalEvent $opId
+if (-not $terminal)                        { Fail "no terminal event received for DemoFailing" }
+if ($terminal.state -ne "Failed")          { Fail "expected terminal Failed, got '$($terminal.state)'" }
+if ($terminal.errorCode -ne "item_failed") { Fail "expected errorCode item_failed, got '$($terminal.errorCode)'" }
+Write-Host "    DemoFailing terminal event Failed/item_failed" -ForegroundColor Green
+
+# --- Step 14: honest terminal event for a deferred install
+Write-Step "notepad running + InstallItem:DemoBlocked then stream reports terminal Deferred"
+# blocked.txt exists from step 9; delete it so the install is actually needed and
+# the blocking gate fires (an already-satisfied item is never deferred).
+if (Test-Path $blockedTxt) { Remove-Item -LiteralPath $blockedTxt -Force }
+Start-Process notepad | Out-Null
+try {
+    $installOut = Invoke-Gorilla "InstallItem:DemoBlocked"
+    $opId = Parse-OperationId $installOut.Out
+    if (-not $opId) { Fail "no operationId returned for InstallItem:DemoBlocked" }
+    $terminal = Stream-TerminalEvent $opId
+    if (-not $terminal)                 { Fail "no terminal event received for DemoBlocked" }
+    if ($terminal.state -ne "Deferred") { Fail "expected terminal Deferred, got '$($terminal.state)'" }
+} finally {
+    Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+}
+Write-Host "    DemoBlocked terminal event Deferred" -ForegroundColor Green
+
+# --- Step 15: full regression -- re-verify the still-standing invariants on the
+# final code. Defaults are once-only (cannot be reset in-script), so this replays
+# the round-trips that remain repeatable rather than resetting markers.
+Write-Step "Regression: self-serve manifest shape is Munki's three sorted lists"
+$installs = Get-YamlList $SelfServe "managed_installs"
+$sortedInstalls = @($installs | Sort-Object)
+if (-not ($installs -join ',').Equals(($sortedInstalls -join ','))) {
+    Fail "managed_installs is not sorted: $($installs -join ', ')"
+}
+if ((Get-YamlList $SelfServe "default_installs") -notcontains "DemoDefault") {
+    Fail "default_installs record lost DemoDefault"
+}
+Write-Host "    manifest shape intact (sorted installs, defaults recorded)" -ForegroundColor Green
+
+Write-Step "Regression: ListOptionalInstalls still lists DemoOptional with metadata"
+$demo = Get-OptionalItem "DemoOptional"
+if (-not $demo -or $demo.developer -ne "Gorilla") { Fail "DemoOptional metadata regression" }
+Write-Host "    DemoOptional still listed with metadata" -ForegroundColor Green
+
+Write-Step "Regression: DemoOptional install/remove round-trip incl updater coupling"
+Invoke-Gorilla "InstallItem:DemoOptional" | Out-Null
+Wait-For { Test-Path $optionalTxt } "optional.txt to exist"
+Wait-For { Test-Path $optionalUpdateTxt } "optional-update.txt to exist (updater rode along)"
+Invoke-Gorilla "RemoveItem:DemoOptional" | Out-Null
+Wait-For { -not (Test-Path $optionalTxt) } "optional.txt to be removed"
+Wait-For { -not (Test-Path $optionalUpdateTxt) } "optional-update.txt to be removed (coupled)"
+Wait-For { (Get-YamlList $SelfServe "managed_uninstalls").Count -eq 0 } "managed_uninstalls to be pruned empty"
+Write-Host "    DemoOptional round-trip + updater coupling + prune OK" -ForegroundColor Green
+
+Write-Step "Regression: DemoBlocked defer-then-retry round-trip"
+if (Test-Path $blockedTxt) { Remove-Item -LiteralPath $blockedTxt -Force }
+Start-Process notepad | Out-Null
+Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
+Wait-For { Report-Defers "DemoBlocked" } "GorillaReport.json DeferredItems to name DemoBlocked"
+if (Test-Path $blockedTxt) { Fail "blocked.txt created while notepad running" }
+Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 1
+Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
+Wait-For { Test-Path $blockedTxt } "blocked.txt to appear after the blocker stopped"
+Write-Host "    DemoBlocked defer-then-retry OK" -ForegroundColor Green
+
 Write-Host ""
 Write-Host "SELF-SERVE SMOKE PASSED" -ForegroundColor Green
 exit 0

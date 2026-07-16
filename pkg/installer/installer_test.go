@@ -348,6 +348,7 @@ func TestInstallItemUnsupportedType(t *testing.T) {
 
 	item := msiItem
 	item.DisplayName = "Unsupported Item"
+	item.Name = "Unsupported Item"
 	item.Installer.Type = "flatpak"
 
 	out, err := r.installItem(item, "https://example.com/")
@@ -378,6 +379,7 @@ func TestInstallStatusError(t *testing.T) {
 
 	// Run the msi installer with this status bypass to trigger an error
 	msiItem.DisplayName = statusActionError
+	msiItem.Name = statusActionError
 	// Run Install
 	r := newTestRunner()
 	_, err := r.Install(msiItem, "install")
@@ -842,6 +844,7 @@ func TestInstallItemFailureReport(t *testing.T) {
 
 	// fakeRunCommand returns an error for this display name
 	msiItem.DisplayName = statusActionError
+	msiItem.Name = statusActionError
 
 	_, err := r.installItem(msiItem, "https://example.com/")
 	if err == nil {

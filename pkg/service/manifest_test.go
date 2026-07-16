@@ -5,18 +5,26 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
+	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
-// stubOptional overrides manifestGet so the service authorizes the given names
-// as available optional installs, restoring the original on cleanup.
+// stubOptional overrides manifestGet/catalogGet so the service authorizes the
+// given names as available optional installs, restoring the originals on
+// cleanup. The catalog is left empty on purpose: authorization keys off the
+// offered names, and the enriched list tolerates a missing catalog entry.
 func stubOptional(t *testing.T, names ...string) {
 	t.Helper()
-	orig := manifestGet
-	t.Cleanup(func() { manifestGet = orig })
+	origManifest := manifestGet
+	origCatalog := catalogGet
+	t.Cleanup(func() { manifestGet = origManifest; catalogGet = origCatalog })
 	manifestGet = func(_ config.Configuration) ([]manifest.Item, []string, error) {
 		return []manifest.Item{{Name: "base", OptionalInstalls: names}}, nil, nil
+	}
+	catalogGet = func(_ config.Configuration) (map[int]map[string]catalog.Item, error) {
+		return map[int]map[string]catalog.Item{}, nil
 	}
 }
 
@@ -119,14 +127,23 @@ func TestGetOptionalItems(t *testing.T) {
 			},
 		}, nil, nil
 	}
+	origCatalog := catalogGet
+	defer func() { catalogGet = origCatalog }()
+	catalogGet = func(_ config.Configuration) (map[int]map[string]catalog.Item, error) {
+		return map[int]map[string]catalog.Item{}, nil
+	}
 
 	items, err := getOptionalItems(cfg)
 	if err != nil {
 		t.Fatalf("getOptionalItems failed: %v", err)
 	}
+	names := make([]string, 0, len(items))
+	for _, it := range items {
+		names = append(names, it.ItemName)
+	}
 	expected := []string{"7zip", "Firefox", "GoogleChrome", "VSCode"}
-	if !reflect.DeepEqual(expected, items) {
-		t.Fatalf("unexpected optional items, expected %#v, got %#v", expected, items)
+	if !reflect.DeepEqual(expected, names) {
+		t.Fatalf("unexpected optional items, expected %#v, got %#v", expected, names)
 	}
 }
 
@@ -137,9 +154,9 @@ func TestExecuteCommandRunPassesCfgThrough(t *testing.T) {
 	}
 
 	var gotCfg config.Configuration
-	managedRun := func(in config.Configuration) error {
+	managedRun := func(in config.Configuration) (*report.Report, error) {
 		gotCfg = in
-		return nil
+		return nil, nil
 	}
 
 	resp, err := executeCommand(cfg, Command{Action: actionRun}, managedRun)
@@ -162,9 +179,9 @@ func TestExecuteCommandInstallWritesManifestAndDoesNotRunInline(t *testing.T) {
 	stubOptional(t, "GoogleChrome")
 
 	managedRunCalled := false
-	managedRun := func(in config.Configuration) error {
+	managedRun := func(in config.Configuration) (*report.Report, error) {
 		managedRunCalled = true
-		return nil
+		return nil, nil
 	}
 
 	resp, err := executeCommand(cfg, Command{Action: actionInstallItem, Items: []string{"GoogleChrome"}}, managedRun)
