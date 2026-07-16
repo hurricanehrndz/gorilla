@@ -1227,3 +1227,110 @@ func TestPostScriptFailure(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
+
+// TestPreUninstallScriptFailure verifies that a failing pre-uninstall script
+// aborts the uninstall (no uninstall attempted) and records the failure.
+func TestPreUninstallScriptFailure(t *testing.T) {
+	statusCheckStatus = fakeCheckStatus
+	uninstallItemFunc = func(_ *Runner, item catalog.Item, itemURL string) (string, error) {
+		t.Error("uninstaller ran despite pre-uninstall script failure")
+		return "", nil
+	}
+	execCommand = fakeExecCommandFail
+	defer func() {
+		statusCheckStatus = origCheckStatus
+		uninstallItemFunc = (*Runner).uninstallItem
+		execCommand = origExec
+	}()
+	r := newTestRunner()
+
+	item := msiItem
+	item.DisplayName = statusActionNoError
+	item.PreUninstallScript = "exit 1"
+
+	_, err := r.Install(item, "uninstall")
+	if err == nil {
+		t.Fatalf("expected a pre-uninstall script error")
+	}
+	if !strings.Contains(err.Error(), "pre-uninstall script error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(r.Report.FailedItems) != 1 {
+		t.Errorf("expected 1 failed item, got %#v", r.Report.FailedItems)
+	}
+}
+
+// TestPostUninstallScriptFailure verifies that a failing post-uninstall script
+// double-records: the item genuinely uninstalled (UninstalledItems) plus the
+// script failure (FailedItems).
+func TestPostUninstallScriptFailure(t *testing.T) {
+	statusCheckStatus = fakeCheckStatus
+	uninstallItemFunc = func(r *Runner, item catalog.Item, itemURL string) (string, error) {
+		r.Report.UninstalledItems = append(r.Report.UninstalledItems, item)
+		return "", nil
+	}
+	execCommand = fakeExecCommandFail
+	defer func() {
+		statusCheckStatus = origCheckStatus
+		uninstallItemFunc = (*Runner).uninstallItem
+		execCommand = origExec
+	}()
+	r := newTestRunner()
+
+	item := msiItem
+	item.DisplayName = statusActionNoError
+	item.PostUninstallScript = "exit 1"
+
+	_, err := r.Install(item, "uninstall")
+	if err == nil {
+		t.Fatalf("expected a post-uninstall script error")
+	}
+	if !strings.Contains(err.Error(), "post-uninstall script error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if len(r.Report.UninstalledItems) != 1 {
+		t.Errorf("expected item to be recorded uninstalled, got %#v", r.Report.UninstalledItems)
+	}
+	if len(r.Report.FailedItems) != 1 {
+		t.Errorf("expected 1 failed item, got %#v", r.Report.FailedItems)
+	}
+}
+
+// TestPrePostUninstallScriptsSuccess verifies the happy path: both scripts run
+// (distinct temp files) and the uninstall records no failure.
+func TestPrePostUninstallScriptsSuccess(t *testing.T) {
+	statusCheckStatus = fakeCheckStatus
+	uninstallItemFunc = fakeUninstallItem
+	var scriptFiles []string
+	execCommand = func(command string, args ...string) *exec.Cmd {
+		scriptFiles = append(scriptFiles, args[len(args)-1])
+		return fakeExecCommand(command, args...)
+	}
+	defer func() {
+		statusCheckStatus = origCheckStatus
+		uninstallItemFunc = (*Runner).uninstallItem
+		execCommand = origExec
+	}()
+	r := newTestRunner()
+
+	item := msiItem
+	item.DisplayName = statusActionNoError
+	item.PreUninstallScript = "Write-Output pre"
+	item.PostUninstallScript = "Write-Output post"
+
+	if _, err := r.Install(item, "uninstall"); err != nil {
+		t.Fatalf("Install returned an error: %v", err)
+	}
+	if len(scriptFiles) != 2 {
+		t.Fatalf("expected 2 script executions, got %d: %#v", len(scriptFiles), scriptFiles)
+	}
+	if !strings.HasPrefix(filepath.Base(scriptFiles[0]), "gorilla-preuninstall-") {
+		t.Errorf("unexpected preuninstall temp file name: %s", scriptFiles[0])
+	}
+	if !strings.HasPrefix(filepath.Base(scriptFiles[1]), "gorilla-postuninstall-") {
+		t.Errorf("unexpected postuninstall temp file name: %s", scriptFiles[1])
+	}
+	if len(r.Report.FailedItems) != 0 {
+		t.Errorf("expected no failed items, got %#v", r.Report.FailedItems)
+	}
+}

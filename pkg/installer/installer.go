@@ -466,8 +466,30 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 		// Compile the item's URL
 		itemURL := r.URLPackages + item.Uninstaller.Location
 
+		// Run PreUninstall_Script if needed
+		if item.PreUninstallScript != "" {
+			slog.Info("Running Pre-Uninstall script", "item", item.DisplayName)
+			if err := runScript(item.PreUninstallScript, "preuninstall", r.CachePath); err != nil {
+				return "", r.recordFailure(item, "uninstall", fmt.Errorf("pre-uninstall script error: %w", err))
+			}
+		}
+
 		// Run the uninstaller
-		return uninstallItemFunc(r, item, itemURL)
+		out, err := uninstallItemFunc(r, item, itemURL)
+		if err != nil {
+			return out, err
+		}
+
+		// Run PostUninstall_Script if needed
+		if item.PostUninstallScript != "" {
+			slog.Info("Running Post-Uninstall script", "item", item.DisplayName)
+			// Deliberate double record: the item genuinely uninstalled
+			// (UninstalledItems) and the post-script genuinely failed (FailedItems).
+			if err := runScript(item.PostUninstallScript, "postuninstall", r.CachePath); err != nil {
+				return out, r.recordFailure(item, "uninstall", fmt.Errorf("post-uninstall script error: %w", err))
+			}
+		}
+		return out, nil
 
 	default:
 		// Programmer-error guard: process only ever passes install/update/uninstall,
