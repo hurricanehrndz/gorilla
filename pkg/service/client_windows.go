@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -34,8 +34,9 @@ func sendCommand(cfg config.Configuration, cmd Command) (CommandResponse, error)
 		return CommandResponse{}, fmt.Errorf("failed to send service command: %w", err)
 	}
 
+	dec := json.NewDecoder(conn)
 	var rawResp serviceEnvelope[json.RawMessage]
-	if err := json.NewDecoder(conn).Decode(&rawResp); err != nil {
+	if err := dec.Decode(&rawResp); err != nil {
 		return CommandResponse{}, fmt.Errorf("failed to decode service response: %w", err)
 	}
 
@@ -54,9 +55,47 @@ func sendCommand(cfg config.Configuration, cmd Command) (CommandResponse, error)
 		if mapErr != nil {
 			return CommandResponse{}, mapErr
 		}
+		// A stream request's ack is followed by event envelopes; print each as
+		// JSON until a terminal state so the CLI reflects the real outcome (R9).
+		if cmd.Action == actionStreamOperationStatus {
+			if err := streamOperationEvents(dec); err != nil {
+				return CommandResponse{}, err
+			}
+		}
 		return resp, nil
 	default:
 		return CommandResponse{}, fmt.Errorf("unsupported service messageType %q", rawResp.MessageType)
+	}
+}
+
+// streamOperationEvents decodes operation status event envelopes and prints each
+// payload as a JSON line, returning when a terminal state arrives or the service
+// closes the stream (io.EOF).
+func streamOperationEvents(dec *json.Decoder) error {
+	for {
+		var envelope serviceEnvelope[json.RawMessage]
+		if err := dec.Decode(&envelope); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("failed to decode operation event: %w", err)
+		}
+		if envelope.MessageType != messageTypeEvent {
+			continue
+		}
+		payload, err := decodeEnvelopePayload[operationStatusEventPayload](envelope.Payload)
+		if err != nil {
+			return fmt.Errorf("failed to decode operation event payload: %w", err)
+		}
+		line, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to encode operation event payload: %w", err)
+		}
+		fmt.Println(string(line))
+		switch payload.State {
+		case "Succeeded", "Failed", "Deferred", "Canceled":
+			return nil
+		}
 	}
 }
 
@@ -135,13 +174,19 @@ func mapEnvelopeToCommandResponse(raw serviceEnvelope[json.RawMessage]) (Command
 		if err != nil {
 			return CommandResponse{}, fmt.Errorf("failed to decode ListOptionalInstalls payload: %w", err)
 		}
+		// Emit one compact JSON object per item so the CLI line printer surfaces
+		// the full honest payload, keeping it in lockstep with the protocol (R9).
 		items := make([]string, 0, len(payload.Items))
 		for _, item := range payload.Items {
-			if strings.TrimSpace(item.ItemName) != "" {
-				items = append(items, item.ItemName)
+			if strings.TrimSpace(item.ItemName) == "" {
+				continue
 			}
+			line, marshalErr := json.Marshal(item)
+			if marshalErr != nil {
+				return CommandResponse{}, fmt.Errorf("failed to encode optional item %q: %w", item.ItemName, marshalErr)
+			}
+			items = append(items, string(line))
 		}
-		slices.Sort(items)
 		resp.Items = items
 		return resp, nil
 	case actionInstallItem, actionRemoveItem:

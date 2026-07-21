@@ -85,6 +85,40 @@ vlc:
       - /S
     type: exe
   version: 3.0.3
+Firefox:
+  display_name: Mozilla Firefox
+  # Self-service metadata: parsed and surfaced in ListOptionalInstalls (not honored yet)
+  description: Fast, private and safe web browser
+  category: Browsers
+  developer: Mozilla
+  icon_name: firefox.png
+  restart_action: None
+  # blocking_apps: process image names checked case-insensitively; trailing `.exe` optional
+  # ("firefox", "Firefox", and "firefox.exe" all match a running firefox.exe)
+  blocking_apps:
+    - firefox
+  check:
+    registry:
+      name: Mozilla Firefox
+      version: 128.0
+  installer:
+    location: packages/apps/firefox/Firefox-128.0.exe
+    hash: b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3
+    arguments:
+      - /S
+    type: exe
+  uninstaller:
+    location: packages/apps/firefox/Firefox-128.0-uninstall.exe
+    hash: c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+    arguments:
+      - /S
+    type: exe
+  # Uninstall-side scripts, mirroring preinstall_script/postinstall_script
+  preuninstall_script: |
+    Stop-Process -Name firefox -ErrorAction SilentlyContinue
+  postuninstall_script: |
+    Remove-Item -Recurse -Force "$env:APPDATA\Mozilla" -ErrorAction SilentlyContinue
+  version: 128.0
 slack:
   display_name: Slack
   check:
@@ -98,3 +132,20 @@ slack:
   uninstaller:
     type: msix
   version: 4.49.81.0
+FirefoxLangPack:
+  display_name: Mozilla Firefox German Language Pack
+  # update_for lists the items this package is an update for: it is installed when a
+  # referent is installed or already present, and removed when the referent is removed.
+  update_for:
+    - Firefox
+  check:
+    registry:
+      name: Mozilla Firefox de Language Pack
+      version: 128.0
+  installer:
+    location: packages/apps/firefox/Firefox-128.0-langpack-de.exe
+    hash: d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5
+    arguments:
+      - /S
+    type: exe
+  version: 128.0

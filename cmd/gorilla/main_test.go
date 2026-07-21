@@ -40,7 +40,7 @@ func TestRunAdminCheckError(t *testing.T) {
 		return nil
 	}
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -60,7 +60,7 @@ func TestRunRequiresAdmin(t *testing.T) {
 		return nil
 	}
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -81,7 +81,7 @@ func TestRunCheckOnlySkipsAdminCheck(t *testing.T) {
 	}
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return errors.New("mkdir failed") }
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -101,7 +101,7 @@ func TestRunCreateCacheError(t *testing.T) {
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return errors.New("mkdir failed") }
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -137,7 +137,7 @@ func TestRunBuildMode(t *testing.T) {
 	}
 	importItemFunc = func(repoPath, itemPath string) error { return nil }
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -170,7 +170,7 @@ func TestRunImportModeError(t *testing.T) {
 		return errors.New("not implemented")
 	}
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -201,7 +201,7 @@ func TestManagedRunFinalizesReportOnManifestError(t *testing.T) {
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return nil }
 
-	err := managedRun(cfg)
+	_, err := managedRun(cfg)
 	if err == nil {
 		t.Fatalf("expected error from manifest retrieval")
 	}
@@ -241,14 +241,14 @@ func TestManagedRunStateIsRunScoped(t *testing.T) {
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return nil }
 
 	// Run 1 fails at manifest retrieval; simulate items recorded during it
-	if err := managedRun(cfg); err == nil {
+	if _, err := managedRun(cfg); err == nil {
 		t.Fatalf("expected error from manifest retrieval")
 	}
 	reports[0].InstalledItems = append(reports[0].InstalledItems, catalog.Item{DisplayName: "run1-item"})
 	reports[0].FailedItems = append(reports[0].FailedItems, report.FailedItem{Name: "run1-failure"})
 
 	// Run 2 must build fresh state that shares nothing with run 1
-	if err := managedRun(cfg); err == nil {
+	if _, err := managedRun(cfg); err == nil {
 		t.Fatalf("expected error from manifest retrieval")
 	}
 	if len(reports) != 2 {
@@ -272,9 +272,9 @@ func TestExecuteServiceModesSkipRun(t *testing.T) {
 	serviceStatusCalled := false
 	runCalled := false
 
-	managedRunFunc = func(cfg config.Configuration) error {
+	managedRunFunc = func(cfg config.Configuration) (*report.Report, error) {
 		runCalled = true
-		return nil
+		return nil, nil
 	}
 	runServiceActionFunc = func(cfg config.Configuration, action string) error {
 		serviceAction = action
@@ -423,9 +423,9 @@ func TestRoutePrecedenceServiceInstallWins(t *testing.T) {
 		serviceStatusCalled = true
 		return "running", nil
 	}
-	managedRunFunc = func(cfg config.Configuration) error {
+	managedRunFunc = func(cfg config.Configuration) (*report.Report, error) {
 		runCalled = true
-		return nil
+		return nil, nil
 	}
 
 	cfg := config.Configuration{

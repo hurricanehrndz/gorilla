@@ -1,0 +1,10 @@
+name: selfserve_manifest
+catalogs:
+  - selfserve_catalog
+optional_installs:
+  - DemoOptional
+  - DemoBlocked
+  - DemoFailing
+  - DemoDefault
+default_installs:
+  - DemoDefault

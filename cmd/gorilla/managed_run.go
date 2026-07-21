@@ -27,7 +27,7 @@ var (
 	newReportFunc     = report.New
 )
 
-func managedRun(cfg config.Configuration) error {
+func managedRun(cfg config.Configuration) (*report.Report, error) {
 	// Build/import modes operate on repo metadata and do not require admin.
 	buildMode := cfg.BuildArg || cfg.ImportArg != ""
 
@@ -35,37 +35,37 @@ func managedRun(cfg config.Configuration) error {
 	if !cfg.CheckOnly && !buildMode {
 		admin, err := adminCheckFunc()
 		if err != nil {
-			return fmt.Errorf("unable to check if running as admin: %w", err)
+			return nil, fmt.Errorf("unable to check if running as admin: %w", err)
 		}
 		if !admin {
-			return errors.New("gorilla requires admnisistrative access. Please run as an administrator")
+			return nil, errors.New("gorilla requires admnisistrative access. Please run as an administrator")
 		}
 	}
 
 	// If needed, create the cache directory.
 	if err := mkdirAllFunc(filepath.Clean(cfg.CachePath), 0o755); err != nil {
-		return fmt.Errorf("unable to create cache directory: %w", err)
+		return nil, fmt.Errorf("unable to create cache directory: %w", err)
 	}
 
 	// Create a new logger object
 	if err := gorillalog.NewLog(cfg); err != nil {
-		return fmt.Errorf("unable to initialize logger: %w", err)
+		return nil, fmt.Errorf("unable to initialize logger: %w", err)
 	}
 
 	if cfg.BuildArg {
 		slog.Info("Building catalogs...")
 		if err := buildCatalogsFunc(cfg.RepoPath); err != nil {
-			return fmt.Errorf("error building catalogs: %w", err)
+			return nil, fmt.Errorf("error building catalogs: %w", err)
 		}
-		return nil
+		return nil, nil
 	}
 
 	if cfg.ImportArg != "" {
 		slog.Info("Importing item...")
 		if err := importItemFunc(cfg.RepoPath, cfg.ImportArg); err != nil {
-			return fmt.Errorf("error importing item: %w", err)
+			return nil, fmt.Errorf("error importing item: %w", err)
 		}
-		return nil
+		return nil, nil
 	}
 
 	// Build the run-scoped state: report + status checker (K7)
@@ -86,7 +86,7 @@ func managedRun(cfg config.Configuration) error {
 	slog.Info("Retrieving manifest", "manifest", cfg.Manifest)
 	manifests, newCatalogs, err := manifest.Get(cfg)
 	if err != nil {
-		return fmt.Errorf("unable to retrieve manifest: %w", err)
+		return nil, fmt.Errorf("unable to retrieve manifest: %w", err)
 	}
 
 	// If we have newCatalogs, add them to the configuration
@@ -98,12 +98,31 @@ func managedRun(cfg config.Configuration) error {
 	slog.Info("Retrieving catalog", "catalogs", cfg.Catalogs)
 	catalogs, err := catalog.Get(cfg)
 	if err != nil {
-		return fmt.Errorf("unable to retrieve catalog: %w", err)
+		return nil, fmt.Errorf("unable to retrieve catalog: %w", err)
 	}
 
 	// Process the manifests into install type groups
 	slog.Info("Processing manifest...")
 	installs, uninstalls, updates := process.Manifests(manifests, catalogs)
+
+	// Reconcile the self-serve manifest: assert once-only defaults, authorize
+	// user selections against the admin optional_installs, and queue deselected
+	// items for removal (R2, R4, R5).
+	selfServePath := manifest.SelfServePath(cfg.AppDataPath)
+	selfServe, err := manifest.LoadSelfServe(selfServePath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load self-serve manifest: %w", err)
+	}
+	ssInstalls, ssUninstalls, changed := process.ReconcileSelfServe(&selfServe, manifests)
+	if changed {
+		// Defaults are asserted on every run, including check-only (Munki asserts
+		// during updatecheck), so save regardless of CheckOnly.
+		if err := manifest.SaveSelfServe(selfServePath, selfServe); err != nil {
+			return nil, fmt.Errorf("unable to save self-serve manifest: %w", err)
+		}
+	}
+	installs = append(installs, ssInstalls...)
+	uninstalls = append(uninstalls, ssUninstalls...)
 
 	// Build the run-scoped installer context (K7)
 	runner := &installer.Runner{
@@ -114,13 +133,35 @@ func managedRun(cfg config.Configuration) error {
 		CheckOnly:   cfg.CheckOnly,
 	}
 
+	// Expand update_for (R7): build the updater index once, ride updaters of
+	// referents merely installed on disk into the install list (referents being
+	// installed this run are expanded in-walk), and couple updater removals to
+	// their referent's removal.
+	index := process.UpdaterIndex(catalogs)
+	installsSet := make(map[string]bool, len(installs))
+	for _, name := range installs {
+		installsSet[name] = true
+	}
+	installs = append(installs, process.InstalledReferentUpdaters(catalogs, index, installsSet, runner.Checker, cfg.CachePath)...)
+	uninstalls = process.ExpandUninstallsWithUpdaters(uninstalls, index)
+
 	// Prepare and install
 	slog.Info("Processing managed installs...")
-	process.Installs(installs, catalogs, runner)
+	process.Installs(installs, catalogs, runner, index)
 
 	// Prepare and uninstall
 	slog.Info("Processing managed uninstalls...")
 	process.Uninstalls(uninstalls, catalogs, runner)
+
+	// Prune self-serve uninstalls that are confirmed gone so the user can
+	// reinstall later (R5). Only after a real run, never in check-only.
+	if !cfg.CheckOnly {
+		if process.PruneSelfServeUninstalls(&selfServe, catalogs, runner.Checker, cfg.CachePath) {
+			if err := manifest.SaveSelfServe(selfServePath, selfServe); err != nil {
+				return nil, fmt.Errorf("unable to save self-serve manifest after prune: %w", err)
+			}
+		}
+	}
 
 	// Prepare and update
 	slog.Info("Processing managed updates...")
@@ -137,5 +178,5 @@ func managedRun(cfg config.Configuration) error {
 	process.CleanUp(cfg.CachePath)
 
 	slog.Info("Done!")
-	return nil
+	return run, nil
 }

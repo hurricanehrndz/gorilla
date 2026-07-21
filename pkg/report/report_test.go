@@ -56,12 +56,14 @@ func TestEnd(t *testing.T) {
 	expectedInstalls := []catalog.Item{{DisplayName: "test Installs 1"}, {DisplayName: "test Installs 2"}}
 	expectedUninstalls := []catalog.Item{{DisplayName: "test Uninstalls 1"}, {DisplayName: "test Uninstalls 2"}}
 	expectedFailures := []FailedItem{{Name: "test Failed 1", Version: "1.2.3", Action: "install", Error: "exit status 1"}}
+	expectedDeferrals := []DeferredItem{{Name: "test Deferred 1", Version: "1.2.3", Action: "install", Reason: "blocking application(s) running: notepad"}}
 
 	// Apend everything to the correct lists
 	r := New()
 	r.InstalledItems = append(r.InstalledItems, expectedInstalls...)
 	r.UninstalledItems = append(r.UninstalledItems, expectedUninstalls...)
 	r.FailedItems = append(r.FailedItems, expectedFailures...)
+	r.DeferredItems = append(r.DeferredItems, expectedDeferrals...)
 
 	// Build the expected map for comparison
 	expectedItems := map[string]any{
@@ -69,6 +71,7 @@ func TestEnd(t *testing.T) {
 		"InstalledItems":   expectedInstalls,
 		"UninstalledItems": expectedUninstalls,
 		"FailedItems":      expectedFailures,
+		"DeferredItems":    expectedDeferrals,
 	}
 
 	// Run the `End` method

@@ -5,6 +5,8 @@ managed_installs:
 optional_installs:
   - VLC
   - Slack
+default_installs:
+  - Slack
 managed_updates:
   - ChefClient
   - CanonDrivers

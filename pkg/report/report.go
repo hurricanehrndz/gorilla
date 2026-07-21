@@ -19,6 +19,15 @@ type FailedItem struct {
 	Error   string
 }
 
+// DeferredItem records an item whose action was deferred (e.g. a blocking app
+// was running) during this run
+type DeferredItem struct {
+	Name    string
+	Version string
+	Action  string
+	Reason  string
+}
+
 // Report holds the state of a single managed run (K7: no package globals)
 type Report struct {
 	// Items contains the data we will save to GorillaReport
@@ -32,6 +41,9 @@ type Report struct {
 
 	// FailedItems contains a list of items whose actions failed
 	FailedItems []FailedItem
+
+	// DeferredItems contains a list of items whose actions were deferred
+	DeferredItems []DeferredItem
 }
 
 // New returns a fresh Report for one run
@@ -75,6 +87,7 @@ func (r *Report) compile() {
 	r.Items["InstalledItems"] = r.InstalledItems
 	r.Items["UninstalledItems"] = r.UninstalledItems
 	r.Items["FailedItems"] = r.FailedItems
+	r.Items["DeferredItems"] = r.DeferredItems
 }
 
 // End will compile everything and save to disk

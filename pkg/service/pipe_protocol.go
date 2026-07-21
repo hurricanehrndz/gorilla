@@ -45,6 +45,11 @@ type optionalInstallResponseItem struct {
 	InstallerType      string `json:"installerType"`
 	InstallerPackageID string `json:"installerPackageId"`
 	InstallerLocation  string `json:"installerLocation"`
+	Description        string `json:"description,omitempty"`
+	Category           string `json:"category,omitempty"`
+	Developer          string `json:"developer,omitempty"`
+	IconName           string `json:"iconName,omitempty"`
+	RestartAction      string `json:"restartAction,omitempty"`
 	IsManaged          bool   `json:"isManaged"`
 	IsInstalled        bool   `json:"isInstalled"`
 	Status             string `json:"status"`
@@ -65,6 +70,9 @@ type streamOperationStatusAckResponse struct {
 	StreamAccepted bool `json:"streamAccepted"`
 }
 
+// operationStatusEventPayload is one status event for a tracked operation. The
+// terminal states (done=true) are Succeeded, Failed, Deferred (blocking app
+// running — retried next run), and Canceled; all others are intermediate.
 type operationStatusEventPayload struct {
 	State           string `json:"state"`
 	ProgressPercent int    `json:"progressPercent"`

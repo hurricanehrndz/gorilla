@@ -12,15 +12,24 @@ import (
 
 // Item contains an individual entry from the catalog
 type Item struct {
-	Dependencies []string      `yaml:"dependencies"`
-	DisplayName  string        `yaml:"display_name"`
-	Check        InstallCheck  `yaml:"check"`
-	Installer    InstallerItem `yaml:"installer"`
-	Uninstaller  InstallerItem `yaml:"uninstaller"`
-	Version      string        `yaml:"version"`
-	BlockingApps []string      `yaml:"blocking_apps"`
-	PreScript    string        `yaml:"preinstall_script"`
-	PostScript   string        `yaml:"postinstall_script"`
+	Name                string        `yaml:"-"`
+	Dependencies        []string      `yaml:"dependencies"`
+	DisplayName         string        `yaml:"display_name"`
+	Check               InstallCheck  `yaml:"check"`
+	Installer           InstallerItem `yaml:"installer"`
+	Uninstaller         InstallerItem `yaml:"uninstaller"`
+	Version             string        `yaml:"version"`
+	BlockingApps        []string      `yaml:"blocking_apps"`
+	UpdateFor           []string      `yaml:"update_for"`
+	Description         string        `yaml:"description"`
+	Category            string        `yaml:"category"`
+	Developer           string        `yaml:"developer"`
+	IconName            string        `yaml:"icon_name"`
+	RestartAction       string        `yaml:"restart_action"`
+	PreScript           string        `yaml:"preinstall_script"`
+	PostScript          string        `yaml:"postinstall_script"`
+	PreUninstallScript  string        `yaml:"preuninstall_script"`
+	PostUninstallScript string        `yaml:"postuninstall_script"`
 }
 
 // InstallerItem holds information about how to install a catalog item
@@ -95,6 +104,12 @@ func Get(cfg config.Configuration) (map[int]map[string]Item, error) {
 		}
 
 		catalogCount++
+
+		// Stamp each item with its catalog map key so items know their own name (R13)
+		for name, item := range catalogItems {
+			item.Name = name
+			catalogItems[name] = item
+		}
 
 		// Add the new parsed catalog items to the catalogMap
 		catalogMap[catalogCount] = catalogItems

@@ -3,6 +3,7 @@ package installer
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,6 +18,15 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/report"
 	"github.com/1dustindavis/gorilla/pkg/status"
 )
+
+// ErrBlockingApps is returned by Install when a listed blocking application is
+// running: the action was skipped and recorded in the report's DeferredItems
+// (spec R6). It is errors.Is-able so the dependency walk can cascade the
+// deferral instead of treating it as a failure.
+var ErrBlockingApps = errors.New("blocking applications running")
+
+// runningBlockingApps is a seam so tests can stub the process snapshot.
+var runningBlockingApps = status.RunningBlockingApps
 
 // ProgressFn receives coarse per-item progress events. States emitted per
 // item: `downloading`, `installing`/`removing`, `done`/`failed`. This seam's
@@ -259,12 +269,39 @@ func (nupkgInstaller) uninstallNeedsFile() bool { return true }
 // recordFailure appends the item to the run report's FailedItems and returns the error.
 func (r *Runner) recordFailure(item catalog.Item, action string, err error) error {
 	r.Report.FailedItems = append(r.Report.FailedItems, report.FailedItem{
-		Name:    item.DisplayName,
+		Name:    item.Name,
 		Version: item.Version,
 		Action:  action,
 		Error:   err.Error(),
 	})
 	return err
+}
+
+// blockingGate defers the item when any of its explicit blocking_apps are
+// running (spec R6): it records a DeferredItem and returns ErrBlockingApps so
+// the caller skips — never kills — the action. An empty list means no check. A
+// snapshot failure proceeds (does not block the run), matching Munki, which
+// treats a failed process listing as "none running".
+func (r *Runner) blockingGate(item catalog.Item, action string) error {
+	if len(item.BlockingApps) == 0 {
+		return nil
+	}
+	running, err := runningBlockingApps(item.BlockingApps)
+	if err != nil {
+		slog.Warn("unable to check blocking apps, proceeding", "item", item.DisplayName, "err", err)
+		return nil
+	}
+	if len(running) == 0 {
+		return nil
+	}
+	r.Report.DeferredItems = append(r.Report.DeferredItems, report.DeferredItem{
+		Name:    item.Name,
+		Version: item.Version,
+		Action:  action,
+		Reason:  "blocking application(s) running: " + strings.Join(running, ", "),
+	})
+	slog.Info("Deferring item: blocking application(s) running", "item", item.DisplayName, "apps", strings.Join(running, ", "))
+	return ErrBlockingApps
 }
 
 // actionItem is the shared execution path for installs and uninstalls:
@@ -427,6 +464,11 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 			return "Check only enabled", nil
 		}
 
+		// Defer instead of acting if a blocking app is running (R6)
+		if err := r.blockingGate(item, installerType); err != nil {
+			return "", err
+		}
+
 		// Compile the item's URL
 		itemURL := r.URLPackages + item.Installer.Location
 
@@ -463,11 +505,38 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 			return "Check only enabled", nil
 		}
 
+		// Defer instead of acting if a blocking app is running (R6)
+		if err := r.blockingGate(item, installerType); err != nil {
+			return "", err
+		}
+
 		// Compile the item's URL
 		itemURL := r.URLPackages + item.Uninstaller.Location
 
+		// Run PreUninstall_Script if needed
+		if item.PreUninstallScript != "" {
+			slog.Info("Running Pre-Uninstall script", "item", item.DisplayName)
+			if err := runScript(item.PreUninstallScript, "preuninstall", r.CachePath); err != nil {
+				return "", r.recordFailure(item, "uninstall", fmt.Errorf("pre-uninstall script error: %w", err))
+			}
+		}
+
 		// Run the uninstaller
-		return uninstallItemFunc(r, item, itemURL)
+		out, err := uninstallItemFunc(r, item, itemURL)
+		if err != nil {
+			return out, err
+		}
+
+		// Run PostUninstall_Script if needed
+		if item.PostUninstallScript != "" {
+			slog.Info("Running Post-Uninstall script", "item", item.DisplayName)
+			// Deliberate double record: the item genuinely uninstalled
+			// (UninstalledItems) and the post-script genuinely failed (FailedItems).
+			if err := runScript(item.PostUninstallScript, "postuninstall", r.CachePath); err != nil {
+				return out, r.recordFailure(item, "uninstall", fmt.Errorf("post-uninstall script error: %w", err))
+			}
+		}
+		return out, nil
 
 	default:
 		// Programmer-error guard: process only ever passes install/update/uninstall,

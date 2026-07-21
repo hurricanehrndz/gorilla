@@ -16,6 +16,7 @@ type Item struct {
 	Includes         []string `yaml:"included_manifests"`
 	Installs         []string `yaml:"managed_installs"`
 	OptionalInstalls []string `yaml:"optional_installs"`
+	DefaultInstalls  []string `yaml:"default_installs"`
 	Uninstalls       []string `yaml:"managed_uninstalls"`
 	Updates          []string `yaml:"managed_updates"`
 	Catalogs         []string `yaml:"catalogs"`

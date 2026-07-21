@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
+	"github.com/1dustindavis/gorilla/pkg/report"
 	"golang.org/x/sys/windows"
 )
 
@@ -57,7 +58,8 @@ func TestNamedPipeStreamStatusReliability(t *testing.T) {
 		ServiceName:     "gorilla-test",
 	}
 
-	sr := newServiceRunner(cfg, func(config.Configuration) error { return nil })
+	stubOptional(t, "Slack")
+	sr := newServiceRunner(cfg, func(config.Configuration) (*report.Report, error) { return nil, nil })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -86,7 +88,7 @@ func TestStreamOperationStatusUnknownOperationIDReturnsError(t *testing.T) {
 		ServiceName:     "gorilla-test",
 	}
 
-	sr := newServiceRunner(cfg, func(config.Configuration) error { return nil })
+	sr := newServiceRunner(cfg, func(config.Configuration) (*report.Report, error) { return nil, nil })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -139,7 +141,10 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 		ServiceName:     "gorilla-test",
 	}
 
-	sr := newServiceRunner(cfg, func(config.Configuration) error { return errors.New("forced managed run failure") })
+	stubOptional(t, "Slack")
+	sr := newServiceRunner(cfg, func(config.Configuration) (*report.Report, error) {
+		return nil, errors.New("forced managed run failure")
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -162,14 +167,14 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 }
 
 func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration) error { return nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration) (*report.Report, error) { return nil, nil })
 	operationID := "op-canceled"
 	sr.registerTrackedOperation(operationID)
 
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	sr.scheduleRunAfterMutation(canceledCtx, actionInstallItem, operationID)
+	sr.scheduleRunAfterMutation(canceledCtx, actionInstallItem, "Slack", operationID)
 	sr.wg.Wait()
 
 	events, done, ok := sr.snapshotTrackedOperation(operationID)
@@ -185,6 +190,28 @@ func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
 	}
 	if last.CanceledBy != "service" {
 		t.Fatalf("expected canceledBy=service, got %s", last.CanceledBy)
+	}
+}
+
+// TestResolveTerminalEvent verifies the honest terminal event is derived from
+// the run report by catalog name (R10): failed → Failed, deferred → Deferred,
+// neither (and a nil report) → Succeeded.
+func TestResolveTerminalEvent(t *testing.T) {
+	rep := report.New()
+	rep.FailedItems = append(rep.FailedItems, report.FailedItem{Name: "DemoFailing", Error: "boom"})
+	rep.DeferredItems = append(rep.DeferredItems, report.DeferredItem{Name: "DemoBlocked", Reason: "blocking application(s) running: notepad"})
+
+	if ev := resolveTerminalEvent("DemoFailing", rep); ev.State != "Failed" || ev.ErrorCode != "item_failed" || ev.ErrorMessage != "boom" {
+		t.Errorf("failed mapping wrong: %#v", ev)
+	}
+	if ev := resolveTerminalEvent("DemoBlocked", rep); ev.State != "Deferred" || ev.ErrorCode != "blocked_by_running_app" {
+		t.Errorf("deferred mapping wrong: %#v", ev)
+	}
+	if ev := resolveTerminalEvent("DemoOptional", rep); ev.State != "Succeeded" {
+		t.Errorf("neither should be Succeeded, got %#v", ev)
+	}
+	if ev := resolveTerminalEvent("DemoOptional", nil); ev.State != "Succeeded" {
+		t.Errorf("nil report should be Succeeded, got %#v", ev)
 	}
 }
 
@@ -354,7 +381,7 @@ func bestEffortUnblockPipeListener(cfg config.Configuration) {
 }
 
 func TestTrackedOperationPruningDropsOldCompletedEntries(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration) error { return nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration) (*report.Report, error) { return nil, nil })
 	now := time.Now()
 
 	sr.operationsMu.Lock()

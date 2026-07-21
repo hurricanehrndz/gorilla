@@ -111,6 +111,9 @@ bootstrap: build manual-test-server
 	cp build/${APP_NAME}.exe ${MANUAL_TEST_SERVER_ROOT}/gorilla.exe
 	cp examples/example_manifest.yaml ${MANUAL_TEST_SERVER_ROOT}/manifests/example_manifest.yaml
 	cp examples/example_catalog.yaml ${MANUAL_TEST_SERVER_ROOT}/catalogs/example_catalog.yaml
+	cp utils/manual-test/fixtures/selfserve/manifests/*.yaml ${MANUAL_TEST_SERVER_ROOT}/manifests/
+	cp utils/manual-test/fixtures/selfserve/catalogs/*.yaml ${MANUAL_TEST_SERVER_ROOT}/catalogs/
+	cp -R utils/manual-test/fixtures/selfserve/packages/scripts ${MANUAL_TEST_SERVER_ROOT}/packages/scripts
 	cp utils/manual-test/bootstrap-vm.ps1 ${MANUAL_TEST_VM_DIR}/bootstrap-vm.ps1
 	cp utils/manual-test/bootstrap-vm-full.ps1 ${MANUAL_TEST_VM_DIR}/bootstrap-vm-full.ps1
 	cp utils/manual-test/templates/run-gorilla-check.bat ${MANUAL_TEST_VM_DIR}/run-gorilla-check.bat
