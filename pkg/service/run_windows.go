@@ -16,8 +16,10 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/report"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -35,7 +37,7 @@ type queuedResult struct {
 
 type serviceRunner struct {
 	cfg                config.Configuration
-	managedRun         func(config.Configuration) (*report.Report, error)
+	managedRun         func(config.Configuration, installer.ProgressFn) (*report.Report, error)
 	queue              chan queuedCommand
 	handlerSem         chan struct{}
 	wg                 sync.WaitGroup
@@ -61,13 +63,15 @@ const (
 )
 
 type trackedOperation struct {
-	events      []operationStatusEventPayload
-	done        bool
-	lastUpdated time.Time
-	completedAt time.Time
+	events               []OperationStatusPayload
+	requestedItemName    string
+	requestedDisplayName string
+	done                 bool
+	lastUpdated          time.Time
+	completedAt          time.Time
 }
 
-func newServiceRunner(cfg config.Configuration, managedRun func(config.Configuration) (*report.Report, error)) *serviceRunner {
+func newServiceRunner(cfg config.Configuration, managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)) *serviceRunner {
 	return &serviceRunner{
 		cfg:         cfg,
 		managedRun:  managedRun,
@@ -352,7 +356,7 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 		return
 	}
 	if cmd.Action == actionInstallItem || cmd.Action == actionRemoveItem {
-		sr.registerTrackedOperation(resp.OperationID)
+		sr.registerTrackedOperation(resp.OperationID, cmd.Items[0])
 	}
 
 	if err := sr.writeSuccessEnvelope(file, req, cmd, resp); err != nil {
@@ -377,28 +381,13 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, i
 	sr.wg.Add(1)
 	go func() {
 		defer sr.wg.Done()
-		sr.appendOperationEvent(operationID, operationStatusEventPayload{
-			State:           "Validating",
-			ProgressPercent: 20,
-			Message:         "Validating operation inputs",
-		})
-		inProgressState := "Installing"
-		if action == actionRemoveItem {
-			inProgressState = "Removing"
-		}
-		sr.appendOperationEvent(operationID, operationStatusEventPayload{
-			State:           inProgressState,
-			ProgressPercent: 60,
-			Message:         fmt.Sprintf("%s item via managed run", inProgressState),
-		})
-		resp, err := sr.submit(ctx, Command{Action: actionRun})
+		resp, err := sr.submit(ctx, Command{Action: actionRun, progress: sr.operationProgressCallback(operationID)})
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				sr.appendOperationEvent(operationID, operationStatusEventPayload{
-					State:           "Canceled",
-					ProgressPercent: 60,
-					Message:         "Operation canceled",
-					CanceledBy:      "service",
+				sr.appendOperationEvent(operationID, OperationStatusPayload{
+					State:      "Canceled",
+					Message:    "Operation canceled",
+					CanceledBy: "service",
 				})
 				return
 			}
@@ -408,7 +397,7 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, i
 				"operationId", operationID,
 				"err", err,
 			)
-			sr.appendOperationEvent(operationID, operationStatusEventPayload{
+			sr.appendOperationEvent(operationID, OperationStatusPayload{
 				State:           "Failed",
 				ProgressPercent: 100,
 				Message:         "Operation failed",
@@ -421,15 +410,42 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, i
 	}()
 }
 
+func (sr *serviceRunner) operationProgressCallback(operationID string) installer.ProgressFn {
+	return func(item catalog.Item, state string, percent int, message string) {
+		mappedState := ""
+		switch state {
+		case "downloading":
+			mappedState = "Downloading"
+		case "installing":
+			mappedState = "Installing"
+		case "removing":
+			mappedState = "Removing"
+		case "done":
+			mappedState = "ItemCompleted"
+		case "failed":
+			mappedState = "ItemFailed"
+		default:
+			return
+		}
+		sr.appendOperationEvent(operationID, OperationStatusPayload{
+			ItemName:        item.Name,
+			DisplayName:     orDefault(item.DisplayName, item.Name),
+			State:           mappedState,
+			ProgressPercent: percent,
+			Message:         message,
+		})
+	}
+}
+
 // resolveTerminalEvent reads the mutated item's real outcome from the run report
 // (keyed by catalog name, R13) and returns the honest terminal event (R10). A
 // nil report (unexpected, but a nil error means the run succeeded) resolves to
 // Succeeded.
-func resolveTerminalEvent(itemName string, rep *report.Report) operationStatusEventPayload {
+func resolveTerminalEvent(itemName string, rep *report.Report) OperationStatusPayload {
 	if rep != nil {
 		for _, failed := range rep.FailedItems {
 			if failed.Name == itemName {
-				return operationStatusEventPayload{
+				return OperationStatusPayload{
 					State:           "Failed",
 					ProgressPercent: 100,
 					Message:         "Operation failed",
@@ -440,7 +456,7 @@ func resolveTerminalEvent(itemName string, rep *report.Report) operationStatusEv
 		}
 		for _, deferred := range rep.DeferredItems {
 			if deferred.Name == itemName {
-				return operationStatusEventPayload{
+				return OperationStatusPayload{
 					State:           "Deferred",
 					ProgressPercent: 100,
 					Message:         deferred.Reason,
@@ -450,7 +466,7 @@ func resolveTerminalEvent(itemName string, rep *report.Report) operationStatusEv
 			}
 		}
 	}
-	return operationStatusEventPayload{
+	return OperationStatusPayload{
 		State:           "Succeeded",
 		ProgressPercent: 100,
 		Message:         "Operation completed",
@@ -517,14 +533,14 @@ func (sr *serviceRunner) writeSuccessEnvelope(file *os.File, req serviceEnvelope
 		}
 		return nil
 	case actionInstallItem, actionRemoveItem:
-		if err := json.NewEncoder(file).Encode(serviceEnvelope[operationAcceptedResponse]{
+		if err := json.NewEncoder(file).Encode(serviceEnvelope[AcceptedOperation]{
 			Version:      pipeProtocolVersion,
 			MessageType:  messageTypeResponse,
 			Operation:    cmd.Action,
 			RequestID:    req.RequestID,
 			OperationID:  resp.OperationID,
 			TimestampUTC: nowRFC3339UTC(),
-			Payload: operationAcceptedResponse{
+			Payload: AcceptedOperation{
 				Accepted:    true,
 				QueuedAtUTC: nowRFC3339UTC(),
 			},
@@ -572,7 +588,7 @@ func (sr *serviceRunner) writeStreamOperationStatusSequence(file *os.File, req s
 			return nil
 		}
 		for sent < len(events) {
-			if err := json.NewEncoder(file).Encode(serviceEnvelope[operationStatusEventPayload]{
+			if err := json.NewEncoder(file).Encode(serviceEnvelope[OperationStatusPayload]{
 				Version:      pipeProtocolVersion,
 				MessageType:  messageTypeEvent,
 				Operation:    actionStreamOperationStatus,
@@ -592,26 +608,30 @@ func (sr *serviceRunner) writeStreamOperationStatusSequence(file *os.File, req s
 	}
 }
 
-func (sr *serviceRunner) registerTrackedOperation(operationID string) {
-	if strings.TrimSpace(operationID) == "" {
+func (sr *serviceRunner) registerTrackedOperation(operationID, itemName string) {
+	if strings.TrimSpace(operationID) == "" || strings.TrimSpace(itemName) == "" {
 		return
 	}
 	sr.operationsMu.Lock()
 	defer sr.operationsMu.Unlock()
 	sr.pruneTrackedOperationsLocked(time.Now())
 	sr.operations[operationID] = &trackedOperation{
-		events: []operationStatusEventPayload{
+		events: []OperationStatusPayload{
 			{
+				ItemName:        itemName,
+				DisplayName:     itemName,
 				State:           "Queued",
 				ProgressPercent: 0,
 				Message:         "Operation queued",
 			},
 		},
-		lastUpdated: time.Now(),
+		requestedItemName:    itemName,
+		requestedDisplayName: itemName,
+		lastUpdated:          time.Now(),
 	}
 }
 
-func (sr *serviceRunner) appendOperationEvent(operationID string, event operationStatusEventPayload) {
+func (sr *serviceRunner) appendOperationEvent(operationID string, event OperationStatusPayload) {
 	if strings.TrimSpace(operationID) == "" {
 		return
 	}
@@ -620,6 +640,12 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event operatio
 	op, ok := sr.operations[operationID]
 	if !ok {
 		return
+	}
+	if strings.TrimSpace(event.ItemName) == "" {
+		event.ItemName = op.requestedItemName
+	}
+	if strings.TrimSpace(event.DisplayName) == "" {
+		event.DisplayName = op.requestedDisplayName
 	}
 	now := time.Now()
 	op.events = append(op.events, event)
@@ -632,7 +658,7 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event operatio
 		"state", event.State,
 		"progressPercent", event.ProgressPercent,
 	)
-	if event.State == "Succeeded" || event.State == "Failed" || event.State == "Deferred" || event.State == "Canceled" {
+	if IsTerminalOperationState(event.State) {
 		op.done = true
 		op.completedAt = now
 	}
@@ -646,14 +672,14 @@ func (sr *serviceRunner) hasTrackedOperation(operationID string) bool {
 	return ok
 }
 
-func (sr *serviceRunner) snapshotTrackedOperation(operationID string) ([]operationStatusEventPayload, bool, bool) {
+func (sr *serviceRunner) snapshotTrackedOperation(operationID string) ([]OperationStatusPayload, bool, bool) {
 	sr.operationsMu.Lock()
 	defer sr.operationsMu.Unlock()
 	op, ok := sr.operations[operationID]
 	if !ok {
 		return nil, false, false
 	}
-	out := make([]operationStatusEventPayload, len(op.events))
+	out := make([]OperationStatusPayload, len(op.events))
 	copy(out, op.events)
 	return out, op.done, true
 }
@@ -759,7 +785,7 @@ func (sr *serviceRunner) clearListenerPipe(handle windows.Handle) {
 
 type gorillaWindowsService struct {
 	cfg        config.Configuration
-	managedRun func(config.Configuration) (*report.Report, error)
+	managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)
 }
 
 func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
@@ -799,6 +825,6 @@ func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRe
 	return false, 0
 }
 
-func Run(cfg config.Configuration, managedRun func(config.Configuration) (*report.Report, error)) error {
+func Run(cfg config.Configuration, managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)) error {
 	return svc.Run(cfg.ServiceName, &gorillaWindowsService{cfg: cfg, managedRun: managedRun})
 }

@@ -83,6 +83,9 @@ func route(cfg config.Configuration) error {
 			for _, item := range resp.Items {
 				fmt.Println(item)
 			}
+			if action == "streamoperationstatus" && resp.Message != "" {
+				fmt.Println(resp.Message)
+			}
 			return nil
 		}
 		if resp.OperationID != "" {
@@ -111,6 +114,6 @@ func route(cfg config.Configuration) error {
 		return runServiceFunc(cfg)
 	}
 
-	_, err := managedRunFunc(cfg)
+	_, err := managedRunFunc(cfg, nil)
 	return err
 }

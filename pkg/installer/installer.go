@@ -29,8 +29,8 @@ var ErrBlockingApps = errors.New("blocking applications running")
 var runningBlockingApps = status.RunningBlockingApps
 
 // ProgressFn receives coarse per-item progress events. States emitted per
-// item: `downloading`, `installing`/`removing`, `done`/`failed`. This seam's
-// consumer is the UI/pipe wiring (Workstream D); until then only tests attach one.
+// item: `downloading`, `installing`/`removing`, `done`/`failed`. The service
+// attaches an operation-scoped callback for self-service mutations.
 type ProgressFn func(item catalog.Item, state string, percent int, message string)
 
 // Runner is the run-scoped install context (K7: no cross-run package globals)
