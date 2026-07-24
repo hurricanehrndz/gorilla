@@ -350,9 +350,6 @@ func getOptionalItems(cfg config.Configuration) ([]OptionalInstallItem, error) {
 		item.DisplayName = orDefault(catItem.DisplayName, name)
 		item.Version = catItem.Version
 		item.Catalog = catName
-		item.InstallerType = catItem.Installer.Type
-		item.InstallerLocation = catItem.Installer.Location
-		item.InstallerPackageID = catItem.Installer.PackageID
 		item.Description = catItem.Description
 		item.Category = catItem.Category
 		item.Developer = catItem.Developer

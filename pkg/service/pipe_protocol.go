@@ -42,9 +42,6 @@ type OptionalInstallItem struct {
 	DisplayName        string `json:"displayName"`
 	Version            string `json:"version"`
 	Catalog            string `json:"catalog"`
-	InstallerType      string `json:"installerType"`
-	InstallerPackageID string `json:"installerPackageId"`
-	InstallerLocation  string `json:"installerLocation"`
 	Description        string `json:"description,omitempty"`
 	Category           string `json:"category,omitempty"`
 	Developer          string `json:"developer,omitempty"`
