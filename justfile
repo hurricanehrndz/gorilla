@@ -17,6 +17,9 @@ ui-test: ui-install
 # Production frontend assets.
 ui-assets: ui-install
     npm run build --prefix gorilla-ui/frontend
+    @if grep -rq GORILLA_VITE_MOCK_ONLY gorilla-ui/frontend/dist; then \
+      echo "Dev mock leaked into the production bundle" && exit 1; \
+      else echo "Production bundle is mock-free"; fi
 
 # Verify committed Wails bindings.
 ui-bindings-check:

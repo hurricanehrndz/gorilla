@@ -64,3 +64,6 @@ Structured `slog` diagnostics are opt-in through `GORILLA_UI_DEBUG=1` or `GORILL
 - A closed app does not resume a stream; the next list refresh converges state.
 - Icons are generated locally (monogram or category glyph); no remote icon
   transport exists.
+- `OperationStatus` is hand-typed in `frontend/src/api.ts` because bindings are
+  generated with `-noevents`, so the binding-diff gate cannot catch drift in it.
+  Upgrade only when bindings are generated with events.

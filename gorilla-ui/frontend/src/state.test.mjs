@@ -14,7 +14,6 @@ import {
   fromCache,
   isItemActive,
   isItemPhase,
-  isLocalErrorState,
   isTerminalState,
   localErrorState,
   localRecord,
@@ -314,9 +313,6 @@ test("status records keep the event's own item identity and percentage", () => {
 test("local records label request failures and premature stream ends", () => {
   assert.equal(localErrorState("operation stream ended before a terminal event"), STREAM_ENDED_STATE);
   assert.equal(localErrorState("pipe unavailable"), ERROR_STATE);
-  assert.equal(isLocalErrorState(STREAM_ENDED_STATE), true);
-  assert.equal(isLocalErrorState(ERROR_STATE), true);
-  assert.equal(isLocalErrorState("Failed"), false);
 
   const record = localRecord(
     "local-1",

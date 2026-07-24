@@ -66,6 +66,10 @@ jobs:
       - name: Frontend production assets
         working-directory: gorilla-ui/frontend
         run: npm run build
+      - name: Verify production bundle excludes the dev mock
+        run: |
+          if (Get-ChildItem -Path gorilla-ui/frontend/dist -Recurse -File | Select-String -Pattern GORILLA_VITE_MOCK_ONLY -Quiet) { throw "Dev mock leaked into the production bundle" }
+          Write-Host "Production bundle is mock-free"
       - name: Go tests
         run: go test -cover ./...
       - name: Build gorilla-ui.exe

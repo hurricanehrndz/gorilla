@@ -25,6 +25,10 @@
 config.json
 config.yaml
 
+# Credential safety net (not build output): never commit certs or private keys
+*.pfx
+*.cer
+
 # WIX files
 *.wixpdb
 *.wixobj

@@ -142,10 +142,6 @@ export function isItemPhase(state: string): boolean {
   return ITEM_PHASE_STATES.has(state.trim());
 }
 
-export function isLocalErrorState(state: string): boolean {
-  return state === STREAM_ENDED_STATE || state === ERROR_STATE;
-}
-
 /** localErrorState keeps a premature stream end distinguishable from any other failure. */
 export function localErrorState(error: string): string {
   return /stream ended before a terminal event/i.test(error) ? STREAM_ENDED_STATE : ERROR_STATE;

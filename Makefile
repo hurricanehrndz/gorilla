@@ -153,6 +153,9 @@ ui-test: ui-install
 
 ui-assets: ui-install
 	npm run build --prefix ${UI_FRONTEND}
+	@if grep -rq GORILLA_VITE_MOCK_ONLY ${UI_FRONTEND}/dist; then \
+	  echo "Dev mock leaked into the production bundle" && exit 1; \
+	  else echo "Production bundle is mock-free"; fi
 
 ui-bindings-check: .pre-build
 	rm -rf ${UI_BINDINGS_CHECK}
