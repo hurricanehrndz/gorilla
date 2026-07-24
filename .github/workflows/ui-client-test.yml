@@ -7,20 +7,30 @@ on:
       - gorilla-ui/**
       - '!gorilla-ui/*.md'
       - '!gorilla-ui/**/*.md'
+      - pkg/service/**
+      - cmd/gorilla/**
+      - go.mod
+      - go.sum
       - Makefile
+      - justfile
       - .github/workflows/ui-client-test.yml
   pull_request:
     paths:
       - gorilla-ui/**
       - '!gorilla-ui/*.md'
       - '!gorilla-ui/**/*.md'
+      - pkg/service/**
+      - cmd/gorilla/**
+      - go.mod
+      - go.sum
       - Makefile
+      - justfile
       - .github/workflows/ui-client-test.yml
 permissions:
   contents: read
 jobs:
   build:
-    name: UI Lint And Test
+    name: Gorilla UI Lint, Test And Build
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -28,11 +38,39 @@ jobs:
         run: git config --global core.autocrlf false
       - name: Check out code
         uses: actions/checkout@v4
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          dotnet-version: 8.0.x
-      - name: UI lint
-        run: make ui-lint
-      - name: UI test
-        run: make ui-test
+          go-version-file: go.mod
+          cache: true
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install frontend dependencies
+        working-directory: gorilla-ui/frontend
+        run: npm ci
+      - name: Regenerate Wails bindings
+        working-directory: gorilla-ui
+        run: go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117 generate bindings -clean -ts -noevents -d frontend/bindings .
+      - name: Verify committed bindings are current
+        run: |
+          $changed = git status --porcelain -- gorilla-ui/frontend/bindings
+          if ($changed) { $changed; throw "Committed Wails bindings are stale; regenerate and commit." }
+      - name: Frontend type check
+        working-directory: gorilla-ui/frontend
+        run: npm run check
+      - name: Frontend tests
+        working-directory: gorilla-ui/frontend
+        run: npm test
+      - name: Frontend production assets
+        working-directory: gorilla-ui/frontend
+        run: npm run build
+      - name: Go tests
+        run: go test -cover ./...
+      - name: Build gorilla-ui.exe
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: go build -tags production -ldflags "-H windowsgui" -o build/gorilla-ui.exe ./gorilla-ui

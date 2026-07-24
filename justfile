@@ -25,6 +25,9 @@ ui-bindings-check:
     cd gorilla-ui && go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117 generate bindings -clean -ts -noevents -d ../build/ui-bindings-check .
     diff -ru gorilla-ui/frontend/bindings build/ui-bindings-check
 
+# Type check plus committed-binding verification.
+ui-lint: ui-type ui-bindings-check
+
 # Windows binaries (pure Go, no cgo) -> build/gorilla.exe and build/gorilla-ui.exe
 build arch="amd64": ui-assets
     mkdir -p build

@@ -37,8 +37,12 @@ Guidance for coding agents working in this repository.
   - `make bootstrap-run`
 
 Prefer `make test` as the default local validation step, even for small changes.
-When changes include Gorilla UI/.NET code, run `make ui-lint` and `make ui-test`.
+When changes include Gorilla UI code, run `make ui-lint` and `make ui-test`.
 When changes span Go service/CLI and UI protocol layers, run `make test`, `make ui-lint`, and `make ui-test`.
+
+`make build` produces both raw Windows executables — `build/gorilla.exe` and the
+pure-Go, windows-GUI `build/gorilla-ui.exe`
+(`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags production -ldflags "-H windowsgui"`).
 
 ## Code Style
 
@@ -71,17 +75,49 @@ When changes span Go service/CLI and UI protocol layers, run `make test`, `make 
 
 ## UI & Protocol Notes
 
-- Local tooling prerequisites for Gorilla UI work:
-  - macOS: `dotnet-sdk@8`
-  - Windows VM: Visual Studio 2022 with WinUI/Windows App SDK tooling and .NET 8 SDK
+- Gorilla UI is a Wails v3 application (`package main` in `gorilla-ui/`) inside
+  this repository's root Go module. Its frontend is vanilla TypeScript + Vite.
+- Local tooling prerequisites: the `devenv` shell (`devenv shell` / `direnv allow`)
+  supplies Go, Node 22, `pkg-config`, GTK4, and WebKitGTK 6. No other SDK is needed;
+  the shipped Windows binary is a pure-Go cross-build.
+- Generated Wails TypeScript bindings under `gorilla-ui/frontend/bindings/` are
+  committed and must never be hand-edited. Regenerate them from `gorilla-ui/` with
+  the pinned command and commit the result:
+
+      go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117 generate bindings -clean -ts -noevents -d frontend/bindings .
+
+  `make ui-lint` fails when the committed tree and a fresh generation differ.
 - Keep `cmd/gorilla` service-message commands updated in lockstep with Gorilla UI protocol changes for testing/debugging.
 - `ListOptionalInstalls` should return JSON-safe subset DTOs, not full internal item objects.
+- The bound Wails surface is exactly `ListOptionalInstalls`, `InstallItem`,
+  `RemoveItem`, and `WatchOperation`, and one `gorilla:operation-status` event.
+  Progress percentages are per item, not aggregate; only `Succeeded`, `Failed`,
+  `Deferred`, and `Canceled` end an operation.
+
+## Real Windows Validation Loop
+
+Automated checks do not cover the visible UI. For service/UI changes, validate on
+the `dialog-win11` VM against the real SYSTEM service:
+
+1. `devenv shell -- just build`, then `make bootstrap MANUAL_TEST_BASE_URL=http://<host-ip>:8080/`
+   and run `./build/manual-test-server -root build/manual-test/server-root -addr :8080`.
+2. Copy `build/manual-test/vm/bootstrap-vm.ps1`, `utils/manual-test/run-selfserve-smoke.ps1`,
+   and `utils/manual-test/launch-wails-ui.ps1` to `C:\gorilla-test\` on the VM and run
+   `bootstrap-vm.ps1 ... -InstallService -StartService`.
+3. Machine-assertable gate: `run-selfserve-smoke.ps1` must exit 0 and print
+   `SELF-SERVE SMOKE PASSED`.
+4. Visible gate: launch `launch-wails-ui.ps1` through an interactive scheduled task
+   so `gorilla-ui.exe` runs as the standard user, then screenshot the desktop
+   (`virsh -c qemu:///system screenshot dialog-win11 ...`) to judge Home, progress,
+   terminal, Activity, and offline-cache states.
+5. Clean up afterwards: leave the `gorilla` service running, remove the temporary
+   scheduled task and ready marker, and stop the local test server.
 
 ## Diagnostics
 
 - For diagnostics policy, behavior, and implementation guidance, follow:
-  - `gorilla-ui/ARCHITECTURE.md` (Diagnostics Decision Record)
-  - `gorilla-ui/README.md` (Diagnostics strategy)
+  - `gorilla-ui/ARCHITECTURE.md`
+  - `gorilla-ui/README.md`
 
 ## PR Expectations
 
