@@ -3,16 +3,31 @@ import test from "node:test";
 
 import {
   ALL_CATEGORIES,
+  ERROR_STATE,
+  STREAM_ENDED_STATE,
+  activityLine,
   bannerMessage,
   categories,
   categoryGlyph,
   compareItems,
   deriveAction,
   fromCache,
+  isItemActive,
+  isItemPhase,
+  isLocalErrorState,
+  isTerminalState,
+  localErrorState,
+  localRecord,
   monogram,
+  progressLabel,
+  releaseOperation,
   restartBadge,
+  shouldAcceptRecord,
   showRetry,
+  stateLabel,
   statusLabel,
+  statusRecord,
+  trackOperation,
   visibleItems,
   withFailure,
   withLive,
@@ -171,4 +186,183 @@ test("list view transitions from cache to live and back to stale", () => {
     "Service unavailable and no cached software is stored. Reason: pipe unavailable",
   );
   assert.equal(showRetry(staleEmpty), true);
+});
+
+test("only Succeeded, Failed, Deferred and Canceled end an operation", () => {
+  for (const state of ["Succeeded", "Failed", "Deferred", "Canceled"]) {
+    assert.equal(isTerminalState(state), true, state);
+  }
+  // A dependency failing or finishing must never be read as the operation result.
+  for (const state of ["Queued", "Downloading", "Installing", "Removing", "ItemCompleted", "ItemFailed", "Requested", "", "succeeded"]) {
+    assert.equal(isTerminalState(state), false, state || "(blank)");
+  }
+});
+
+test("a determinate bar is only offered for item-phase records", () => {
+  for (const state of ["Downloading", "Installing", "Removing"]) {
+    assert.equal(isItemPhase(state), true, state);
+  }
+  for (const state of ["Queued", "ItemCompleted", "ItemFailed", "Succeeded", "Failed", "Deferred", "Canceled", ""]) {
+    assert.equal(isItemPhase(state), false, state || "(blank)");
+  }
+});
+
+test("active operations disable only their own item and route independently", () => {
+  let active = new Map();
+  active = trackOperation(active, "op-1", "DemoOptional");
+  active = trackOperation(active, "op-2", "DemoFailing");
+
+  assert.equal(isItemActive(active, "DemoOptional"), true);
+  assert.equal(isItemActive(active, "DemoFailing"), true);
+  assert.equal(isItemActive(active, "DemoBlocked"), false);
+
+  const afterFirst = releaseOperation(active, "op-1");
+  assert.equal(isItemActive(afterFirst, "DemoOptional"), false);
+  assert.equal(isItemActive(afterFirst, "DemoFailing"), true, "a concurrent operation keeps its own item busy");
+  assert.equal(isItemActive(active, "DemoOptional"), true, "release does not mutate the previous map");
+  assert.equal(afterFirst.get("op-2"), "DemoFailing");
+  assert.equal(releaseOperation(afterFirst, "op-unknown").size, 1);
+});
+
+test("a record arriving after the terminal one is dropped, not shown as current", () => {
+  // Mirrors the onOperationStatus handler: Wails can deliver an ItemCompleted
+  // after the terminal record, and appending it would leave a finished
+  // operation reading "Installing 55%" as its newest line.
+  const operation = { records: [], outcome: "active" };
+  const activity = [];
+  const apply = (status) => {
+    if (!shouldAcceptRecord(operation.outcome)) {
+      return;
+    }
+    const record = statusRecord(status);
+    operation.records.push(record);
+    activity.unshift(record);
+    if (isTerminalState(record.state)) {
+      operation.outcome = "terminal";
+    }
+  };
+
+  const event = (state, progressPercent) => ({
+    operationId: "op-1",
+    timestampUtc: "2026-07-21T12:00:00Z",
+    itemName: "DemoOptional",
+    displayName: "Demo Optional",
+    state,
+    progressPercent,
+    message: state,
+  });
+
+  apply(event("Installing", 55));
+  apply(event("Succeeded", 100));
+  apply(event("ItemCompleted", 55));
+
+  assert.deepEqual(operation.records.map((r) => r.state), ["Installing", "Succeeded"]);
+  assert.equal(operation.records[operation.records.length - 1].state, "Succeeded");
+  assert.deepEqual(activity.map((r) => r.state), ["Succeeded", "Installing"]);
+  assert.equal(shouldAcceptRecord("active"), true);
+  assert.equal(shouldAcceptRecord("error"), false, "a failed operation stops accepting late records too");
+});
+
+test("status records keep the event's own item identity and percentage", () => {
+  const dependency = statusRecord({
+    operationId: "op-1",
+    timestampUtc: "2026-07-21T12:00:05Z",
+    itemName: "DemoUpdater",
+    displayName: "Demo Updater",
+    state: "Installing",
+    progressPercent: 10,
+    message: "Installing DemoUpdater",
+  });
+  assert.deepEqual(dependency, {
+    operationId: "op-1",
+    itemName: "DemoUpdater",
+    displayName: "Demo Updater",
+    state: "Installing",
+    message: "Installing DemoUpdater",
+    timestampUtc: "2026-07-21T12:00:05Z",
+    progressPercent: 10,
+  });
+  assert.equal(progressLabel(dependency), "Demo Updater — Installing");
+
+  const blankName = statusRecord({
+    operationId: "op-1",
+    timestampUtc: "2026-07-21T12:00:06Z",
+    itemName: "DemoOptional",
+    displayName: "",
+    state: "ItemFailed",
+    progressPercent: 0,
+    message: "install failed",
+    errorMessage: "installer exited with code 1",
+  });
+  assert.equal(blankName.displayName, "DemoOptional");
+  assert.equal(blankName.message, "install failed (installer exited with code 1)");
+  assert.equal(isTerminalState(blankName.state), false, "ItemFailed stays non-terminal");
+
+  const duplicated = statusRecord({
+    operationId: "op-1",
+    timestampUtc: "2026-07-21T12:00:07Z",
+    itemName: "DemoOptional",
+    displayName: "Demo Optional",
+    state: "Failed",
+    progressPercent: 100,
+    message: "boom",
+    errorMessage: "boom",
+  });
+  assert.equal(duplicated.message, "boom", "an identical errorMessage is not repeated");
+});
+
+test("local records label request failures and premature stream ends", () => {
+  assert.equal(localErrorState("operation stream ended before a terminal event"), STREAM_ENDED_STATE);
+  assert.equal(localErrorState("pipe unavailable"), ERROR_STATE);
+  assert.equal(isLocalErrorState(STREAM_ENDED_STATE), true);
+  assert.equal(isLocalErrorState(ERROR_STATE), true);
+  assert.equal(isLocalErrorState("Failed"), false);
+
+  const record = localRecord(
+    "local-1",
+    { itemName: "DemoOptional", displayName: "" },
+    ERROR_STATE,
+    "pipe unavailable",
+    "2026-07-21T12:00:00Z",
+  );
+  assert.deepEqual(record, {
+    operationId: "local-1",
+    itemName: "DemoOptional",
+    displayName: "DemoOptional",
+    state: ERROR_STATE,
+    message: "pipe unavailable",
+    timestampUtc: "2026-07-21T12:00:00Z",
+  });
+  assert.equal(record.progressPercent, undefined, "a local record carries no service percentage");
+});
+
+test("state labels stay readable for wire and local states", () => {
+  assert.equal(stateLabel("ItemCompleted"), "Item Completed");
+  assert.equal(stateLabel(STREAM_ENDED_STATE), "Stream ended before a result");
+  assert.equal(stateLabel(ERROR_STATE), "Request failed");
+  assert.equal(stateLabel(""), "Unknown");
+  assert.equal(statusLabel(item({ status: "WillBeRemoved" })), "Will Be Removed");
+});
+
+test("activity lines name the item, state and message", () => {
+  const line = activityLine({
+    operationId: "op-1",
+    itemName: "DemoUpdater",
+    displayName: "Demo Updater",
+    state: "ItemCompleted",
+    message: "done",
+    timestampUtc: "not-a-date",
+  });
+  assert.equal(line, "not-a-date — Demo Updater: Item Completed — done");
+  assert.equal(
+    activityLine({
+      operationId: "op-1",
+      itemName: "DemoUpdater",
+      displayName: "",
+      state: "Queued",
+      message: "  ",
+      timestampUtc: "not-a-date",
+    }),
+    "not-a-date — DemoUpdater: Queued",
+  );
 });

@@ -1,7 +1,11 @@
 import type {
+  ActiveOperations,
+  ActivityRecord,
   CachedList,
   ItemAction,
   ListView,
+  OperationOutcome,
+  OperationStatus,
   OptionalInstallItem,
 } from "./types.ts";
 
@@ -99,8 +103,141 @@ export function restartBadge(item: OptionalInstallItem): string {
 }
 
 export function statusLabel(item: OptionalInstallItem): string {
-  const raw = item.status.trim();
-  return raw ? raw.replace(/([a-z])([A-Z])/g, "$1 $2") : "Unknown";
+  return stateLabel(item.status);
+}
+
+/** REQUESTED_STATE is local: the service accepted the request, no event yet. */
+export const REQUESTED_STATE = "Requested";
+/** STREAM_ENDED_STATE is local: the stream ended before any terminal record. */
+export const STREAM_ENDED_STATE = "stream_ended";
+/** ERROR_STATE is local: the request or watch call itself failed. */
+export const ERROR_STATE = "error";
+
+const LOCAL_STATE_LABELS: Record<string, string> = {
+  [STREAM_ENDED_STATE]: "Stream ended before a result",
+  [ERROR_STATE]: "Request failed",
+};
+
+export function stateLabel(state: string): string {
+  const raw = state.trim();
+  if (!raw) {
+    return "Unknown";
+  }
+  return LOCAL_STATE_LABELS[raw] ?? raw.replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+// Only these four states end an operation. ItemCompleted and ItemFailed are
+// per-item records: a dependency can fail while the operation keeps running.
+const TERMINAL_STATES = new Set(["Succeeded", "Failed", "Deferred", "Canceled"]);
+
+// Only these states describe work on the event's own item, so only they carry a
+// percentage worth showing on a determinate bar.
+const ITEM_PHASE_STATES = new Set(["Downloading", "Installing", "Removing"]);
+
+export function isTerminalState(state: string): boolean {
+  return TERMINAL_STATES.has(state.trim());
+}
+
+export function isItemPhase(state: string): boolean {
+  return ITEM_PHASE_STATES.has(state.trim());
+}
+
+export function isLocalErrorState(state: string): boolean {
+  return state === STREAM_ENDED_STATE || state === ERROR_STATE;
+}
+
+/** localErrorState keeps a premature stream end distinguishable from any other failure. */
+export function localErrorState(error: string): string {
+  return /stream ended before a terminal event/i.test(error) ? STREAM_ENDED_STATE : ERROR_STATE;
+}
+
+/** trackOperation records an accepted operation so only its item is disabled. */
+export function trackOperation(
+  active: ActiveOperations,
+  operationId: string,
+  itemName: string,
+): ActiveOperations {
+  return new Map(active).set(operationId, itemName);
+}
+
+export function releaseOperation(
+  active: ActiveOperations,
+  operationId: string,
+): ActiveOperations {
+  const next = new Map(active);
+  next.delete(operationId);
+  return next;
+}
+
+export function isItemActive(active: ActiveOperations, itemName: string): boolean {
+  for (const name of active.values()) {
+    if (name === itemName) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * shouldAcceptRecord decides whether a newly arrived status record still
+ * belongs to an operation. Wails emits every event on its own goroutine and the
+ * service flushes a whole poll batch at once, so a non-terminal record can
+ * arrive after the terminal one; accepting it would show finished work as still
+ * running.
+ */
+export function shouldAcceptRecord(outcome: OperationOutcome): boolean {
+  return outcome === "active";
+}
+
+/**
+ * statusRecord narrows a wire status event to a local display record. The
+ * record is display history only: installed state comes from a later
+ * authoritative list, never from a progress event.
+ */
+export function statusRecord(status: OperationStatus): ActivityRecord {
+  const message = status.message.trim();
+  const detail = (status.errorMessage ?? "").trim();
+  return {
+    operationId: status.operationId,
+    itemName: status.itemName,
+    displayName: status.displayName || status.itemName,
+    state: status.state,
+    message: [message, detail && detail !== message ? `(${detail})` : ""].filter(Boolean).join(" "),
+    timestampUtc: status.timestampUtc,
+    progressPercent: status.progressPercent,
+  };
+}
+
+/** localRecord is a display-only entry for work the service never reported. */
+export function localRecord(
+  operationId: string,
+  item: Pick<OptionalInstallItem, "itemName" | "displayName">,
+  state: string,
+  message: string,
+  timestampUtc: string,
+): ActivityRecord {
+  return {
+    operationId,
+    itemName: item.itemName,
+    displayName: item.displayName || item.itemName,
+    state,
+    message,
+    timestampUtc,
+  };
+}
+
+export function activityLine(record: ActivityRecord): string {
+  const when = new Date(record.timestampUtc);
+  const stamp = Number.isNaN(when.getTime()) ? record.timestampUtc : when.toLocaleString();
+  const name = record.displayName || record.itemName;
+  return [`${stamp} — ${name}: ${stateLabel(record.state)}`, record.message.trim()]
+    .filter(Boolean)
+    .join(" — ");
+}
+
+/** progressLabel names the item a determinate bar belongs to, never the operation. */
+export function progressLabel(record: ActivityRecord): string {
+  return `${record.displayName || record.itemName} — ${stateLabel(record.state)}`;
 }
 
 /**

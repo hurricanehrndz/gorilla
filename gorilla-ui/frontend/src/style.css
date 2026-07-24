@@ -218,6 +218,54 @@ h2 {
   font-size: 0.8rem;
 }
 
+.operations {
+  display: grid;
+  gap: 1rem;
+}
+
+.operation {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: start;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.operation[data-outcome="error"] {
+  border-color: var(--warn-line);
+  background: var(--warn-bg);
+}
+
+.operation h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.operation p {
+  margin: 0;
+}
+
+.operation progress {
+  width: min(28rem, 100%);
+}
+
+.operation-current {
+  color: var(--muted);
+}
+
+.operation-item {
+  font-size: 0.85rem;
+}
+
+.timeline {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .disclaimer {
   max-width: 60ch;
   color: var(--muted);

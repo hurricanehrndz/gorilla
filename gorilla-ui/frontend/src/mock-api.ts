@@ -7,6 +7,7 @@ import type {
   OperationStatus,
   OptionalInstallItem,
 } from "./api.ts";
+import { isTerminalState } from "./state.ts";
 
 const MOCK_MARKER = "GORILLA_VITE_MOCK_ONLY";
 
@@ -80,11 +81,25 @@ const items: OptionalInstallItem[] = [
     statusUpdatedAtUtc: "2026-07-21T12:00:00Z",
   },
   {
+    itemName: "DemoPendingRemoval",
+    displayName: "Demo Pending Removal",
+    version: "1.0.1",
+    catalog: "selfserve_catalog",
+    description: "Already requested for removal; its primary action is Cancel.",
+    category: "Utilities",
+    developer: "Gorilla",
+    isManaged: true,
+    isInstalled: true,
+    status: "WillBeRemoved",
+    statusUpdatedAtUtc: "2026-07-21T12:00:00Z",
+  },
+  {
     itemName: "DemoNoIcon",
     displayName: "7",
     version: "7.0.0",
     catalog: "selfserve_catalog",
-    description: "Exercises the monogram fallback for a numeric display name.",
+    description:
+      "Exercises the monogram fallback and a stream that ends before any terminal record.",
     isManaged: false,
     isInstalled: false,
     status: "Unknown",
@@ -139,6 +154,11 @@ function sequence(item: OptionalInstallItem, removing: boolean): MockEvent[] {
     ];
   }
 
+  // No terminal record: the watch call rejects, exercising the stream_ended UI.
+  if (item.itemName === "DemoNoIcon") {
+    return [queued, [400, { state: "Downloading", progressPercent: 30 }]];
+  }
+
   return [
     queued,
     [300, { state: "Downloading", progressPercent: 25 }],
@@ -167,37 +187,64 @@ function sequence(item: OptionalInstallItem, removing: boolean): MockEvent[] {
   ];
 }
 
+const acceptedOperations = new Map<string, { item: OptionalInstallItem; removing: boolean }>();
+
 function mutate(itemName: string, removing: boolean): Promise<AcceptedOperation> {
   const item = items.find((candidate) => candidate.itemName === itemName);
   if (!item) {
     return Promise.reject(new Error(`unknown item ${itemName}`));
   }
   const accepted = accept();
-  const operationId = accepted.operationId ?? "";
-
-  for (const [delay, partial] of sequence(item, removing)) {
-    setTimeout(() => {
-      const status: OperationStatus = {
-        operationId,
-        timestampUtc: new Date().toISOString(),
-        itemName: item.itemName,
-        displayName: item.displayName,
-        state: "",
-        progressPercent: 0,
-        message: "",
-        ...partial,
-      };
-      if (status.state === "Succeeded") {
-        item.isInstalled = !removing;
-        item.isManaged = !removing;
-        item.status = removing ? "NotInstalled" : "Installed";
-      }
-      for (const handler of handlers) {
-        handler(status);
-      }
-    }, delay);
-  }
+  acceptedOperations.set(accepted.operationId ?? "", { item, removing });
   return Promise.resolve(accepted);
+}
+
+/**
+ * watch replays a sequence through the same callback production uses, so the
+ * mock exercises the real routing: nothing is delivered until the UI watches,
+ * and a sequence with no terminal record rejects like a premature stream end.
+ */
+function watch(operationId: string): Promise<void> {
+  const request = acceptedOperations.get(operationId);
+  if (!request) {
+    return Promise.reject(new Error(`unknown operation ${operationId}`));
+  }
+  acceptedOperations.delete(operationId);
+  const { item, removing } = request;
+  const events = sequence(item, removing);
+  const [lastDelay, lastPartial] = events[events.length - 1];
+
+  return new Promise((resolve, reject) => {
+    for (const [delay, partial] of events) {
+      setTimeout(() => {
+        const status: OperationStatus = {
+          operationId,
+          timestampUtc: new Date().toISOString(),
+          itemName: item.itemName,
+          displayName: item.displayName,
+          state: "",
+          progressPercent: 0,
+          message: "",
+          ...partial,
+        };
+        if (status.state === "Succeeded") {
+          item.isInstalled = !removing;
+          item.isManaged = !removing;
+          item.status = removing ? "NotInstalled" : "Installed";
+        }
+        for (const handler of handlers) {
+          handler(status);
+        }
+      }, delay);
+    }
+    setTimeout(() => {
+      if (isTerminalState(lastPartial.state ?? "")) {
+        resolve();
+      } else {
+        reject(new Error("operation stream ended before a terminal event"));
+      }
+    }, lastDelay + 1);
+  });
 }
 
 export const api: GorillaApi = {
@@ -207,7 +254,7 @@ export const api: GorillaApi = {
       : new Promise((resolve) => setTimeout(() => resolve(items.map((item) => ({ ...item }))), 250)),
   installItem: (itemName) => mutate(itemName, false),
   removeItem: (itemName) => mutate(itemName, true),
-  watchOperation: () => Promise.resolve(),
+  watchOperation: (operationId) => watch(operationId),
   onOperationStatus(handler) {
     handlers.push(handler);
   },

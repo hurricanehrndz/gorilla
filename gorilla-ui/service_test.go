@@ -128,6 +128,92 @@ func TestUIServiceWatchEmitsOperationStatus(t *testing.T) {
 	}
 }
 
+// Every streamed record must reach the frontend carrying its own operation ID
+// and item identity, including the non-terminal dependency records.
+func TestUIServiceWatchEmitsEveryRecordWithOperationID(t *testing.T) {
+	app := testApplication()
+	records := []gorillaservice.OperationStatus{
+		{OperationID: "op-many", ItemName: "DemoOptional", DisplayName: "Demo Optional", State: "Queued"},
+		{OperationID: "op-many", ItemName: "DemoUpdater", DisplayName: "Demo Updater", State: "Installing", ProgressPercent: 10},
+		{OperationID: "op-many", ItemName: "DemoUpdater", DisplayName: "Demo Updater", State: "ItemFailed"},
+		{OperationID: "op-many", ItemName: "DemoOptional", DisplayName: "Demo Optional", State: "Installing", ProgressPercent: 5},
+		{OperationID: "op-many", ItemName: "DemoOptional", DisplayName: "Demo Optional", State: "Succeeded"},
+	}
+	client := &fakeServiceClient{stream: func(_ context.Context, callback func(gorillaservice.OperationStatus) error) error {
+		for _, record := range records {
+			if err := callback(record); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	service := &UIService{client: client, logger: discardLogger(), ctx: context.Background(), app: app}
+
+	events := make(chan gorillaservice.OperationStatus, len(records))
+	removeListener := app.Event.On(operationStatusEvent, func(event *application.CustomEvent) {
+		events <- event.Data.(gorillaservice.OperationStatus)
+	})
+	defer removeListener()
+
+	if err := service.WatchOperation("op-many"); err != nil {
+		t.Fatalf("watch failed: %v", err)
+	}
+	// Wails dispatches each listener callback in its own goroutine, so delivery
+	// order is not guaranteed; assert that every record arrives instead.
+	emitted := map[gorillaservice.OperationStatus]bool{}
+	for range records {
+		select {
+		case got := <-events:
+			emitted[got] = true
+		case <-time.After(time.Second):
+			t.Fatalf("timed out after %d of %d records", len(emitted), len(records))
+		}
+	}
+	for _, want := range records {
+		if !emitted[want] {
+			t.Fatalf("record was never emitted: %#v", want)
+		}
+	}
+}
+
+// A stream failure must surface as an error; the UI decides what to display and
+// must never receive a fabricated terminal record.
+func TestUIServiceWatchErrorEmitsNoTerminalEvent(t *testing.T) {
+	app := testApplication()
+	progress := gorillaservice.OperationStatus{OperationID: "op-broken", ItemName: "DemoOptional", DisplayName: "Demo Optional", State: "Downloading", ProgressPercent: 40}
+	want := errors.New("operation stream ended before a terminal event")
+	client := &fakeServiceClient{stream: func(_ context.Context, callback func(gorillaservice.OperationStatus) error) error {
+		if err := callback(progress); err != nil {
+			return err
+		}
+		return want
+	}}
+	service := &UIService{client: client, logger: discardLogger(), ctx: context.Background(), app: app}
+
+	events := make(chan gorillaservice.OperationStatus, 4)
+	removeListener := app.Event.On(operationStatusEvent, func(event *application.CustomEvent) {
+		events <- event.Data.(gorillaservice.OperationStatus)
+	})
+	defer removeListener()
+
+	if err := service.WatchOperation("op-broken"); !errors.Is(err, want) {
+		t.Fatalf("expected the stream error, got %v", err)
+	}
+	select {
+	case got := <-events:
+		if got != progress {
+			t.Fatalf("emitted %#v, want the single progress record %#v", got, progress)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the progress record")
+	}
+	select {
+	case got := <-events:
+		t.Fatalf("a failed stream emitted an extra event: %#v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestUIServiceWatchCancellationAndError(t *testing.T) {
 	app := testApplication()
 
