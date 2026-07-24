@@ -8,6 +8,10 @@
     "strict": true,
     "isolatedModules": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "gorilla-api-impl": ["./src/wails-api.ts"]
+    },
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitReturns": true,
