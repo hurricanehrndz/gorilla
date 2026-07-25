@@ -19,7 +19,14 @@ import (
 func TestManagedRunReconcilesSelfServe(t *testing.T) {
 	resetMainHooks()
 	defer resetMainHooks()
-	t.Cleanup(gorillalog.Close)
+	// Deferred, not t.Cleanup: cleanups run after this function returns, so the
+	// log handle would still be open when t.TempDir removes its directory. That
+	// is fine on POSIX but fails on Windows, where an open file cannot be
+	// unlinked. Defers run before cleanups, so the log closes first.
+	defer gorillalog.Close()
+	// The real run below calls report.Save, which writes to %ProgramData% rather
+	// than cfg.AppDataPath; keep it off machine-wide state.
+	t.Setenv("ProgramData", t.TempDir())
 
 	const manifestYAML = `name: wiretest_manifest
 default_installs:

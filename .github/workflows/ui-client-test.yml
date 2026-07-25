@@ -67,8 +67,15 @@ jobs:
         working-directory: gorilla-ui/frontend
         run: npm run build
       - name: Verify production bundle excludes the dev mock
+        # Not -Quiet: piped to Select-String it emits one boolean per file, and a
+        # non-empty array is truthy in PowerShell, so the check never passed.
+        # Collecting matches also names the offending file when a leak is real.
         run: |
-          if (Get-ChildItem -Path gorilla-ui/frontend/dist -Recurse -File | Select-String -Pattern GORILLA_VITE_MOCK_ONLY -Quiet) { throw "Dev mock leaked into the production bundle" }
+          $hits = Get-ChildItem -Path gorilla-ui/frontend/dist -Recurse -File | Select-String -Pattern GORILLA_VITE_MOCK_ONLY
+          if ($hits) {
+            $hits | ForEach-Object { Write-Host "leak: $($_.Path):$($_.LineNumber)" }
+            throw "Dev mock leaked into the production bundle"
+          }
           Write-Host "Production bundle is mock-free"
       - name: Go tests
         run: go test -cover ./...
