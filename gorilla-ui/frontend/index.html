@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gorilla UI</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="app-bar">
+      <h1>Gorilla</h1>
+      <nav aria-label="Primary">
+        <button type="button" id="nav-home" class="nav-link" aria-current="page">Home</button>
+        <button type="button" id="nav-activity" class="nav-link">Activity</button>
+      </nav>
+    </header>
+
+    <p id="service-banner" class="banner" role="status">
+      <span id="banner-text">Connecting to the Gorilla service…</span>
+      <button type="button" id="retry" hidden>Retry</button>
+    </p>
+
+    <main>
+      <section id="view-operations" aria-labelledby="operations-heading" hidden>
+        <h2 id="operations-heading">Operations started in this session</h2>
+        <div id="operation-list" class="operations"></div>
+      </section>
+
+      <section id="view-home" aria-labelledby="home-heading">
+        <h2 id="home-heading">Available software</h2>
+
+        <search>
+          <form id="filters" class="filters">
+            <p>
+              <label for="search">Search software</label>
+              <input id="search" name="search" type="search" autocomplete="off" />
+            </p>
+            <p>
+              <label for="category">Category</label>
+              <select id="category" name="category">
+                <option value="all">All categories</option>
+              </select>
+            </p>
+          </form>
+        </search>
+
+        <p id="result-status" role="status" aria-live="polite"></p>
+        <div id="item-grid" class="grid"></div>
+      </section>
+
+      <section id="view-activity" aria-labelledby="activity-heading" hidden>
+        <h2 id="activity-heading">Activity</h2>
+        <p class="disclaimer">
+          Local display history for this app on this device — not a system audit log. It keeps the
+          100 most recent operations started here, and it is not resumed after the app is closed.
+        </p>
+        <ol id="activity-list" class="activity"></ol>
+        <p id="activity-empty">No operations have been started from this app yet.</p>
+      </section>
+    </main>
+
+    <dialog id="detail" aria-labelledby="detail-name">
+      <div class="detail-head">
+        <span id="detail-glyph" class="glyph" aria-hidden="true"></span>
+        <h2 id="detail-name"></h2>
+        <button type="button" id="detail-close" aria-label="Close details">Close</button>
+      </div>
+      <p id="detail-restart" class="badge" hidden></p>
+      <dl>
+        <dt>Status</dt>
+        <dd id="detail-status"></dd>
+        <dt>Version</dt>
+        <dd id="detail-version"></dd>
+        <dt>Developer</dt>
+        <dd id="detail-developer"></dd>
+        <dt>Category</dt>
+        <dd id="detail-category"></dd>
+      </dl>
+      <p id="detail-description"></p>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

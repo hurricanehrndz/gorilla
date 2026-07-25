@@ -7,6 +7,7 @@ import (
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
 	"github.com/1dustindavis/gorilla/pkg/report"
 )
@@ -154,8 +155,11 @@ func TestExecuteCommandRunPassesCfgThrough(t *testing.T) {
 	}
 
 	var gotCfg config.Configuration
-	managedRun := func(in config.Configuration) (*report.Report, error) {
+	managedRun := func(in config.Configuration, progress installer.ProgressFn) (*report.Report, error) {
 		gotCfg = in
+		if progress != nil {
+			t.Fatal("ordinary run unexpectedly received progress callback")
+		}
 		return nil, nil
 	}
 
@@ -179,7 +183,7 @@ func TestExecuteCommandInstallWritesManifestAndDoesNotRunInline(t *testing.T) {
 	stubOptional(t, "GoogleChrome")
 
 	managedRunCalled := false
-	managedRun := func(in config.Configuration) (*report.Report, error) {
+	managedRun := func(in config.Configuration, _ installer.ProgressFn) (*report.Report, error) {
 		managedRunCalled = true
 		return nil, nil
 	}

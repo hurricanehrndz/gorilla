@@ -1,6 +1,6 @@
 all: build
 
-.PHONY: build bootstrap bootstrap-run manual-test-server test ui-lint ui-test lint clean help
+.PHONY: build bootstrap bootstrap-run manual-test-server test ui-install ui-type ui-test ui-assets ui-bindings-check ui-lint lint clean help
 
 ifndef ($(GOPATH))
 	GOPATH = $(HOME)/go
@@ -19,6 +19,10 @@ MANUAL_TEST_SERVER_ROOT = ${MANUAL_TEST_DIR}/server-root
 MANUAL_TEST_VM_DIR = ${MANUAL_TEST_DIR}/vm
 MANUAL_TEST_BASE_URL ?=
 GO111MODULE = on
+UI_FRONTEND = gorilla-ui/frontend
+WAILS_VERSION = v3.0.0-alpha2.117
+UI_BINDINGS = gorilla-ui/frontend/bindings
+UI_BINDINGS_CHECK = build/ui-bindings-check
 
 ifneq ($(OS), Windows_NT)
 	CURRENT_PLATFORM = linux
@@ -61,8 +65,8 @@ define HELP_TEXT
 	make bootstrap-run - Build manual-test assets/server and run local test server
 
 	make test          - Run the Go tests
-	make ui-lint       - Run Gorilla UI formatting/analyzer validation
-	make ui-test       - Run the Gorilla UI (.NET) tests
+	make ui-lint       - Type-check Gorilla UI and verify generated bindings
+	make ui-test       - Run Gorilla UI frontend tests
 	make lint          - Run the Go linters
 
 endef
@@ -75,22 +79,13 @@ gomodcheck:
 
 clean:
 	rm -rf build/
-	rm -rf gorilla-ui/src/Gorilla.UI.Client/bin/
-	rm -rf gorilla-ui/src/Gorilla.UI.Client/obj/
-	rm -rf gorilla-ui/tests/Gorilla.UI.Client.Tests/bin/
-	rm -rf gorilla-ui/tests/Gorilla.UI.Client.Tests/obj/
-	rm -rf gorilla-ui/tests/Gorilla.UI.Client.Tests/TestResults/
-	rm -rf gorilla-ui/tools/PipeHarness/bin/
-	rm -rf gorilla-ui/tools/PipeHarness/obj/
-	rm -rf gorilla-ui/src/Gorilla.UI.App/AppPackages/
-	rm -rf gorilla-ui/src/Gorilla.UI.App/bin/
-	rm -rf gorilla-ui/src/Gorilla.UI.App/obj/
 
 .pre-build: gomodcheck
 	mkdir -p build/
 
-build: .pre-build
-	GOOS=windows GOARCH=amd64 go build -o build/${APP_NAME}.exe -ldflags ${BUILD_VERSION} ./cmd/gorilla
+build: .pre-build ui-assets
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o build/${APP_NAME}.exe -ldflags ${BUILD_VERSION} ./cmd/gorilla
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags production -ldflags "-H windowsgui" -o build/gorilla-ui.exe ./gorilla-ui
 
 msi: build
 ifeq ($(OS), Windows_NT)
@@ -109,10 +104,12 @@ bootstrap: build manual-test-server
 	mkdir -p ${MANUAL_TEST_SERVER_ROOT}/packages
 	mkdir -p ${MANUAL_TEST_VM_DIR}
 	cp build/${APP_NAME}.exe ${MANUAL_TEST_SERVER_ROOT}/gorilla.exe
+	cp build/gorilla-ui.exe ${MANUAL_TEST_SERVER_ROOT}/gorilla-ui.exe
 	cp examples/example_manifest.yaml ${MANUAL_TEST_SERVER_ROOT}/manifests/example_manifest.yaml
 	cp examples/example_catalog.yaml ${MANUAL_TEST_SERVER_ROOT}/catalogs/example_catalog.yaml
 	cp utils/manual-test/fixtures/selfserve/manifests/*.yaml ${MANUAL_TEST_SERVER_ROOT}/manifests/
 	cp utils/manual-test/fixtures/selfserve/catalogs/*.yaml ${MANUAL_TEST_SERVER_ROOT}/catalogs/
+	rm -rf ${MANUAL_TEST_SERVER_ROOT}/packages/scripts
 	cp -R utils/manual-test/fixtures/selfserve/packages/scripts ${MANUAL_TEST_SERVER_ROOT}/packages/scripts
 	cp utils/manual-test/bootstrap-vm.ps1 ${MANUAL_TEST_VM_DIR}/bootstrap-vm.ps1
 	cp utils/manual-test/bootstrap-vm-full.ps1 ${MANUAL_TEST_VM_DIR}/bootstrap-vm-full.ps1
@@ -145,16 +142,30 @@ bootstrap-run: bootstrap
 test: gomodcheck
 	go test -cover -race ./...
 
-ui-lint:
-	dotnet build gorilla-ui/src/Gorilla.UI.Client/Gorilla.UI.Client.csproj -warnaserror
-	dotnet build gorilla-ui/tests/Gorilla.UI.Client.Tests/Gorilla.UI.Client.Tests.csproj -warnaserror
-	dotnet build gorilla-ui/tools/PipeHarness/PipeHarness.csproj -warnaserror
+ui-install:
+	npm ci --prefix ${UI_FRONTEND}
 
-ui-test:
-	dotnet test gorilla-ui/tests/Gorilla.UI.Client.Tests/Gorilla.UI.Client.Tests.csproj
+ui-type: ui-install
+	npm run check --prefix ${UI_FRONTEND}
+
+ui-test: ui-install
+	npm test --prefix ${UI_FRONTEND}
+
+ui-assets: ui-install
+	npm run build --prefix ${UI_FRONTEND}
+	@if grep -rq GORILLA_VITE_MOCK_ONLY ${UI_FRONTEND}/dist; then \
+	  echo "Dev mock leaked into the production bundle" && exit 1; \
+	  else echo "Production bundle is mock-free"; fi
+
+ui-bindings-check: .pre-build
+	rm -rf ${UI_BINDINGS_CHECK}
+	cd gorilla-ui && go run github.com/wailsapp/wails/v3/cmd/wails3@${WAILS_VERSION} generate bindings -clean -ts -noevents -d ../${UI_BINDINGS_CHECK} .
+	diff -ru ${UI_BINDINGS} ${UI_BINDINGS_CHECK}
+
+ui-lint: ui-type ui-bindings-check
 
 lint:
-	@if gofmt -l -s ./cmd/ ./pkg/ | grep .go; then \
+	@if gofmt -l -s ./cmd/ ./pkg/ ./gorilla-ui/ | grep .go; then \
 	  echo "^- Repo contains improperly formatted go files; run gofmt -w -s *.go" && exit 1; \
 	  else echo "All .go files formatted correctly"; fi
 	GOOS=windows GOARCH=amd64 go vet ./...

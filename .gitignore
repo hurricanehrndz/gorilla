@@ -25,18 +25,16 @@
 config.json
 config.yaml
 
+# Credential safety net (not build output): never commit certs or private keys
+*.pfx
+*.cer
+
 # WIX files
 *.wixpdb
 *.wixobj
 
 # Local build artifacts
 build/
-*.pfx
-*.cer
-
-# Local .NET CLI homes/tooling caches
-/.dotnet/
-/.dotnet-home/
 
 # devenv / direnv
 .devenv*

@@ -14,13 +14,22 @@ For quick manual-test setup helpers on a fresh Windows VM, see [utils/manual-tes
 
 If you just want the latest version, download it from the [releases page](https://github.com/1dustindavis/gorilla/releases).
 
-Building from source requires the [Go tools](https://golang.org/doc/install).
+Building from source requires the [Go tools](https://golang.org/doc/install) and
+Node 22 for the Gorilla UI frontend. The [devenv](https://devenv.sh) shell
+(`devenv shell`, or `direnv allow`) supplies both plus `just`, `golangci-lint`,
+and `treefmt` — see [docs/dev.md](docs/dev.md).
 
-#### macOS and Linux
-After cloning this repo, just run `make build`. A new binary will be created in `build/`
+`make build` (or `just build`) produces **both** raw Windows executables in
+`build/`:
 
-#### Windows
-After cloning this repo, just run `go build -i ./cmd/gorilla`. A new binary will be created in the current directory.
+- `build/gorilla.exe` — the agent/CLI/service
+- `build/gorilla-ui.exe` — the Wails self-service UI (pure Go, no cgo)
+
+Releases publish exactly those two executables; there is no installer or code
+signing in this path.
+
+UI-specific targets: `make ui-lint` (TypeScript and generated-binding check),
+`make ui-test` (frontend tests). See [gorilla-ui/README.md](gorilla-ui/README.md).
 
 ## Contributing
 Pull Requests are always welcome. Before submitting, lint and test:

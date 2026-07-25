@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
@@ -18,12 +19,20 @@ import (
 func TestManagedRunReconcilesSelfServe(t *testing.T) {
 	resetMainHooks()
 	defer resetMainHooks()
-	t.Cleanup(gorillalog.Close)
+	// Deferred, not t.Cleanup: cleanups run after this function returns, so the
+	// log handle would still be open when t.TempDir removes its directory. That
+	// is fine on POSIX but fails on Windows, where an open file cannot be
+	// unlinked. Defers run before cleanups, so the log closes first.
+	defer gorillalog.Close()
+	// The real run below calls report.Save, which writes to %ProgramData% rather
+	// than cfg.AppDataPath; keep it off machine-wide state.
+	t.Setenv("ProgramData", t.TempDir())
 
 	const manifestYAML = `name: wiretest_manifest
 default_installs:
   - DemoDefault
 optional_installs:
+  - DemoDefault
   - DemoOptional
 catalogs:
   - wiretest_catalog
@@ -70,7 +79,7 @@ DemoOptional:
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(string, os.FileMode) error { return nil }
 
-	if _, err := managedRun(cfg); err != nil {
+	if _, err := managedRun(cfg, nil); err != nil {
 		t.Fatalf("managedRun failed: %v", err)
 	}
 
@@ -84,6 +93,18 @@ DemoOptional:
 	}
 	if !contains(entry.DefaultInstalls, "DemoDefault") {
 		t.Errorf("expected DemoDefault in default_installs record, got %#v", entry.DefaultInstalls)
+	}
+
+	// A real run attaches the supplied callback to Runner.Emit. The fixture's
+	// deliberately invalid package hash still emits downloading/failed records,
+	// which is enough to prove the run-scoped seam without changing sequencing.
+	cfg.CheckOnly = false
+	var states []string
+	if _, err := managedRun(cfg, func(_ catalog.Item, state string, _ int, _ string) { states = append(states, state) }); err != nil {
+		t.Fatalf("managedRun with progress callback failed: %v", err)
+	}
+	if len(states) == 0 || states[0] != "downloading" {
+		t.Fatalf("progress callback did not reach Runner.Emit: %v", states)
 	}
 }
 

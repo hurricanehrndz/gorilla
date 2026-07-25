@@ -27,7 +27,7 @@ var (
 	newReportFunc     = report.New
 )
 
-func managedRun(cfg config.Configuration) (*report.Report, error) {
+func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*report.Report, error) {
 	// Build/import modes operate on repo metadata and do not require admin.
 	buildMode := cfg.BuildArg || cfg.ImportArg != ""
 
@@ -128,6 +128,7 @@ func managedRun(cfg config.Configuration) (*report.Report, error) {
 	runner := &installer.Runner{
 		Report:      run,
 		Checker:     &status.Checker{},
+		Emit:        progress,
 		URLPackages: cfg.URLPackages,
 		CachePath:   cfg.CachePath,
 		CheckOnly:   cfg.CheckOnly,

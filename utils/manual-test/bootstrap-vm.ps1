@@ -3,7 +3,7 @@
 Bootstrap Gorilla on a Windows VM from prepared manual-test assets.
 
 .DESCRIPTION
-- Downloads gorilla.exe from a provided base URL.
+- Downloads gorilla.exe and gorilla-ui.exe from a provided base URL.
 - Writes config.yaml to ProgramData.
 - Optionally installs/starts service mode.
 #>
@@ -177,11 +177,22 @@ if (-not $BaseUrl.EndsWith("/")) {
 New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
 $binaryPath = Join-Path $InstallPath "gorilla.exe"
 $binaryUrl = "$BaseUrl" + "gorilla.exe"
+$uiBinaryPath = Join-Path $InstallPath "gorilla-ui.exe"
+$uiBinaryUrl = "$BaseUrl" + "gorilla-ui.exe"
 
 Remove-ExistingGorillaService
 
 Write-Step "Downloading Gorilla binary from $binaryUrl"
 Invoke-WebRequest -Uri $binaryUrl -OutFile $binaryPath
+$runningUI = @(Get-Process -Name "gorilla-ui" -ErrorAction SilentlyContinue)
+if ($runningUI.Count -gt 0) {
+    Write-Step "Stopping running Gorilla UI so $uiBinaryPath can be replaced"
+    $runningUI | Stop-Process -Force
+    Start-Sleep -Seconds 2
+}
+
+Write-Step "Downloading Gorilla UI binary from $uiBinaryUrl"
+Invoke-WebRequest -Uri $uiBinaryUrl -OutFile $uiBinaryPath
 
 Write-Step "Writing config to $ConfigPath"
 Write-GorillaConfig -ConfigFilePath $ConfigPath -URLValue $BaseUrl -ManifestValue $Manifest -CatalogList $Catalogs -AppDataPathValue $AppDataPath
@@ -199,6 +210,7 @@ if ($StartService) {
 
 Write-Step "Bootstrap complete"
 Write-Host "Binary: $binaryPath"
+Write-Host "UI binary: $uiBinaryPath"
 Write-Host "Config: $ConfigPath"
 Write-Host ""
 Write-Host "Install path added to PATH: $InstallPath"

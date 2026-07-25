@@ -26,6 +26,7 @@ make bootstrap
 
 This creates:
 - `build/manual-test/server-root/gorilla.exe`
+- `build/manual-test/server-root/gorilla-ui.exe`
 - `build/manual-test/server-root/manifests/example_manifest.yaml`
 - `build/manual-test/server-root/catalogs/example_catalog.yaml`
 - `build/manual-test/server-root/packages/` (empty)
@@ -46,6 +47,11 @@ make bootstrap MANUAL_TEST_BASE_URL=http://192.168.1.50:8080/
 ```
 
 Server source lives in `utils/manual-test/server` (separate Go module).
+
+Two VM scripts are not generated and must be copied straight from this
+directory: `run-selfserve-smoke.ps1` (machine-assertable self-serve smoke test,
+exits 0 and prints `SELF-SERVE SMOKE PASSED`) and `launch-wails-ui.ps1` (starts
+`gorilla-ui.exe` as the interactive user).
 
 ## 2) Serve assets from macOS
 

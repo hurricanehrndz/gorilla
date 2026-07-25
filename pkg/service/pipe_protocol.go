@@ -37,14 +37,11 @@ type removeItemRequest struct {
 
 type streamOperationStatusRequest struct{}
 
-type optionalInstallResponseItem struct {
+type OptionalInstallItem struct {
 	ItemName           string `json:"itemName"`
 	DisplayName        string `json:"displayName"`
 	Version            string `json:"version"`
 	Catalog            string `json:"catalog"`
-	InstallerType      string `json:"installerType"`
-	InstallerPackageID string `json:"installerPackageId"`
-	InstallerLocation  string `json:"installerLocation"`
 	Description        string `json:"description,omitempty"`
 	Category           string `json:"category,omitempty"`
 	Developer          string `json:"developer,omitempty"`
@@ -58,10 +55,11 @@ type optionalInstallResponseItem struct {
 }
 
 type listOptionalInstallsResponse struct {
-	Items []optionalInstallResponseItem `json:"items"`
+	Items []OptionalInstallItem `json:"items"`
 }
 
-type operationAcceptedResponse struct {
+type AcceptedOperation struct {
+	OperationID string `json:"operationId,omitempty"`
 	Accepted    bool   `json:"accepted"`
 	QueuedAtUTC string `json:"queuedAtUtc"`
 }
@@ -70,16 +68,42 @@ type streamOperationStatusAckResponse struct {
 	StreamAccepted bool `json:"streamAccepted"`
 }
 
-// operationStatusEventPayload is one status event for a tracked operation. The
-// terminal states (done=true) are Succeeded, Failed, Deferred (blocking app
-// running — retried next run), and Canceled; all others are intermediate.
-type operationStatusEventPayload struct {
+// OperationStatusPayload is one wire status event. ProgressPercent is scoped to
+// ItemName and may reset when the item changes; it is not aggregate operation
+// progress. Only Succeeded, Failed, Deferred, and Canceled terminate a stream.
+type OperationStatusPayload struct {
+	ItemName        string `json:"itemName"`
+	DisplayName     string `json:"displayName"`
 	State           string `json:"state"`
 	ProgressPercent int    `json:"progressPercent"`
 	Message         string `json:"message"`
 	ErrorCode       string `json:"errorCode,omitempty"`
 	ErrorMessage    string `json:"errorMessage,omitempty"`
 	CanceledBy      string `json:"canceledBy,omitempty"`
+}
+
+// OperationStatus is the client-facing status record, including correlation
+// and timing fields carried by the event envelope.
+type OperationStatus struct {
+	OperationID     string `json:"operationId"`
+	TimestampUTC    string `json:"timestampUtc"`
+	ItemName        string `json:"itemName"`
+	DisplayName     string `json:"displayName"`
+	State           string `json:"state"`
+	ProgressPercent int    `json:"progressPercent"`
+	Message         string `json:"message"`
+	ErrorCode       string `json:"errorCode,omitempty"`
+	ErrorMessage    string `json:"errorMessage,omitempty"`
+	CanceledBy      string `json:"canceledBy,omitempty"`
+}
+
+func IsTerminalOperationState(state string) bool {
+	switch state {
+	case "Succeeded", "Failed", "Deferred", "Canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 type errorResponsePayload struct {

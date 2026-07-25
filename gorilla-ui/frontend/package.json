@@ -1,0 +1,19 @@
+{
+  "name": "gorilla-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "check": "tsc --noEmit",
+    "test": "node --test src/*.test.mjs",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@wailsio/runtime": "3.0.0-alpha.97"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "vite": "8.0.16"
+  }
+}

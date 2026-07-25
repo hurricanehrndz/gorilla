@@ -7,7 +7,9 @@ import (
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
+	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
 // TestGetOptionalItemsHonestStatus exercises the enriched ListOptionalInstalls
@@ -60,7 +62,7 @@ func TestGetOptionalItemsHonestStatus(t *testing.T) {
 		t.Fatalf("getOptionalItems failed: %v", err)
 	}
 
-	byName := make(map[string]optionalInstallResponseItem, len(items))
+	byName := make(map[string]OptionalInstallItem, len(items))
 	for _, it := range items {
 		byName[it.ItemName] = it
 	}
@@ -176,6 +178,21 @@ func TestValidateCommandInstallItemRequiresOneArgument(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestExecuteCommandRunPassesProgressCallback(t *testing.T) {
+	called := false
+	progress := func(catalog.Item, string, int, string) { called = true }
+	_, err := executeCommand(config.Configuration{}, Command{Action: actionRun, progress: progress}, func(_ config.Configuration, got installer.ProgressFn) (*report.Report, error) {
+		got(catalog.Item{}, "installing", 50, "")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
+	if !called {
+		t.Fatal("managed run did not receive command progress callback")
 	}
 }
 

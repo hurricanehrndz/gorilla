@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/report"
 	"golang.org/x/sys/windows"
 )
@@ -59,7 +61,7 @@ func TestNamedPipeStreamStatusReliability(t *testing.T) {
 	}
 
 	stubOptional(t, "Slack")
-	sr := newServiceRunner(cfg, func(config.Configuration) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -88,7 +90,7 @@ func TestStreamOperationStatusUnknownOperationIDReturnsError(t *testing.T) {
 		ServiceName:     "gorilla-test",
 	}
 
-	sr := newServiceRunner(cfg, func(config.Configuration) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -142,7 +144,7 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 	}
 
 	stubOptional(t, "Slack")
-	sr := newServiceRunner(cfg, func(config.Configuration) (*report.Report, error) {
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) {
 		return nil, errors.New("forced managed run failure")
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -167,9 +169,9 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 }
 
 func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
 	operationID := "op-canceled"
-	sr.registerTrackedOperation(operationID)
+	sr.registerTrackedOperation(operationID, "Slack")
 
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -278,7 +280,7 @@ func mustStreamAndReceiveTerminalEvent(t *testing.T, cfg config.Configuration, o
 	}
 }
 
-func mustStreamAndReceiveTerminalState(t *testing.T, cfg config.Configuration, operationID string, seq int) operationStatusEventPayload {
+func mustStreamAndReceiveTerminalState(t *testing.T, cfg config.Configuration, operationID string, seq int) OperationStatusPayload {
 	t.Helper()
 
 	conn, err := openPipe(servicePipePath(cfg.ServicePipeName), 5*time.Second)
@@ -319,9 +321,9 @@ func mustStreamAndReceiveTerminalState(t *testing.T, cfg config.Configuration, o
 	}
 
 	states := make([]string, 0, 4)
-	var terminal operationStatusEventPayload
+	var terminal OperationStatusPayload
 	for {
-		var event serviceEnvelope[operationStatusEventPayload]
+		var event serviceEnvelope[OperationStatusPayload]
 		if err := decoder.Decode(&event); err != nil {
 			t.Fatalf("failed to decode stream event: %v", err)
 		}
@@ -335,14 +337,14 @@ func mustStreamAndReceiveTerminalState(t *testing.T, cfg config.Configuration, o
 			t.Fatalf("expected stream event operationId=%s, got %s", operationID, event.OperationID)
 		}
 		states = append(states, event.Payload.State)
-		if event.Payload.State == "Succeeded" || event.Payload.State == "Failed" || event.Payload.State == "Canceled" {
+		if IsTerminalOperationState(event.Payload.State) {
 			terminal = event.Payload
 			break
 		}
 	}
 
-	if len(states) < 3 {
-		t.Fatalf("expected multiple lifecycle states, got %v", states)
+	if len(states) < 2 {
+		t.Fatalf("expected queued and terminal lifecycle states, got %v", states)
 	}
 	if states[0] != "Queued" {
 		t.Fatalf("expected first state Queued, got %s (%v)", states[0], states)
@@ -380,22 +382,69 @@ func bestEffortUnblockPipeListener(cfg config.Configuration) {
 	_ = conn.Close()
 }
 
+func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	const operationID = "op-progress"
+	sr.registerTrackedOperation(operationID, "DemoOptional")
+
+	emit := sr.operationProgressCallback(operationID)
+	emit(catalog.Item{Name: "DemoDependency", DisplayName: "Demo Dependency"}, "downloading", 0, "download")
+	emit(catalog.Item{Name: "DemoDependency", DisplayName: "Demo Dependency"}, "installing", 50, "install")
+	emit(catalog.Item{Name: "DemoDependency", DisplayName: "Demo Dependency"}, "done", 100, "")
+	emit(catalog.Item{Name: "DemoOptional", DisplayName: "Demo Optional"}, "downloading", 0, "download")
+	emit(catalog.Item{Name: "DemoOptional", DisplayName: "Demo Optional"}, "installing", 50, "install")
+	emit(catalog.Item{Name: "DemoOptional", DisplayName: "Demo Optional"}, "done", 100, "")
+	emit(catalog.Item{Name: "DemoUpdater", DisplayName: "Demo Updater"}, "downloading", 0, "download")
+	emit(catalog.Item{Name: "DemoUpdater", DisplayName: "Demo Updater"}, "failed", 50, "boom")
+	emit(catalog.Item{Name: "DemoOptional", DisplayName: "Demo Optional"}, "removing", 50, "remove")
+
+	events, done, ok := sr.snapshotTrackedOperation(operationID)
+	if !ok || done {
+		t.Fatalf("ItemFailed must leave operation active: ok=%v done=%v", ok, done)
+	}
+	wantStates := []string{"Queued", "Downloading", "Installing", "ItemCompleted", "Downloading", "Installing", "ItemCompleted", "Downloading", "ItemFailed", "Removing"}
+	for i, want := range wantStates {
+		if events[i].State != want {
+			t.Fatalf("event %d state=%q, want %q", i, events[i].State, want)
+		}
+	}
+	if events[3].ProgressPercent != 100 || events[4].ProgressPercent != 0 {
+		t.Fatalf("expected percent reset at item boundary, got %d -> %d", events[3].ProgressPercent, events[4].ProgressPercent)
+	}
+	if events[1].ItemName != "DemoDependency" || events[1].DisplayName != "Demo Dependency" {
+		t.Fatalf("dependency identity lost: %#v", events[1])
+	}
+	if events[7].ItemName != "DemoUpdater" || events[7].DisplayName != "Demo Updater" {
+		t.Fatalf("updater identity lost: %#v", events[7])
+	}
+
+	sr.appendOperationEvent(operationID, resolveTerminalEvent("DemoOptional", nil))
+	events, done, _ = sr.snapshotTrackedOperation(operationID)
+	terminal := events[len(events)-1]
+	if !done || terminal.ItemName != "DemoOptional" || terminal.DisplayName != "DemoOptional" {
+		t.Fatalf("terminal requested-item identity missing: done=%v event=%#v", done, terminal)
+	}
+	if events[0].ItemName != "DemoOptional" || events[0].DisplayName != "DemoOptional" {
+		t.Fatalf("queued requested-item identity missing: %#v", events[0])
+	}
+}
+
 func TestTrackedOperationPruningDropsOldCompletedEntries(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
 	now := time.Now()
 
 	sr.operationsMu.Lock()
 	for i := 0; i < trackedOperationsMaxCount+50; i++ {
 		id := fmt.Sprintf("done-%d", i)
 		sr.operations[id] = &trackedOperation{
-			events:      []operationStatusEventPayload{{State: "Succeeded", ProgressPercent: 100, Message: "done"}},
+			events:      []OperationStatusPayload{{State: "Succeeded", ProgressPercent: 100, Message: "done"}},
 			done:        true,
 			lastUpdated: now.Add(-time.Duration(i) * time.Minute),
 			completedAt: now.Add(-time.Duration(i) * time.Minute),
 		}
 	}
 	sr.operations["active-op"] = &trackedOperation{
-		events:      []operationStatusEventPayload{{State: "Installing", ProgressPercent: 60, Message: "running"}},
+		events:      []OperationStatusPayload{{State: "Installing", ProgressPercent: 60, Message: "running"}},
 		done:        false,
 		lastUpdated: now,
 	}

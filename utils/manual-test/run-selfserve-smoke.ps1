@@ -106,6 +106,13 @@ function Wait-For {
     Fail "timed out after ${TimeoutSec}s waiting for: $Description"
 }
 
+function Stop-Notepad {
+    Wait-For {
+        Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
+        -not (Get-Process -Name notepad -ErrorAction SilentlyContinue)
+    } "notepad to stop"
+}
+
 $optionalTxt = Join-Path $MarkerDir "optional.txt"
 $defaultTxt  = Join-Path $MarkerDir "default.txt"
 
@@ -144,6 +151,10 @@ $before = (Get-Content -LiteralPath $SelfServe -Raw)
 $bad = Invoke-Gorilla "InstallItem:NotARealItem" -AllowFail
 if ($bad.Code -eq 0) {
     Fail "InstallItem:NotARealItem unexpectedly succeeded"
+}
+$badText = $bad.Out -join "`n"
+if ($badText -notmatch 'NotARealItem' -or $badText -notmatch 'not available for self-service') {
+    Fail "InstallItem:NotARealItem did not report the service rejection: $badText"
 }
 $after = (Get-Content -LiteralPath $SelfServe -Raw)
 if ($before -ne $after) {
@@ -204,8 +215,7 @@ Write-Host "    DemoBlocked deferred and blocked.txt absent" -ForegroundColor Gr
 
 # --- Step 9: with the blocker gone, the next run installs (retry works)
 Write-Step "Stop notepad, InstallItem:DemoBlocked now installs (blocked.txt appears)"
-Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
+Stop-Notepad
 Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
 Wait-For { Test-Path $blockedTxt } "blocked.txt to appear after the blocker stopped"
 Write-Host "    blocked.txt present after retry" -ForegroundColor Green
@@ -256,20 +266,66 @@ function Parse-OperationId {
     return $null
 }
 
-# Stream-TerminalEvent streams an operation to completion and returns the parsed
-# terminal event object (the client prints each event payload as JSON and returns
-# when a terminal state arrives).
-function Stream-TerminalEvent {
+# Stream-OperationEvents streams an operation to completion and returns every
+# parsed status record printed by the CLI as a JSON line.
+function Stream-OperationEvents {
     param([string]$OpId)
     $res = Invoke-Gorilla "StreamOperationStatus:$OpId"
-    $terminal = $null
+    $events = @()
     foreach ($l in $res.Out) {
         $t = "$l".Trim()
         if (-not $t.StartsWith('{')) { continue }
         try { $ev = $t | ConvertFrom-Json } catch { continue }
+        if ($ev.operationId -eq $OpId -and $ev.state) { $events += $ev }
+    }
+    return $events
+}
+
+function Get-TerminalEvent {
+    param([object[]]$Events)
+    $terminal = $null
+    foreach ($ev in $Events) {
         if (@('Succeeded','Failed','Deferred','Canceled') -contains $ev.state) { $terminal = $ev }
     }
     return $terminal
+}
+
+function Stream-TerminalEvent {
+    param([string]$OpId)
+    return (Get-TerminalEvent -Events @(Stream-OperationEvents -OpId $OpId))
+}
+
+function Assert-DemoOptionalProgress {
+    param([object[]]$Events, [string]$ActionState)
+    if ($Events.Count -eq 0) { Fail "no stream events received for DemoOptional" }
+
+    $previous = $null
+    foreach ($ev in $Events) {
+        if (-not $ev.itemName -or -not $ev.displayName) {
+            Fail "stream event missing item identity: $($ev | ConvertTo-Json -Compress)"
+        }
+        if ($null -ne $previous -and
+            $ev.itemName -eq $previous.itemName -and
+            [int]$ev.progressPercent -lt [int]$previous.progressPercent) {
+            Fail "progress reset within item '$($ev.itemName)': $($previous.progressPercent) -> $($ev.progressPercent)"
+        }
+        $previous = $ev
+    }
+
+    foreach ($name in @('DemoOptional','DemoUpdater')) {
+        $itemEvents = @($Events | Where-Object { $_.itemName -eq $name })
+        if ($itemEvents.Count -eq 0) { Fail "$name was not distinguishable in the stream" }
+        foreach ($state in @('Downloading', $ActionState, 'ItemCompleted')) {
+            if (@($itemEvents | Where-Object { $_.state -eq $state }).Count -eq 0) {
+                Fail "$name stream missing mapped state $state"
+            }
+        }
+    }
+
+    $terminal = Get-TerminalEvent -Events $Events
+    if (-not $terminal) { Fail "DemoOptional stream had no terminal event" }
+    if ($terminal.state -ne 'Succeeded') { Fail "DemoOptional terminal state was '$($terminal.state)', expected Succeeded" }
+    if ($terminal.itemName -ne 'DemoOptional') { Fail "terminal item was '$($terminal.itemName)', expected DemoOptional" }
 }
 
 # --- Step 12: honest ListOptionalInstalls -- metadata + real status
@@ -313,8 +369,7 @@ try {
     if (-not $terminal)                 { Fail "no terminal event received for DemoBlocked" }
     if ($terminal.state -ne "Deferred") { Fail "expected terminal Deferred, got '$($terminal.state)'" }
 } finally {
-    Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
+    Stop-Notepad
 }
 Write-Host "    DemoBlocked terminal event Deferred" -ForegroundColor Green
 
@@ -337,15 +392,24 @@ $demo = Get-OptionalItem "DemoOptional"
 if (-not $demo -or $demo.developer -ne "Gorilla") { Fail "DemoOptional metadata regression" }
 Write-Host "    DemoOptional still listed with metadata" -ForegroundColor Green
 
-Write-Step "Regression: DemoOptional install/remove round-trip incl updater coupling"
-Invoke-Gorilla "InstallItem:DemoOptional" | Out-Null
+Write-Step "Regression: DemoOptional install/remove streams real item progress incl updater coupling"
+$installOut = Invoke-Gorilla "InstallItem:DemoOptional"
+$opId = Parse-OperationId $installOut.Out
+if (-not $opId) { Fail "no operationId returned for InstallItem:DemoOptional" }
+$installEvents = @(Stream-OperationEvents $opId)
+Assert-DemoOptionalProgress -Events $installEvents -ActionState "Installing"
 Wait-For { Test-Path $optionalTxt } "optional.txt to exist"
 Wait-For { Test-Path $optionalUpdateTxt } "optional-update.txt to exist (updater rode along)"
-Invoke-Gorilla "RemoveItem:DemoOptional" | Out-Null
+
+$removeOut = Invoke-Gorilla "RemoveItem:DemoOptional"
+$opId = Parse-OperationId $removeOut.Out
+if (-not $opId) { Fail "no operationId returned for RemoveItem:DemoOptional" }
+$removeEvents = @(Stream-OperationEvents $opId)
+Assert-DemoOptionalProgress -Events $removeEvents -ActionState "Removing"
 Wait-For { -not (Test-Path $optionalTxt) } "optional.txt to be removed"
 Wait-For { -not (Test-Path $optionalUpdateTxt) } "optional-update.txt to be removed (coupled)"
 Wait-For { (Get-YamlList $SelfServe "managed_uninstalls").Count -eq 0 } "managed_uninstalls to be pruned empty"
-Write-Host "    DemoOptional round-trip + updater coupling + prune OK" -ForegroundColor Green
+Write-Host "    DemoOptional item progress + updater coupling + prune OK" -ForegroundColor Green
 
 Write-Step "Regression: DemoBlocked defer-then-retry round-trip"
 if (Test-Path $blockedTxt) { Remove-Item -LiteralPath $blockedTxt -Force }
@@ -353,8 +417,7 @@ Start-Process notepad | Out-Null
 Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
 Wait-For { Report-Defers "DemoBlocked" } "GorillaReport.json DeferredItems to name DemoBlocked"
 if (Test-Path $blockedTxt) { Fail "blocked.txt created while notepad running" }
-Stop-Process -Name notepad -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
+Stop-Notepad
 Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
 Wait-For { Test-Path $blockedTxt } "blocked.txt to appear after the blocker stopped"
 Write-Host "    DemoBlocked defer-then-retry OK" -ForegroundColor Green

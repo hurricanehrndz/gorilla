@@ -3,11 +3,13 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
-
-	"github.com/1dustindavis/gorilla/pkg/config"
 )
 
-func sendCommand(_ config.Configuration, _ Command) (CommandResponse, error) {
-	return CommandResponse{}, errors.New("service commands are only supported on Windows")
+var errServiceCommandsUnsupported = errors.New("service commands are only supported on Windows")
+
+func (c *Client) doRequest(_ context.Context, _ serviceEnvelope[any], _ func(OperationStatus) error) (serviceEnvelope[json.RawMessage], error) {
+	return serviceEnvelope[json.RawMessage]{}, errServiceCommandsUnsupported
 }

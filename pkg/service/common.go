@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
+	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
 	"github.com/1dustindavis/gorilla/pkg/report"
 	"github.com/1dustindavis/gorilla/pkg/status"
@@ -25,14 +28,16 @@ var (
 type Command struct {
 	Action string   `json:"action"`
 	Items  []string `json:"items,omitempty"`
+
+	progress installer.ProgressFn
 }
 
 type CommandResponse struct {
-	Status        string                        `json:"status"`
-	Message       string                        `json:"message,omitempty"`
-	Items         []string                      `json:"items,omitempty"`
-	OptionalItems []optionalInstallResponseItem `json:"optionalItems,omitempty"`
-	OperationID   string                        `json:"operationId,omitempty"`
+	Status        string                `json:"status"`
+	Message       string                `json:"message,omitempty"`
+	Items         []string              `json:"items,omitempty"`
+	OptionalItems []OptionalInstallItem `json:"optionalItems,omitempty"`
+	OperationID   string                `json:"operationId,omitempty"`
 
 	// report carries the managed run's per-run report from an actionRun back to
 	// the caller so scheduleRunAfterMutation can emit an honest terminal event
@@ -122,17 +127,60 @@ func SendCommand(cfg config.Configuration, spec string) (CommandResponse, error)
 	if err != nil {
 		return CommandResponse{}, err
 	}
-	return sendCommand(cfg, cmd)
+
+	client := NewClient(cfg.ServicePipeName)
+	ctx := context.Background()
+	switch cmd.Action {
+	case actionListOptionalInstalls:
+		items, err := client.ListOptionalInstalls(ctx)
+		if err != nil {
+			return CommandResponse{}, err
+		}
+		resp := CommandResponse{Status: "ok", OptionalItems: items, Items: make([]string, 0, len(items))}
+		for _, item := range items {
+			line, err := json.Marshal(item)
+			if err != nil {
+				return CommandResponse{}, fmt.Errorf("failed to encode optional item %q: %w", item.ItemName, err)
+			}
+			resp.Items = append(resp.Items, string(line))
+		}
+		return resp, nil
+	case actionInstallItem:
+		accepted, err := client.InstallItem(ctx, cmd.Items[0])
+		if err != nil {
+			return CommandResponse{}, err
+		}
+		return CommandResponse{Status: "ok", OperationID: accepted.OperationID}, nil
+	case actionRemoveItem:
+		accepted, err := client.RemoveItem(ctx, cmd.Items[0])
+		if err != nil {
+			return CommandResponse{}, err
+		}
+		return CommandResponse{Status: "ok", OperationID: accepted.OperationID}, nil
+	case actionStreamOperationStatus:
+		resp := CommandResponse{Status: "ok", Message: "StreamOperationStatus acknowledged by service"}
+		err := client.StreamOperationStatus(ctx, cmd.Items[0], func(status OperationStatus) error {
+			line, err := json.Marshal(status)
+			if err != nil {
+				return fmt.Errorf("failed to encode operation event: %w", err)
+			}
+			resp.Items = append(resp.Items, string(line))
+			return nil
+		})
+		return resp, err
+	default:
+		return CommandResponse{}, fmt.Errorf("unsupported service action %q", cmd.Action)
+	}
 }
 
 func serviceInstallArgs(configPath string) []string {
 	return []string{"-c", configPath, "-service"}
 }
 
-func executeCommand(cfg config.Configuration, cmd Command, managedRun func(config.Configuration) (*report.Report, error)) (CommandResponse, error) {
+func executeCommand(cfg config.Configuration, cmd Command, managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)) (CommandResponse, error) {
 	switch cmd.Action {
 	case actionRun:
-		rep, err := managedRun(cfg)
+		rep, err := managedRun(cfg, cmd.progress)
 		return CommandResponse{Status: "ok", report: rep}, err
 	case actionInstallItem:
 		if err := addServiceManagedInstalls(cfg, cmd.Items); err != nil {
@@ -156,11 +204,6 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 			names = append(names, it.ItemName)
 		}
 		return CommandResponse{Status: "ok", Items: names, OptionalItems: items}, nil
-	case actionStreamOperationStatus:
-		return CommandResponse{
-			Status:  "ok",
-			Message: "stream status is not yet implemented in the service",
-		}, nil
 	default:
 		return CommandResponse{}, fmt.Errorf("unsupported service action %q", cmd.Action)
 	}
@@ -245,7 +288,7 @@ func saveServiceLocalManifest(cfg config.Configuration, entry manifest.Item) err
 // for every offered optional name resolves the catalog metadata and real
 // install status. The list call must stand on its own, so it seeds download's
 // config rather than relying on a prior run.
-func getOptionalItems(cfg config.Configuration) ([]optionalInstallResponseItem, error) {
+func getOptionalItems(cfg config.Configuration) ([]OptionalInstallItem, error) {
 	download.SetConfig(cfg)
 
 	manifests, newCatalogs, err := manifestGet(cfg)
@@ -286,9 +329,9 @@ func getOptionalItems(cfg config.Configuration) ([]optionalInstallResponseItem, 
 	checker := &status.Checker{}
 	now := nowRFC3339UTC()
 
-	items := make([]optionalInstallResponseItem, 0, len(names))
+	items := make([]OptionalInstallItem, 0, len(names))
 	for _, name := range names {
-		item := optionalInstallResponseItem{
+		item := OptionalInstallItem{
 			ItemName:           name,
 			DisplayName:        name,
 			IsManaged:          selected[name],
@@ -307,9 +350,6 @@ func getOptionalItems(cfg config.Configuration) ([]optionalInstallResponseItem, 
 		item.DisplayName = orDefault(catItem.DisplayName, name)
 		item.Version = catItem.Version
 		item.Catalog = catName
-		item.InstallerType = catItem.Installer.Type
-		item.InstallerLocation = catItem.Installer.Location
-		item.InstallerPackageID = catItem.Installer.PackageID
 		item.Description = catItem.Description
 		item.Category = catItem.Category
 		item.Developer = catItem.Developer

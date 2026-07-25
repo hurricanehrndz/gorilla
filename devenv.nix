@@ -9,6 +9,10 @@
   packages = with pkgs; [
     just
     golangci-lint
+    nodejs_22
+    pkg-config
+    gtk4
+    webkitgtk_6_0
   ];
 
   # https://devenv.sh/integrations/treefmt/

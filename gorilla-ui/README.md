@@ -1,80 +1,106 @@
 # Gorilla UI
 
-This folder contains all UI app related code for the Gorilla WinUI client.
+Gorilla UI is a Wails v3 desktop application in the repository's root Go module.
+It runs as the logged-in standard user and calls the existing SYSTEM Gorilla
+service through the shared typed client in `pkg/service`. It never receives
+Gorilla configuration, credentials, package-server settings, or internal catalog
+objects.
 
-Tooling requirements:
-- macOS development: `dotnet-sdk@8`
-- Windows VM development: Visual Studio 2022 with WinUI/Windows App SDK tooling and .NET 8 SDK
+## Layout
 
-Current workspace:
-- Solution file: `gorilla-ui/Gorilla.UI.sln`
-- Included projects:
-  - `gorilla-ui/src/Gorilla.UI.Client/Gorilla.UI.Client.csproj`
-  - `gorilla-ui/tests/Gorilla.UI.Client.Tests/Gorilla.UI.Client.Tests.csproj`
-  - `gorilla-ui/tools/PipeHarness/PipeHarness.csproj`
+- `main.go`: Wails application, `--pipe-name` flag (default `gorilla-service`),
+  bundled WebView window titled `Gorilla UI`
+- `service.go`: the bound service — `ListOptionalInstalls`, `InstallItem`,
+  `RemoveItem`, `WatchOperation`
+- `log.go`: opt-in diagnostics
+- `assets_production.go` / `assets_development.go`: embedded `frontend/dist` under
+  the `production` tag, compile-safe source filesystem otherwise
+- `frontend/`: vanilla TypeScript, CSS, and Vite assets (no framework, router, or
+  component library)
+- `frontend/bindings/`: Wails-generated TypeScript — committed, never hand-edited
+- `frontend/src/wails-api.ts` and `mock-api.ts`: the two implementations of the
+  single `GorillaApi` adapter declared in `frontend/src/api.ts`
 
-Validation commands:
-- `make ui-lint` runs `dotnet build -warnaserror` for:
-  - `gorilla-ui/src/Gorilla.UI.Client/Gorilla.UI.Client.csproj`
-  - `gorilla-ui/tests/Gorilla.UI.Client.Tests/Gorilla.UI.Client.Tests.csproj`
-  - `gorilla-ui/tools/PipeHarness/PipeHarness.csproj`
-- `make ui-test` runs the Gorilla UI .NET test project.
-- Windows UI tests (FlaUI):
-  - CI workflow: `.github/workflows/windows-ui-test.yml`
-  - Runner: `windows-2025`
-  - Behavior: non-blocking (`continue-on-error: true`) with up to 3 attempts
-  - Artifacts: TRX results and failure screenshots/logs from `gorilla-ui/tests/Gorilla.UI.App.WindowsUiTests`
-  - Local run (Windows):
-    - Build app:
-      - `dotnet build gorilla-ui/src/Gorilla.UI.App/Gorilla.UI.App.csproj -c Release -p:Platform=x64`
-    - Set app path and run Windows UI tests:
-      - `$env:GORILLA_UI_APP_EXE = "<path-to-Gorilla.UI.App.exe>"`
-      - `dotnet test gorilla-ui/tests/Gorilla.UI.App.WindowsUiTests/Gorilla.UI.App.WindowsUiTests.csproj -c Release`
-- Optional local autofix: `dotnet format gorilla-ui/src/Gorilla.UI.Client/Gorilla.UI.Client.csproj`.
+## Backend surface
 
-Windows VM scaffold helper:
-- `pwsh -File gorilla-ui/tools/scaffold-winui.ps1`
-- This scaffolds `gorilla-ui/src/Gorilla.UI.App/Gorilla.UI.App.csproj`, adds a reference to `Gorilla.UI.Client`, and adds the app project to `gorilla-ui/Gorilla.UI.sln`.
+Four bound methods and exactly one event channel, `gorilla:operation-status`.
+Each status record carries `operationId`, `itemName`, `displayName`, `state`,
+item-scoped `progressPercent`, `message`, timestamp, and terminal
+error/cancellation fields. The frontend subscribes once and routes records by
+`operationId`.
 
-Signed package workflow (Windows VMs):
-- Build VM:
-  - Run from repo root (`gorilla/`).
-  - `pwsh -File gorilla-ui/tools/build-signed-msix.ps1`
-  - Default output directory: `build/` (repo root)
-  - Outputs:
-    - `build/Gorilla.UI.App.signed.msix`
-    - `build/Gorilla.UI.App.cer`
-    - `build/win-build.log`
-- Target VM (Admin PowerShell):
-  - Run from repo root (`gorilla/`) when using default paths.
-  - `pwsh -File gorilla-ui/tools/install-signed-msix.ps1`
-  - Default input/output directory: `build/` (repo root relative to script location)
-  - Handles `already installed` (`0x80073CFB`) by removing the existing package identity and retrying once.
-  - Output:
-    - `build/win-install.log`
+## Progress semantics
 
-Diagnostics strategy:
-- Quiet-by-default behavior:
-  - UI client diagnostics are off by default and produce no diagnostics directory/file until explicitly enabled.
-  - Service named-pipe trace logs are debug-only (`debug: true` or `--debug`).
-  - Baseline Gorilla process logs remain enabled in `gorilla.log` for troubleshooting (both service mode and CLI mode), with console chatter gated by `verbose: true` or `--verbose`.
-- Enablement:
-  - UI client diagnostics: set `GORILLA_UI_DEBUG=1` (or `GORILLA_DEBUG=1`) before launching Gorilla.UI.App.
-  - Service trace diagnostics: set `debug: true` in config or launch Gorilla with `--debug`.
-  - Service console verbosity: set `verbose: true` in config or launch Gorilla with `--verbose`.
-- Log locations:
-  - UI client (Windows runtime): `%LOCALAPPDATA%\\gorilla\\ui-client.log`.
-  - Gorilla process log (service mode and CLI mode): `<app_data_path>/gorilla.log` (default `%ProgramData%\\gorilla\\gorilla.log`).
-- Retention/rotation policy (implementation target):
-  - Cap each log at `10 MiB`.
-  - Keep one rotated backup (`*.log.1`).
-  - Run cleanup at startup and before first append past the cap.
-  - If cleanup fails, continue app/service behavior and keep logging best-effort.
-- Required correlation fields for troubleshooting:
-  - `requestId`, `operationId`, `operation`, `state`, `result`, `durationMs`.
-  - Scope note: required for protocol/operation lifecycle logs; not required for every generic line.
+- `progressPercent` is **per item**. It may reset when the event's item changes
+  (for example when a dependency or updater runs). It is never aggregate
+  operation progress; the overall operation indicator is indeterminate.
+- `ItemCompleted` and `ItemFailed` are **non-terminal**. A dependency failure does
+  not end the operation.
+- Only `Succeeded`, `Failed`, `Deferred`, and `Canceled` end an operation.
+- Installed/managed state is never inferred from progress. After every terminal
+  record the UI calls `ListOptionalInstalls` and replaces the list and cache from
+  that authoritative response. If that refresh fails, the previous data is kept
+  and marked stale.
+- `Failed`, `Deferred`, `Canceled`, pipe unavailability, request timeout, and
+  premature stream end (`stream_ended`) are shown as-is and never converted into
+  success.
 
-Planned scope for the first release:
-- Display available option installs
-- Allow install/remove actions
-- Show install/remove status updates
+## Cache and Activity limitations
+
+`localStorage` keys `gorilla.optional-items.v1` and `gorilla.activity.v1` hold the
+last successful list (with timestamp) and locally initiated activity. A valid cache
+renders immediately, then a live refresh replaces it; a failed refresh keeps the
+cached data behind a non-blocking stale/service-unavailable banner with Retry.
+Corrupt or unavailable storage is ignored and never blocks a live request.
+
+Activity is **local display history for this UI profile only** — up to the 100 most
+recent records. It is not inventory, an audit log, or cross-user history, and
+restarting the app does not resume an old stream; the next authoritative list
+refresh provides convergence.
+
+## Development mock
+
+`npm run dev` serves a browser-only mock (`frontend/src/mock-api.ts`) selected by
+Vite's development-mode module alias. Every other mode aliases the Wails adapter,
+so the production bundle contains no mock fixture data and no
+`GORILLA_VITE_MOCK_ONLY` marker.
+
+## Commands
+
+```sh
+make ui-lint    # tsc --noEmit plus the generated-binding check
+make ui-test    # node --test frontend state/cache tests
+make build      # frontend assets, then build/gorilla.exe and build/gorilla-ui.exe
+```
+
+The Windows executable is a pure-Go cross-build:
+
+```sh
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
+  go build -tags production -ldflags "-H windowsgui" -o build/gorilla-ui.exe ./gorilla-ui
+```
+
+Regenerate committed bindings from `gorilla-ui/` with the pinned command:
+
+```sh
+go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117 generate bindings -clean -ts -noevents -d frontend/bindings .
+```
+
+## Diagnostics
+
+Diagnostics are disabled by default and create no directory or file. Set
+`GORILLA_UI_DEBUG=1` or `GORILLA_DEBUG=1` before launch to write structured debug
+records to `%LOCALAPPDATA%\gorilla\ui-client.log`. The log rotates at 10 MiB and
+keeps one backup; setup or rotation failures never block startup or fail a UI
+operation.
+
+The only runtime argument is `--pipe-name`, defaulting to `gorilla-service`.
+
+## Windows VM procedure
+
+The real validation loop lives in the repository `AGENTS.md`: build, bootstrap the
+`dialog-win11` VM with the self-serve fixtures and the real SYSTEM service, run
+`run-selfserve-smoke.ps1` (must exit 0 with `SELF-SERVE SMOKE PASSED`), then launch
+`launch-wails-ui.ps1` through an interactive scheduled task and screenshot the
+desktop to judge Home, item progress, terminal `Failed`/`Deferred`, Activity, and
+the offline cached/stale state.

@@ -3,100 +3,110 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/1dustindavis/gorilla/pkg/config"
 	"golang.org/x/sys/windows"
 )
 
-func sendCommand(cfg config.Configuration, cmd Command) (CommandResponse, error) {
-	pipePath := servicePipePath(cfg.ServicePipeName)
-	conn, err := openPipe(pipePath, 30*time.Second)
+func (c *Client) doRequest(ctx context.Context, req serviceEnvelope[any], callback func(OperationStatus) error) (serviceEnvelope[json.RawMessage], error) {
+	conn, err := openPipeContext(ctx, servicePipePath(c.pipeName()), c.connectTimeout())
 	if err != nil {
-		return CommandResponse{}, fmt.Errorf("failed to connect to service pipe %s: %w", pipePath, err)
+		return serviceEnvelope[json.RawMessage]{}, fmt.Errorf("failed to connect to service pipe %s: %w", servicePipePath(c.pipeName()), err)
 	}
-	defer func() {
-		_ = conn.Close()
-	}()
+	defer func() { _ = conn.Close() }()
 
-	requestEnvelope, err := makeRequestEnvelope(cmd)
-	if err != nil {
-		return CommandResponse{}, err
+	responseCtx, cancelResponse := context.WithTimeout(ctx, c.responseTimeout())
+	defer cancelResponse()
+	stopResponseClose := closeOnContextDone(responseCtx, conn)
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		stopResponseClose()
+		return serviceEnvelope[json.RawMessage]{}, clientIOError(responseCtx, "failed to send service command", err)
 	}
-
-	if err := json.NewEncoder(conn).Encode(requestEnvelope); err != nil {
-		return CommandResponse{}, fmt.Errorf("failed to send service command: %w", err)
-	}
-
 	dec := json.NewDecoder(conn)
-	var rawResp serviceEnvelope[json.RawMessage]
-	if err := dec.Decode(&rawResp); err != nil {
-		return CommandResponse{}, fmt.Errorf("failed to decode service response: %w", err)
+	var resp serviceEnvelope[json.RawMessage]
+	if err := decodeClientResponse(dec, req, &resp); err != nil {
+		stopResponseClose()
+		return serviceEnvelope[json.RawMessage]{}, clientIOError(responseCtx, "", err)
+	}
+	if req.Operation == actionStreamOperationStatus {
+		ack, decodeErr := decodeEnvelopePayload[streamOperationStatusAckResponse](resp.Payload)
+		if decodeErr != nil {
+			stopResponseClose()
+			return serviceEnvelope[json.RawMessage]{}, clientIOError(responseCtx, "failed to decode stream ack payload", decodeErr)
+		}
+		if !ack.StreamAccepted {
+			stopResponseClose()
+			return serviceEnvelope[json.RawMessage]{}, clientIOError(responseCtx, "", errors.New("service rejected stream request"))
+		}
+	}
+	stopResponseClose()
+	cancelResponse()
+
+	if req.Operation != actionStreamOperationStatus {
+		return resp, nil
 	}
 
-	switch rawResp.MessageType {
-	case messageTypeError:
-		errPayload, decodeErr := decodeEnvelopePayload[errorResponsePayload](rawResp.Payload)
-		if decodeErr != nil {
-			return CommandResponse{}, fmt.Errorf("failed to decode service error payload: %w", decodeErr)
+	stopStreamClose := closeOnContextDone(ctx, conn)
+	err = consumeOperationStream(dec, req.RequestID, req.OperationID, callback)
+	stopStreamClose()
+	if err != nil {
+		return serviceEnvelope[json.RawMessage]{}, clientIOError(ctx, "", err)
+	}
+	return resp, nil
+}
+
+func (c *Client) pipeName() string {
+	if strings.TrimSpace(c.PipeName) == "" {
+		return DefaultPipeName
+	}
+	return c.PipeName
+}
+
+func (c *Client) connectTimeout() time.Duration {
+	if c.ConnectTimeout <= 0 {
+		return defaultConnectTimeout
+	}
+	return c.ConnectTimeout
+}
+
+func (c *Client) responseTimeout() time.Duration {
+	if c.ResponseTimeout <= 0 {
+		return defaultResponseTimeout
+	}
+	return c.ResponseTimeout
+}
+
+func closeOnContextDone(ctx context.Context, conn *os.File) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-stop:
 		}
-		if strings.TrimSpace(errPayload.ErrorMessage) == "" {
-			errPayload.ErrorMessage = "service command failed"
-		}
-		return CommandResponse{}, errors.New(errPayload.ErrorMessage)
-	case messageTypeResponse:
-		resp, mapErr := mapEnvelopeToCommandResponse(rawResp)
-		if mapErr != nil {
-			return CommandResponse{}, mapErr
-		}
-		// A stream request's ack is followed by event envelopes; print each as
-		// JSON until a terminal state so the CLI reflects the real outcome (R9).
-		if cmd.Action == actionStreamOperationStatus {
-			if err := streamOperationEvents(dec); err != nil {
-				return CommandResponse{}, err
-			}
-		}
-		return resp, nil
-	default:
-		return CommandResponse{}, fmt.Errorf("unsupported service messageType %q", rawResp.MessageType)
+	}()
+	return func() {
+		close(stop)
+		<-done
 	}
 }
 
-// streamOperationEvents decodes operation status event envelopes and prints each
-// payload as a JSON line, returning when a terminal state arrives or the service
-// closes the stream (io.EOF).
-func streamOperationEvents(dec *json.Decoder) error {
-	for {
-		var envelope serviceEnvelope[json.RawMessage]
-		if err := dec.Decode(&envelope); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return fmt.Errorf("failed to decode operation event: %w", err)
-		}
-		if envelope.MessageType != messageTypeEvent {
-			continue
-		}
-		payload, err := decodeEnvelopePayload[operationStatusEventPayload](envelope.Payload)
-		if err != nil {
-			return fmt.Errorf("failed to decode operation event payload: %w", err)
-		}
-		line, err := json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("failed to encode operation event payload: %w", err)
-		}
-		fmt.Println(string(line))
-		switch payload.State {
-		case "Succeeded", "Failed", "Deferred", "Canceled":
-			return nil
-		}
+func clientIOError(ctx context.Context, prefix string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
+	if prefix == "" {
+		return err
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
 }
 
 func servicePipePath(pipeName string) string {
@@ -107,13 +117,21 @@ func servicePipePath(pipeName string) string {
 }
 
 func openPipe(pipePath string, timeout time.Duration) (*os.File, error) {
+	return openPipeContext(context.Background(), pipePath, timeout)
+}
+
+func openPipeContext(ctx context.Context, pipePath string, timeout time.Duration) (*os.File, error) {
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
 		pathPtr, err := windows.UTF16PtrFromString(pipePath)
 		if err != nil {
 			return nil, err
 		}
-
 		handle, err := windows.CreateFile(
 			pathPtr,
 			windows.GENERIC_READ|windows.GENERIC_WRITE,
@@ -126,89 +144,17 @@ func openPipe(pipePath string, timeout time.Duration) (*os.File, error) {
 		if err == nil {
 			return os.NewFile(uintptr(handle), pipePath), nil
 		}
-
+		lastErr = err
 		if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) && !errors.Is(err, windows.ERROR_PIPE_BUSY) {
 			return nil, err
 		}
 		if time.Now().After(deadline) {
-			return nil, err
+			return nil, lastErr
 		}
-		time.Sleep(250 * time.Millisecond)
-	}
-}
-
-func makeRequestEnvelope(cmd Command) (serviceEnvelope[any], error) {
-	envelope := serviceEnvelope[any]{
-		Version:      pipeProtocolVersion,
-		MessageType:  messageTypeRequest,
-		Operation:    cmd.Action,
-		RequestID:    newRequestID(),
-		OperationID:  "",
-		TimestampUTC: nowRFC3339UTC(),
-		Payload:      listOptionalInstallsRequest{},
-	}
-
-	switch cmd.Action {
-	case actionListOptionalInstalls:
-		envelope.Payload = listOptionalInstallsRequest{}
-	case actionInstallItem:
-		envelope.Payload = installItemRequest{ItemName: cmd.Items[0]}
-	case actionRemoveItem:
-		envelope.Payload = removeItemRequest{ItemName: cmd.Items[0]}
-	case actionStreamOperationStatus:
-		envelope.OperationID = cmd.Items[0]
-		envelope.Payload = streamOperationStatusRequest{}
-	default:
-		return serviceEnvelope[any]{}, fmt.Errorf("unsupported service action %q", cmd.Action)
-	}
-
-	return envelope, nil
-}
-
-func mapEnvelopeToCommandResponse(raw serviceEnvelope[json.RawMessage]) (CommandResponse, error) {
-	resp := CommandResponse{Status: "ok", OperationID: raw.OperationID}
-
-	switch raw.Operation {
-	case actionListOptionalInstalls:
-		payload, err := decodeEnvelopePayload[listOptionalInstallsResponse](raw.Payload)
-		if err != nil {
-			return CommandResponse{}, fmt.Errorf("failed to decode ListOptionalInstalls payload: %w", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
 		}
-		// Emit one compact JSON object per item so the CLI line printer surfaces
-		// the full honest payload, keeping it in lockstep with the protocol (R9).
-		items := make([]string, 0, len(payload.Items))
-		for _, item := range payload.Items {
-			if strings.TrimSpace(item.ItemName) == "" {
-				continue
-			}
-			line, marshalErr := json.Marshal(item)
-			if marshalErr != nil {
-				return CommandResponse{}, fmt.Errorf("failed to encode optional item %q: %w", item.ItemName, marshalErr)
-			}
-			items = append(items, string(line))
-		}
-		resp.Items = items
-		return resp, nil
-	case actionInstallItem, actionRemoveItem:
-		payload, err := decodeEnvelopePayload[operationAcceptedResponse](raw.Payload)
-		if err != nil {
-			return CommandResponse{}, fmt.Errorf("failed to decode operation accepted payload: %w", err)
-		}
-		if !payload.Accepted {
-			return CommandResponse{}, errors.New("service did not accept operation")
-		}
-		return resp, nil
-	case actionStreamOperationStatus:
-		payload, err := decodeEnvelopePayload[streamOperationStatusAckResponse](raw.Payload)
-		if err != nil {
-			return CommandResponse{}, fmt.Errorf("failed to decode stream ack payload: %w", err)
-		}
-		if !payload.StreamAccepted {
-			return CommandResponse{}, errors.New("service rejected stream request")
-		}
-		resp.Message = "StreamOperationStatus acknowledged by service"
-		return resp, nil
-	default:
-		return CommandResponse{}, fmt.Errorf("unsupported response operation %q", raw.Operation)
 	}
 }

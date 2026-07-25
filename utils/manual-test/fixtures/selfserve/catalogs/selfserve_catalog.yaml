@@ -15,7 +15,7 @@ DemoOptional:
   installer:
     type: ps1
     location: packages/scripts/demooptional-install.ps1
-    hash: 9a430cbbbe3258d0bd44cce0f1f2ea61a5283a6ddbb65db0cf494a5788e57acf
+    hash: e1039dc97ecfce817da975b317fec024a997c1dd7ba65d2f465f3d5efbe31bdf
   uninstaller:
     type: ps1
     location: packages/scripts/demooptional-uninstall.ps1
