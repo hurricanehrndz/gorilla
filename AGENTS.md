@@ -97,21 +97,28 @@ pure-Go, windows-GUI `build/gorilla-ui.exe`
 ## Real Windows Validation Loop
 
 Automated checks do not cover the visible UI. For service/UI changes, validate on
-the `dialog-win11` VM against the real SYSTEM service:
+a Windows VM against the real SYSTEM service.
 
-1. `devenv shell -- just build`, then `make bootstrap MANUAL_TEST_BASE_URL=http://<host-ip>:8080/`
-   and run `./build/manual-test-server -root build/manual-test/server-root -addr :8080`.
-2. Copy `build/manual-test/vm/bootstrap-vm.ps1`, `utils/manual-test/run-selfserve-smoke.ps1`,
-   and `utils/manual-test/launch-wails-ui.ps1` to `C:\gorilla-test\` on the VM and run
-   `bootstrap-vm.ps1 ... -InstallService -StartService`.
+**If `AGENTS.local.md` exists at the repository root, read it before any VM
+validation.** It is gitignored and describes this machine's test rig: which VM
+to use and the exact commands for each step below.
+
+1. Start from a clean VM. `devenv shell -- make bootstrap MANUAL_TEST_BASE_URL=<url the VM can reach>`
+   builds both binaries and the fixture assets. Serve them with
+   `./build/manual-test-server -root build/manual-test/server-root -addr <addr>`.
+2. Copy `build/manual-test/vm/bootstrap-vm.ps1`, `utils/manual-test/run-selfserve-smoke.ps1`
+   and `utils/manual-test/launch-wails-ui.ps1` to the VM, then run
+   `bootstrap-vm.ps1 -BaseUrl <url> -Manifest selfserve_manifest -Catalogs selfserve_catalog -InstallService -StartService -NoPause`
+   as an administrator.
 3. Machine-assertable gate: `run-selfserve-smoke.ps1` must exit 0 and print
    `SELF-SERVE SMOKE PASSED`.
-4. Visible gate: launch `launch-wails-ui.ps1` through an interactive scheduled task
-   so `gorilla-ui.exe` runs as the standard user, then screenshot the desktop
-   (`virsh -c qemu:///system screenshot dialog-win11 ...`) to judge Home, progress,
-   terminal, Activity, and offline-cache states.
-5. Clean up afterwards: leave the `gorilla` service running, remove the temporary
-   scheduled task and ready marker, and stop the local test server.
+4. Visible gate: run `launch-wails-ui.ps1` in the logged-on user's desktop session
+   with a standard (non-elevated) token, so `gorilla-ui.exe` runs as the standard
+   user. It writes a ready marker under `C:\gorilla-test\`, so create that
+   directory first. Screenshot the desktop to judge the Home, progress, terminal,
+   Activity and offline-cache states.
+5. Clean up afterwards: stop the local test server and anything that exposes it
+   to the VM, and remove temporary scheduled tasks.
 
 ## Diagnostics
 
