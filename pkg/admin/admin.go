@@ -1,3 +1,6 @@
+// Package admin holds repository-side tooling. It must stay free of agent
+// dependencies (pkg/config, pkg/download) so cmd/makecatalogs cross-builds
+// for any platform.
 package admin
 
 import (
@@ -5,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
@@ -17,13 +21,33 @@ type packageInfo struct {
 	Item     catalog.Item `yaml:",inline"`
 }
 
-// BuildCatalogs compiles package-info files from <repo>/packages-info into <repo>/catalogs.
-func BuildCatalogs(repoPath string) error {
+// CatalogSet is the result of compiling a repo's package-info files.
+type CatalogSet struct {
+	// Catalogs maps catalog name to item name to item.
+	Catalogs map[string]map[string]catalog.Item
+	// Problems lists package-info files that were skipped or overridden.
+	// BuildCatalogs warns about them and carries on; a --check run fails on them.
+	Problems []string
+}
+
+// Names returns the catalog names in sorted order.
+func (s CatalogSet) Names() []string {
+	names := make([]string, 0, len(s.Catalogs))
+	for name := range s.Catalogs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// CollectCatalogs reads <repo>/packages-info and compiles the catalogs it
+// describes without writing anything. Unreadable or unparsable files are
+// errors; skipped or duplicated items are reported in Problems.
+func CollectCatalogs(repoPath string) (CatalogSet, error) {
 	packagesInfoPath := filepath.Join(repoPath, "packages-info")
-	catalogsPath := filepath.Join(repoPath, "catalogs")
 
 	if _, err := os.Stat(packagesInfoPath); err != nil {
-		return fmt.Errorf("packages-info path unavailable: %w", err)
+		return CatalogSet{}, fmt.Errorf("packages-info path unavailable: %w", err)
 	}
 
 	var packageInfoQueue []string
@@ -43,22 +67,24 @@ func BuildCatalogs(repoPath string) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return CatalogSet{}, err
 	}
 
-	catalogMap := make(map[string]map[string]catalog.Item)
+	set := CatalogSet{Catalogs: make(map[string]map[string]catalog.Item)}
+	// source records which package-info file each catalog item came from.
+	source := make(map[string]map[string]string)
 	for _, packageInfoPath := range packageInfoQueue {
 		yamlFile, err := os.ReadFile(packageInfoPath)
 		if err != nil {
-			return fmt.Errorf("read package-info %s: %w", packageInfoPath, err)
+			return CatalogSet{}, fmt.Errorf("read package-info %s: %w", packageInfoPath, err)
 		}
 
 		var parsed packageInfo
 		if err = yaml.Unmarshal(yamlFile, &parsed); err != nil {
-			return fmt.Errorf("parse package-info %s: %w", packageInfoPath, err)
+			return CatalogSet{}, fmt.Errorf("parse package-info %s: %w", packageInfoPath, err)
 		}
 		if parsed.Catalog == "" {
-			slog.Warn("Skipping package-info with no catalog", "path", packageInfoPath)
+			set.Problems = append(set.Problems, fmt.Sprintf("%s: no catalog; skipped", packageInfoPath))
 			continue
 		}
 
@@ -70,15 +96,27 @@ func BuildCatalogs(repoPath string) error {
 			itemName = strings.TrimSuffix(filepath.Base(packageInfoPath), filepath.Ext(packageInfoPath))
 		}
 		if itemName == "" {
-			slog.Warn("Skipping package-info with no item_name/display_name", "path", packageInfoPath)
+			set.Problems = append(set.Problems, fmt.Sprintf("%s: no item_name/display_name; skipped", packageInfoPath))
 			continue
 		}
 
-		if catalogMap[parsed.Catalog] == nil {
-			catalogMap[parsed.Catalog] = map[string]catalog.Item{}
+		if set.Catalogs[parsed.Catalog] == nil {
+			set.Catalogs[parsed.Catalog] = map[string]catalog.Item{}
+			source[parsed.Catalog] = map[string]string{}
 		}
-		catalogMap[parsed.Catalog][itemName] = parsed.Item
+		if prev, ok := source[parsed.Catalog][itemName]; ok {
+			set.Problems = append(set.Problems, fmt.Sprintf("%s: duplicate item %q in catalog %q; replaces %s", packageInfoPath, itemName, parsed.Catalog, prev))
+		}
+		set.Catalogs[parsed.Catalog][itemName] = parsed.Item
+		source[parsed.Catalog][itemName] = packageInfoPath
 	}
+
+	return set, nil
+}
+
+// WriteCatalogs replaces <repo>/catalogs with one YAML file per catalog in set.
+func WriteCatalogs(repoPath string, set CatalogSet) error {
+	catalogsPath := filepath.Join(repoPath, "catalogs")
 
 	if err := os.RemoveAll(catalogsPath); err != nil {
 		return fmt.Errorf("clean catalogs path %s: %w", catalogsPath, err)
@@ -87,7 +125,7 @@ func BuildCatalogs(repoPath string) error {
 		return fmt.Errorf("create catalogs path %s: %w", catalogsPath, err)
 	}
 
-	for catalogName, catalogItems := range catalogMap {
+	for catalogName, catalogItems := range set.Catalogs {
 		catalogYAML, err := yaml.Marshal(catalogItems)
 		if err != nil {
 			return fmt.Errorf("marshal catalog %s: %w", catalogName, err)
@@ -99,4 +137,17 @@ func BuildCatalogs(repoPath string) error {
 	}
 
 	return nil
+}
+
+// BuildCatalogs compiles package-info files from <repo>/packages-info into <repo>/catalogs.
+// Problems are logged as warnings and do not stop the build.
+func BuildCatalogs(repoPath string) error {
+	set, err := CollectCatalogs(repoPath)
+	if err != nil {
+		return err
+	}
+	for _, problem := range set.Problems {
+		slog.Warn(problem)
+	}
+	return WriteCatalogs(repoPath, set)
 }
