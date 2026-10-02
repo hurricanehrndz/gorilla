@@ -11,6 +11,7 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"github.com/1dustindavis/gorilla/pkg/manifest"
+	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
 // TestManagedRunReconcilesSelfServe verifies the run loads, reconciles, and
@@ -24,9 +25,6 @@ func TestManagedRunReconcilesSelfServe(t *testing.T) {
 	// is fine on POSIX but fails on Windows, where an open file cannot be
 	// unlinked. Defers run before cleanups, so the log closes first.
 	defer gorillalog.Close()
-	// The real run below calls report.Save, which writes to %ProgramData% rather
-	// than cfg.AppDataPath; keep it off machine-wide state.
-	t.Setenv("ProgramData", t.TempDir())
 
 	const manifestYAML = `name: wiretest_manifest
 default_installs:
@@ -105,6 +103,23 @@ DemoOptional:
 	}
 	if len(states) == 0 || states[0] != "downloading" {
 		t.Fatalf("progress callback did not reach Runner.Emit: %v", states)
+	}
+
+	// The real run's inventory covers the default it tried (and failed, on the
+	// bad hash) and the optional the user never selected.
+	inv := readInventory(t, appData)
+	if inv.ManifestName != "wiretest_manifest" {
+		t.Errorf("ManifestName = %q", inv.ManifestName)
+	}
+	byName := make(map[string]report.InventoryItem)
+	for _, it := range inv.ManagedInstalls {
+		byName[it.Name] = it
+	}
+	if it := byName["DemoDefault"]; it.Kind != report.KindDefaultInstall || it.Status != report.StatusFailed || !it.SelfService || it.DisplayName != "Demo Default" {
+		t.Errorf("DemoDefault = %#v", it)
+	}
+	if it := byName["DemoOptional"]; it.Kind != report.KindOptionalInstall || it.Status != report.StatusAvailable || it.SelfService {
+		t.Errorf("DemoOptional = %#v", it)
 	}
 }
 
