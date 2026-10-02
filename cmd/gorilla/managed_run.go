@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/1dustindavis/gorilla/pkg/admin"
-	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
@@ -96,7 +95,7 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*repor
 
 	// Get the catalogs
 	slog.Info("Retrieving catalog", "catalogs", cfg.Catalogs)
-	catalogs, err := catalog.Get(cfg)
+	catalogs, err := manifest.GetCatalogs(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve catalog: %w", err)
 	}

@@ -1,14 +1,6 @@
+// Package catalog declares the catalog schema shared by the agent and the
+// repository tools. Keep it free of agent dependencies (config, download).
 package catalog
-
-import (
-	"errors"
-	"fmt"
-	"log/slog"
-
-	"github.com/1dustindavis/gorilla/pkg/config"
-	"github.com/1dustindavis/gorilla/pkg/download"
-	"go.yaml.in/yaml/v4"
-)
 
 // Item contains an individual entry from the catalog
 type Item struct {
@@ -67,53 +59,4 @@ type RegCheck struct {
 type AppxCheck struct {
 	Name    string `yaml:"name"`
 	Version string `yaml:"version"`
-}
-
-// This abstraction allows us to override the function while testing
-var downloadGet = download.Get
-
-// Get returns a map of `Item` from the catalog and any fatal catalog-loading error.
-func Get(cfg config.Configuration) (map[int]map[string]Item, error) {
-	// catalogMap is an map of parsed catalogs
-	catalogMap := make(map[int]map[string]Item)
-
-	// catalogCount allows us to be sure we are processing catalogs in order
-	catalogCount := 0
-
-	// Error if dont have at least one catalog
-	if len(cfg.Catalogs) < 1 {
-		return nil, errors.New("unable to continue, no catalogs assigned")
-	}
-
-	// Loop through the catalogs and get each one in order
-	for _, catalog := range cfg.Catalogs {
-
-		// Download the catalog
-		catalogURL := cfg.URL + "catalogs/" + catalog + ".yaml"
-		slog.Info("Catalog Url", "url", catalogURL)
-		yamlFile, err := downloadGet(catalogURL)
-		if err != nil {
-			return nil, fmt.Errorf("unable to retrieve catalog %s: %w", catalogURL, err)
-		}
-
-		// Parse the catalog
-		var catalogItems map[string]Item
-		err = yaml.Unmarshal(yamlFile, &catalogItems)
-		if err != nil {
-			return nil, fmt.Errorf("unable to parse yaml catalog %s: %w", catalogURL, err)
-		}
-
-		catalogCount++
-
-		// Stamp each item with its catalog map key so items know their own name (R13)
-		for name, item := range catalogItems {
-			item.Name = name
-			catalogItems[name] = item
-		}
-
-		// Add the new parsed catalog items to the catalogMap
-		catalogMap[catalogCount] = catalogItems
-	}
-
-	return catalogMap, nil
 }

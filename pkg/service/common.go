@@ -22,7 +22,7 @@ import (
 
 var (
 	manifestGet = manifest.Get
-	catalogGet  = catalog.Get
+	catalogGet  = manifest.GetCatalogs
 )
 
 type Command struct {
@@ -391,7 +391,7 @@ func getOptionalItems(cfg config.Configuration) ([]OptionalInstallItem, error) {
 // firstCatalogItem returns the first-catalog-wins catalog item for name and the
 // name of the catalog it came from. Unlike process.firstItem it applies no
 // installer-validity rules — the list is a display surface. catalogNames maps a
-// catalog index (1-based, as catalog.Get keys them) to its configured name.
+// catalog index (1-based, as manifest.GetCatalogs keys them) to its configured name.
 func firstCatalogItem(name string, catalogs map[int]map[string]catalog.Item, catalogNames []string) (catalog.Item, string, bool) {
 	indexes := make([]int, 0, len(catalogs))
 	for k := range catalogs {
