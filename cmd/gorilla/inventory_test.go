@@ -1,10 +1,16 @@
 package main
 
 import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/catalog"
+	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
@@ -53,4 +59,22 @@ func TestPlanBuilderKinds(t *testing.T) {
 	if len(b.warnings) != 1 || !strings.Contains(b.warnings[0], "Old") {
 		t.Errorf("expected one warning for the unresolvable removal, got %v", b.warnings)
 	}
+}
+
+// TestFinishInventoryRemovesLegacyReport: upgraded machines carry a stale
+// GorillaReport.json with the inherited, user-readable ACL; a real run must
+// replace it with inventory.json and delete it.
+func TestFinishInventoryRemovesLegacyReport(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, legacyReportFile)
+	if err := os.WriteFile(legacy, []byte(`{"stale":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	finishInventory(config.Configuration{AppDataPath: dir}, report.New(), newPlanBuilder(), time.Now(), nil)
+
+	if _, err := os.Stat(legacy); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("legacy report still present after the run: %v", err)
+	}
+	readInventory(t, dir)
 }

@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -19,6 +22,11 @@ import (
 
 // inventoryFile is written under cfg.AppDataPath (ProgramData\gorilla).
 const inventoryFile = "inventory.json"
+
+// legacyReportFile is the pre-inventory report, GorillaReport.json. It is kept
+// only so a run can delete the stale copy an upgraded machine still has (its
+// ACL is the inherited, user-readable one). Nothing writes it.
+const legacyReportFile = "GorillaReport.json"
 
 // planBuilder collects every item the run considers, tagged with its kind, in
 // the order the run meets them. The first kind recorded for a name wins.
@@ -174,5 +182,17 @@ func finishInventory(cfg config.Configuration, run *report.Report, b *planBuilde
 	slog.Info("Saving inventory", "path", path)
 	if err := report.WriteInventory(path, inv); err != nil {
 		slog.Warn("Unable to save inventory", "path", path, "err", err)
+		return
+	}
+	removeLegacyReport(cfg.AppDataPath)
+}
+
+// removeLegacyReport deletes the stale legacy report once the inventory has
+// replaced it. os.Remove on a reparse point removes the link, not its target.
+// Failure never fails the run.
+func removeLegacyReport(dir string) {
+	path := filepath.Join(dir, legacyReportFile)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Debug("Unable to remove legacy report", "path", path, "err", err)
 	}
 }

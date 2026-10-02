@@ -21,6 +21,8 @@ table construction) can't be used, because it reads SQLite databases only.
 - **Write:** the run creates a temp file in the same directory that carries the
   ACL below from creation, writes it, then renames it over `inventory.json`. A file that a user
   plants at the path is replaced, so its owner and ACL do not survive.
+- **Upgrade cleanup:** after writing the inventory, a real run deletes the
+  legacy `GorillaReport.json` in the same directory, if one is there.
 - **ACL:** SDDL `D:P(A;;FA;;;SY)(A;;FR;;;BA)`. The DACL is protected, so
   nothing is inherited. `icacls` shows only these two entries:
 
