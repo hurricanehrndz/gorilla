@@ -9,7 +9,7 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-func TestBuildCatalogs(t *testing.T) {
+func TestCollectAndWriteCatalogs(t *testing.T) {
 	repoPath := t.TempDir()
 	packagesInfoPath := filepath.Join(repoPath, "packages-info")
 	if err := os.MkdirAll(packagesInfoPath, 0o755); err != nil {
@@ -50,8 +50,15 @@ installer:
 		t.Fatal(err)
 	}
 
-	if err := BuildCatalogs(repoPath); err != nil {
-		t.Fatalf("BuildCatalogs failed: %v", err)
+	set, err := CollectCatalogs(repoPath)
+	if err != nil {
+		t.Fatalf("CollectCatalogs failed: %v", err)
+	}
+	if len(set.Problems) != 1 {
+		t.Fatalf("expected one problem for the item without a catalog, got %q", set.Problems)
+	}
+	if err = WriteCatalogs(repoPath, set); err != nil {
+		t.Fatalf("WriteCatalogs failed: %v", err)
 	}
 
 	catalogYAML, err := os.ReadFile(filepath.Join(repoPath, "catalogs", "base.yaml"))
@@ -74,9 +81,9 @@ installer:
 	}
 }
 
-func TestBuildCatalogsMissingPackagesInfo(t *testing.T) {
+func TestCollectCatalogsMissingPackagesInfo(t *testing.T) {
 	repoPath := t.TempDir()
-	if err := BuildCatalogs(repoPath); err == nil {
+	if _, err := CollectCatalogs(repoPath); err == nil {
 		t.Fatalf("expected error when packages-info is missing")
 	}
 }

@@ -194,35 +194,76 @@ func TestGetCatalogsNoCatalogsReturnsError(t *testing.T) {
 	}
 }
 
-// TestGetCatalogsReadsBuildCatalogsOutput proves the agent loader reads what the
-// repository tooling writes.
-func TestGetCatalogsReadsBuildCatalogsOutput(t *testing.T) {
+// TestGetCatalogsRoundTrip proves the agent loader reads back exactly what
+// makecatalogs writes, now that catalog output omits empty fields.
+func TestGetCatalogsRoundTrip(t *testing.T) {
+	full := catalog.Item{
+		Dependencies: []string{"ruby"},
+		DisplayName:  "Chef Client",
+		Check: catalog.InstallCheck{
+			File:     []catalog.FileCheck{{Path: `C:\chef\chef.bat`, Version: "1.2.3", ProductName: "Chef", Hash: "abc"}},
+			Script:   "exit 0",
+			Registry: catalog.RegCheck{Name: "Chef Client", Version: "1.2.3"},
+			Appx:     catalog.AppxCheck{Name: "Chef.Appx", Version: "1.2.3.0"},
+		},
+		Installer:           catalog.InstallerItem{Type: "msi", Location: "packages/chef.msi", Hash: "def", PackageID: "chef", Arguments: []string{"/S"}},
+		Uninstaller:         catalog.InstallerItem{Type: "msi", Location: "packages/chef.msi", Hash: "def", PackageID: "chef", Arguments: []string{"/x"}},
+		Version:             "1.2.3",
+		BlockingApps:        []string{"chef"},
+		UpdateFor:           []string{"ruby"},
+		Description:         "Configuration management",
+		Category:            "Utilities",
+		Developer:           "Chef Software",
+		IconName:            "chef.png",
+		RestartAction:       "RequireRestart",
+		PreScript:           "echo pre",
+		PostScript:          "echo post",
+		PreUninstallScript:  "echo preun",
+		PostUninstallScript: "echo postun",
+	}
+	minimal := catalog.Item{DisplayName: "Minimal", Version: "1.0"}
+
+	// Write package-info files the way an admin would, one per item.
 	repoPath := t.TempDir()
 	packagesInfoPath := filepath.Join(repoPath, "packages-info")
 	if err := os.MkdirAll(packagesInfoPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	item := `
-item_name: Chrome
-display_name: Google Chrome
-catalog: base
-check:
-  registry:
-    name: Google Chrome
-    version: 1.2.3.4
-installer:
-  type: nupkg
-  location: packages/chrome/chrome.nupkg
-  hash: abc
-version: 1.2.3.4
-`
-	if err := os.WriteFile(filepath.Join(packagesInfoPath, "chrome.yaml"), []byte(item), 0o644); err != nil {
-		t.Fatal(err)
+	type packageInfo struct {
+		ItemName string       `yaml:"item_name"`
+		Catalog  string       `yaml:"catalog"`
+		Item     catalog.Item `yaml:",inline"`
+	}
+	for _, info := range []packageInfo{{"ChefClient", "full", full}, {"Minimal", "minimal", minimal}} {
+		body, err := yaml.Marshal(info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(packagesInfoPath, info.ItemName+".yaml"), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	if err := admin.BuildCatalogs(repoPath); err != nil {
-		t.Fatalf("BuildCatalogs failed: %v", err)
+	set, err := admin.CollectCatalogs(repoPath)
+	if err != nil {
+		t.Fatalf("CollectCatalogs failed: %v", err)
+	}
+	if err = admin.WriteCatalogs(repoPath, set); err != nil {
+		t.Fatalf("WriteCatalogs failed: %v", err)
+	}
+
+	// An empty field written out would read back as a non-nil empty value; for
+	// Check.File that silently switches status checks to the file method.
+	minimalYAML, err := os.ReadFile(filepath.Join(repoPath, "catalogs", "minimal.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]map[string]any
+	if err = yaml.Unmarshal(minimalYAML, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if want := (map[string]map[string]any{"Minimal": {"display_name": "Minimal", "version": "1.0"}}); !reflect.DeepEqual(keys, want) {
+		t.Fatalf("minimal catalog has extra keys:\n%s", minimalYAML)
 	}
 
 	handler := http.NewServeMux()
@@ -230,30 +271,15 @@ version: 1.2.3.4
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
-	cfg := config.Configuration{
-		URL:       ts.URL + "/",
-		Catalogs:  []string{"base"},
-		CachePath: t.TempDir(),
-	}
-	got, err := GetCatalogs(cfg)
+	got, err := GetCatalogs(config.Configuration{URL: ts.URL + "/", Catalogs: []string{"full", "minimal"}})
 	if err != nil {
 		t.Fatalf("GetCatalogs failed: %v", err)
 	}
-	baseCatalog, ok := got[1]
-	if !ok {
-		t.Fatalf("expected catalog map at index 1")
-	}
-	chrome, ok := baseCatalog["Chrome"]
-	if !ok {
-		t.Fatalf("expected Chrome item in catalog")
-	}
-	if chrome.DisplayName != "Google Chrome" {
-		t.Fatalf("unexpected display_name: %s", chrome.DisplayName)
-	}
-	if chrome.Installer.Type != "nupkg" {
-		t.Fatalf("unexpected installer type: %s", chrome.Installer.Type)
-	}
-	if chrome.Version != "1.2.3.4" {
-		t.Fatalf("unexpected version: %s", chrome.Version)
+
+	// GetCatalogs stamps each item with its catalog key.
+	full.Name, minimal.Name = "ChefClient", "Minimal"
+	want := map[int]map[string]catalog.Item{1: {"ChefClient": full}, 2: {"Minimal": minimal}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip mismatch\nwant %#v\ngot  %#v", want, got)
 	}
 }

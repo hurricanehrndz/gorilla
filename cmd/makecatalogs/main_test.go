@@ -84,14 +84,13 @@ func TestBuildsCatalogWithoutAgentConfig(t *testing.T) {
 	if err := yaml.Unmarshal(body, &got); err != nil {
 		t.Fatal(err)
 	}
-	chrome, ok := got["Chrome"]
-	if len(got) != 1 || !ok {
-		t.Fatalf("want only Chrome, got %v", got)
-	}
-	wantInstaller := catalog.InstallerItem{Type: "nupkg", Location: "packages/chrome/chrome.nupkg", Hash: "abc"}
-	if chrome.DisplayName != "Google Chrome" || chrome.Version != "1.2.3.4" ||
-		chrome.Installer.Type != wantInstaller.Type || chrome.Installer.Location != wantInstaller.Location || chrome.Installer.Hash != wantInstaller.Hash {
-		t.Fatalf("unexpected Chrome item: %#v", chrome)
+	want := map[string]catalog.Item{"Chrome": {
+		DisplayName: "Google Chrome",
+		Version:     "1.2.3.4",
+		Installer:   catalog.InstallerItem{Type: "nupkg", Location: "packages/chrome/chrome.nupkg", Hash: "abc"},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("catalog mismatch\nwant %#v\ngot  %#v", want, got)
 	}
 }
 

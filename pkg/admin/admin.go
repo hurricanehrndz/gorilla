@@ -26,7 +26,7 @@ type CatalogSet struct {
 	// Catalogs maps catalog name to item name to item.
 	Catalogs map[string]map[string]catalog.Item
 	// Problems lists package-info files that were skipped or overridden.
-	// BuildCatalogs warns about them and carries on; a --check run fails on them.
+	// A normal makecatalogs run warns about them and carries on; --check fails on them.
 	Problems []string
 }
 
@@ -137,17 +137,4 @@ func WriteCatalogs(repoPath string, set CatalogSet) error {
 	}
 
 	return nil
-}
-
-// BuildCatalogs compiles package-info files from <repo>/packages-info into <repo>/catalogs.
-// Problems are logged as warnings and do not stop the build.
-func BuildCatalogs(repoPath string) error {
-	set, err := CollectCatalogs(repoPath)
-	if err != nil {
-		return err
-	}
-	for _, problem := range set.Problems {
-		slog.Warn(problem)
-	}
-	return WriteCatalogs(repoPath, set)
 }
