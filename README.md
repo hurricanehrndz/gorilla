@@ -25,7 +25,8 @@ and `treefmt` — see [docs/dev.md](docs/dev.md).
 - `build/gorilla.exe` — the agent/CLI/service
 - `build/gorilla-ui.exe` — the Wails self-service UI (pure Go, no cgo)
 
-Releases publish exactly those two executables; there is no installer or code
+Releases publish those two executables plus the standalone `makecatalogs`
+binaries (see below); there is no installer or code
 signing in this path.
 
 UI-specific targets: `make ui-lint` (TypeScript and generated-binding check),
@@ -38,10 +39,29 @@ go fmt ./...
 go test ./...
 ```
 
-## Repo Admin Mode
-Gorilla also supports local repo admin workflows:
-- `-b` / `-build`: compile `packages-info/*.yaml` files into catalog files under `catalogs/`
-- `-i` / `-import`: scaffold package-info data from an installer (currently stubbed as not yet implemented)
+## Building Catalogs (makecatalogs)
+`makecatalogs` compiles a repo's `packages-info/*.yaml` files into
+`catalogs/<catalog>.yaml`, like Munki's `makecatalogs`. It is a standalone, pure-Go
+binary for Linux, macOS and Windows, so a package repo's CI never needs Windows.
+It reads no Gorilla config file.
 
-For these modes, set `repo_path` in config (or run from your repo root so the current working directory is used).
+```
+makecatalogs [--check] <repo_path>
+```
+
+- Without `--check`, it replaces `<repo_path>/catalogs/`. A package-info file
+  with no `catalog`, or a duplicate item name within a catalog, prints a
+  warning and the build carries on (the later file wins).
+- `--check` validates the repo, prints what it would write, and writes nothing.
+  It fails on those warnings too, so use it as a pull-request gate in a package
+  repo.
+- Exit codes: `0` success, `1` any error (or any problem under `--check`),
+  `2` usage error.
+
+Releases publish `makecatalogs-<os>-<arch>[.exe]` for linux, darwin and windows
+on amd64 and arm64. `just makecatalogs` builds the same set into `build/`.
 See `examples/example_package-info.yaml` for a package-info example.
+
+`gorilla -build`/`-b` and `-import`/`-i` were removed, along with the
+`repo_path` config key; existing configs that still set it keep loading.
+`-import` was never implemented.

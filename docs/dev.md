@@ -9,9 +9,10 @@ GTK4, WebKitGTK 6). Formatting and linting are enforced on commit by git-hooks
 (treefmt + golangci-lint on changed Go files).
 
 Run tasks with `just`: `just build`, `just test`, `just lint`, `just fmt`,
-`just check-xplat`, `just clean` (see the `justfile`). UI-specific targets exist
-in both runners: `ui-lint` (TypeScript plus the committed-binding check),
-`ui-test` (frontend tests), `ui-assets` (Vite production build).
+`just check-xplat`, `just makecatalogs`, `just clean` (see the `justfile`).
+UI-specific targets exist in both runners: `ui-lint` (TypeScript plus the
+committed-binding check), `ui-test` (frontend tests), `ui-assets` (Vite
+production build).
 
 ## Build artifacts
 

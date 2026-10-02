@@ -70,6 +70,20 @@ jobs:
           GOARCH: amd64
           CGO_ENABLED: "0"
         run: go build -tags production -ldflags "-H windowsgui" -o build/gorilla-ui.exe ./gorilla-ui
+      - name: Build makecatalogs (linux/darwin/windows, amd64/arm64)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          $ldflags = "-X github.com/1dustindavis/gorilla/pkg/version.version=${{ steps.create_tag.outputs.version_tag }}"
+          foreach ($os in "linux", "darwin", "windows") {
+            foreach ($arch in "amd64", "arm64") {
+              $ext = if ($os -eq "windows") { ".exe" } else { "" }
+              $env:GOOS = $os
+              $env:GOARCH = $arch
+              go build -ldflags="$ldflags" -o "build/makecatalogs-$os-$arch$ext" ./cmd/makecatalogs
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
       - name: Upload executables workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -77,12 +91,13 @@ jobs:
           path: |
             ./build/gorilla.exe
             ./build/gorilla-ui.exe
+            ./build/makecatalogs-*
           if-no-files-found: error
       - name: Cut release
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: false
           prerelease: true
-          artifacts: "./build/gorilla.exe,./build/gorilla-ui.exe"
+          artifacts: "./build/gorilla.exe,./build/gorilla-ui.exe,./build/makecatalogs-*"
           tag: ${{ steps.create_tag.outputs.version_tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
