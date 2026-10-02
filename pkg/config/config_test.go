@@ -16,13 +16,10 @@ func TestGet(t *testing.T) {
 		Manifest:        "example_manifest",
 		LocalManifests:  []string{"example_local_manifest"},
 		Catalogs:        []string{"example_catalog"},
-		RepoPath:        filepath.Clean("c:/repo/gorilla"),
 		AppDataPath:     filepath.Clean("c:/cpe/gorilla/"),
 		Verbose:         true,
 		Debug:           true,
 		CheckOnly:       true,
-		BuildArg:        false,
-		ImportArg:       "",
 		AuthUser:        "johnny",
 		AuthPass:        "pizza",
 		CachePath:       filepath.Clean("c:/cpe/gorilla/cache"),
@@ -57,8 +54,10 @@ func TestGet(t *testing.T) {
 	}
 }
 
-func TestGetBuildModeWithoutManifestOrURL(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "build_config.yaml")
+// TestGetIgnoresLegacyRepoPath proves configs written for the removed -build
+// mode, which still carry repo_path, keep loading for the agent.
+func TestGetIgnoresLegacyRepoPath(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "legacy_config.yaml")
 	configYAML := []byte(`
 url: https://example.com/gorilla/
 manifest: example_manifest
@@ -71,27 +70,55 @@ repo_path: c:/repo/gorilla
 
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
-	origBuildArg := buildArg
-	origImportArg := importArg
-	defer func() {
-		buildArg = origBuildArg
-		importArg = origImportArg
-	}()
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	osExit = func(code int) { t.Fatalf("unexpected exit %d", code) }
 
-	// Flag parsing is process-global in this package; set mode flags directly for test stability.
-	buildArg = true
-	importArg = ""
-	os.Args = []string{"gorilla.exe", "--build", "--config", configPath}
+	os.Args = []string{"gorilla.exe", "--config", configPath}
 	cfg := Get()
 
-	if !cfg.BuildArg {
-		t.Fatalf("expected BuildArg to be true")
+	if cfg.Manifest != "example_manifest" || cfg.URL != "https://example.com/gorilla/" {
+		t.Fatalf("legacy config not parsed: %#v", cfg)
 	}
-	if cfg.ImportArg != "" {
-		t.Fatalf("expected ImportArg to be empty")
+}
+
+// TestGetRequiresManifestAndURL covers the normal-run validation. It used to
+// sit behind a build/import exemption; now every non-service run needs both.
+func TestGetRequiresManifestAndURL(t *testing.T) {
+	tests := map[string]string{
+		"no manifest": "url: https://example.com/gorilla/\n",
+		"no url":      "manifest: example_manifest\n",
 	}
-	if cfg.RepoPath != filepath.Clean("c:/repo/gorilla") {
-		t.Fatalf("unexpected RepoPath: %s", cfg.RepoPath)
+	for name, configYAML := range tests {
+		t.Run(name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			origArgs := os.Args
+			defer func() { os.Args = origArgs }()
+			origExit := osExit
+			defer func() { osExit = origExit }()
+
+			// osExit must stop Get, as os.Exit would, so unwind with a panic.
+			type exitCode int
+			osExit = func(code int) { panic(exitCode(code)) }
+
+			os.Args = []string{"gorilla.exe", "--config", configPath}
+			code := func() (code exitCode) {
+				defer func() {
+					if r := recover(); r != nil {
+						code = r.(exitCode)
+					}
+				}()
+				Get()
+				return 0
+			}()
+			if code != 1 {
+				t.Fatalf("expected exit 1, got %d", code)
+			}
+		})
 	}
 }
 
@@ -102,18 +129,16 @@ func TestParseArguments(t *testing.T) {
 	expectedVerbose := true
 	expectedDebug := true
 	expectedCheckOnly := true
-	expectedBuild := true
-	expectedImport := `.\foo.exe`
 
 	// Save the original arguments
 	origArgs := os.Args
 	defer func() { os.Args = origArgs }()
 
 	// Override with our input
-	os.Args = []string{"gorilla.exe", "--verbose", "--debug", "--checkonly", "--build", "--import", `.\foo.exe`, "--config", `.\fake.yaml`}
+	os.Args = []string{"gorilla.exe", "--verbose", "--debug", "--checkonly", "--config", `.\fake.yaml`}
 
 	// Run code
-	configArg, verboseArg, debugArg, checkonlyArg, buildArg, importArg := parseArguments()
+	configArg, verboseArg, debugArg, checkonlyArg := parseArguments()
 
 	// Compare config
 	if have, want := configArg, expectedConfig; have != want {
@@ -122,16 +147,6 @@ func TestParseArguments(t *testing.T) {
 
 	// Compare checkonly
 	if have, want := checkonlyArg, expectedCheckOnly; have != want {
-		t.Errorf("have %v, want %v", have, want)
-	}
-
-	// Compare build
-	if have, want := buildArg, expectedBuild; have != want {
-		t.Errorf("have %v, want %v", have, want)
-	}
-
-	// Compare import
-	if have, want := importArg, expectedImport; have != want {
 		t.Errorf("have %v, want %v", have, want)
 	}
 
@@ -166,7 +181,7 @@ func Example() {
 	os.Args = []string{"gorilla.exe", "--help"}
 
 	// Run code, ignoring the return values
-	_, _, _, _, _, _ = parseArguments()
+	_, _, _, _ = parseArguments()
 
 	// Output:
 	// unknown unknown
@@ -179,8 +194,6 @@ func Example() {
 	// Options:
 	// -c, -config         path to configuration file in yaml format
 	// -C, -checkonly	    enable check only mode
-	// -b, -build          build catalog files from package-info files
-	// -i, -import         create a package-info file from an installer package
 	// -v, -verbose        enable verbose output
 	// -d, -debug          enable debug output
 	// -a, -about          displays the version number and other build info

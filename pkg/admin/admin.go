@@ -100,8 +100,3 @@ func BuildCatalogs(repoPath string) error {
 
 	return nil
 }
-
-// ImportItem converts a package into package-info data.
-func ImportItem(repoPath string, itemPath string) error {
-	return fmt.Errorf("import is not yet implemented (repoPath=%s, itemPath=%s)", repoPath, itemPath)
-}
