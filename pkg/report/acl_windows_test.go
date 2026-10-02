@@ -29,6 +29,25 @@ func TestWriteInventoryProtectedDACL(t *testing.T) {
 		t.Fatalf("WriteInventory: %v", err)
 	}
 
+	assertInventoryDACL(t, path)
+}
+
+// TestCreateProtectedTempHasDACLAtCreation: the temp file must carry the
+// inventory DACL from the moment it exists, or a standard user can open it
+// through the directory's inherited ACL before the run writes the inventory.
+func TestCreateProtectedTempHasDACLAtCreation(t *testing.T) {
+	f, err := createProtectedTemp(t.TempDir(), ".inventory.json.")
+	if err != nil {
+		t.Fatalf("createProtectedTemp: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	assertInventoryDACL(t, f.Name())
+}
+
+// assertInventoryDACL checks path has a protected DACL holding exactly SYSTEM
+// full control and Administrators read.
+func assertInventoryDACL(t *testing.T, path string) {
+	t.Helper()
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatalf("GetNamedSecurityInfo: %v", err)

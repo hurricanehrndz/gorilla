@@ -18,8 +18,8 @@ table construction) can't be used, because it reads SQLite databases only.
   scheduled run). It is written at the end of every run, including a run that
   fails part way, so the failure is visible. Check-only (`-C`) prints the same
   JSON to stdout and does not write the file.
-- **Write:** the run creates a temp file in the same directory, applies the
-  ACL below, writes, then renames it over `inventory.json`. A file that a user
+- **Write:** the run creates a temp file in the same directory that carries the
+  ACL below from creation, writes it, then renames it over `inventory.json`. A file that a user
   plants at the path is replaced, so its owner and ACL do not survive.
 - **ACL:** SDDL `D:P(A;;FA;;;SY)(A;;FR;;;BA)`. The DACL is protected, so
   nothing is inherited. `icacls` shows only these two entries:
@@ -47,9 +47,9 @@ changing it, so readers should ignore keys they don't know.
 | `ManagedInstallVersion` | string | Gorilla version. |
 | `ManifestName` | string | The client manifest (`manifest` in config). |
 | `Errors` | []string | Run-level error (e.g. manifest fetch failed), then one `"<action> of <name> failed: <error>"` per failed item. |
-| `Warnings` | []string | Reserved; currently always empty. |
+| `Warnings` | []string | Items left out because they resolve to no valid catalog item, e.g. a self-service removal whose catalog entry is gone. |
 | `ProblemInstalls` | []item | Install-side items that failed and are not installed. |
-| `ManagedInstalls` | []item | Every item the run considered (see `kind`). |
+| `ManagedInstalls` | []item | Every item the run considered (see `kind`), except a `managed_update` that is not installed: as in Munki, an update only applies to installed software. |
 | `InstalledItems` | []string | Names of install-side items that are installed. |
 | `RemovedItems` | []string | Names of `managed_uninstall` items that are absent. |
 | `ItemsToInstall` | []item | Install-side items still `pending` or `deferred`. |
@@ -90,13 +90,14 @@ way Munki handles `requires`.
 | `installed` | Installed this run, or already present. |
 | `removed` | Uninstalled this run, or already absent (`managed_uninstall`). |
 | `pending` | Needs action and the run didn't do it: check-only, or the run stopped first. |
-| `failed` | The action failed (`error` says why). If a post-install script fails after a successful install, the item is `failed` with `installed: true` and is not in `ProblemInstalls`. |
+| `failed` | The action failed (`error` says why). If a post-install script fails after a successful install, the item is `failed` with `installed: true` and is not in `ProblemInstalls`; a post-uninstall script failure after a successful uninstall gives `installed: false`. |
 | `deferred` | Skipped because a `blocking_apps` process was running, or a dependency was deferred. Retried next run. |
 | `available` | Optional install offered but not selected. `installed` comes from a real check; items with only a script check report `false`. |
 
 ## Sample
 
-From a real run (trimmed to two items):
+From a real run, trimmed to two items, with `ManagedInstallVersion` shown as a
+release build would report it:
 
 ```json
 {
@@ -104,7 +105,7 @@ From a real run (trimmed to two items):
   "ConsoleUser": "tester",
   "StartTime": "2026-10-01 23:29:03 -0700",
   "EndTime": "2026-10-01 23:29:05 -0700",
-  "ManagedInstallVersion": "v1.1.0-3-gf72c7f9-dirty",
+  "ManagedInstallVersion": "v1.1.0",
   "ManifestName": "selfserve_manifest",
   "Errors": ["install of DemoFailing failed: exit status 1"],
   "Warnings": [],

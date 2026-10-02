@@ -95,7 +95,7 @@ func TestInventoryStatusFromRunResults(t *testing.T) {
 	plan := Plan{Items: []PlanItem{
 		{Name: "Fresh", Version: "1.0", Kind: KindManagedInstall},
 		{Name: "Gone", Version: "1.0", Kind: KindManagedUninstall},
-		{Name: "Current", Version: "4.0", Kind: KindManagedUpdate},
+		{Name: "Current", Version: "4.0", Kind: KindManagedUpdate, Installed: true},
 		{Name: "Absent", Version: "1.0", Kind: KindManagedUninstall},
 		{Name: "NotReached", Version: "1.0", Kind: KindManagedInstall},
 	}}
@@ -197,5 +197,41 @@ func TestInventoryDecodesAsMunkiReport(t *testing.T) {
 	}
 	if len(got.Errors) != 1 || got.Warnings == nil {
 		t.Errorf("Errors = %#v, Warnings = %#v", got.Errors, got.Warnings)
+	}
+}
+
+// TestInventoryNoActionUpdateAndPostUninstallFailure: a "no action" update
+// check means current *or absent*, and an absent managed_update must not show
+// as installed fleet-wide; a removal whose post-uninstall script failed is
+// still gone from disk.
+func TestInventoryNoActionUpdateAndPostUninstallFailure(t *testing.T) {
+	r := New()
+	r.NoActionItems = append(
+		r.NoActionItems,
+		NoActionItem{Name: "Absent", Version: "2.0", Action: "update"},
+		NoActionItem{Name: "Current", Version: "3.0", Action: "update"},
+	)
+	r.UninstalledItems = append(r.UninstalledItems, catalog.Item{Name: "Gone", Version: "1.0"})
+	r.FailedItems = append(r.FailedItems, FailedItem{Name: "Gone", Version: "1.0", Action: "uninstall", Error: "post-uninstall script error"})
+
+	inv := r.Inventory(Plan{Items: []PlanItem{
+		{Name: "Absent", Version: "2.0", Kind: KindManagedUpdate},
+		{Name: "Current", Version: "3.0", Kind: KindManagedUpdate, Installed: true},
+		{Name: "Gone", Version: "1.0", Kind: KindManagedUninstall},
+	}})
+
+	for _, it := range inv.ManagedInstalls {
+		if it.Name == "Absent" {
+			t.Errorf("absent managed_update reported: %#v", it)
+		}
+	}
+	if it := findItem(t, inv.ManagedInstalls, "Current"); it.Status != StatusInstalled || !it.Installed {
+		t.Errorf("current managed_update reported as %#v", it)
+	}
+	if it := findItem(t, inv.ManagedInstalls, "Gone"); it.Status != StatusFailed || it.Installed {
+		t.Errorf("removed item with failed post-uninstall script reported as %#v", it)
+	}
+	if len(inv.RemovedItems) != 1 || inv.RemovedItems[0] != "Gone" {
+		t.Errorf("RemovedItems = %v", inv.RemovedItems)
 	}
 }

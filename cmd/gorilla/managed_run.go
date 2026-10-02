@@ -176,6 +176,7 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *rep
 	// Prepare and update
 	slog.Info("Processing managed updates...")
 	process.Updates(updates, catalogs, runner)
+	plan.checkUpdates(run, runner.Checker, cfg.CachePath)
 
 	// Offered optional installs the user has not selected still belong in the
 	// inventory; the deferred finishInventory saves or prints it.

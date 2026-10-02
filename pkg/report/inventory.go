@@ -79,8 +79,9 @@ type PlanItem struct {
 	Version     string
 	Kind        string
 	SelfService bool
-	// Installed is the caller's own status check. It is used only for items
-	// the run neither acted on nor checked: unselected optional installs.
+	// Installed is the caller's own status check. It is used only where the
+	// run's results can't tell: unselected optional installs, and
+	// managed_update items the run found nothing to do for (current or absent).
 	Installed bool
 }
 
@@ -127,7 +128,10 @@ func (r *Report) Inventory(p Plan) Inventory {
 		}
 		seen[pi.Name] = true
 
-		it := r.inventoryItem(pi, p.CheckOnly)
+		it, ok := r.inventoryItem(pi, p.CheckOnly)
+		if !ok {
+			continue
+		}
 		inv.ManagedInstalls = append(inv.ManagedInstalls, it)
 
 		removal := it.Kind == KindManagedUninstall
@@ -152,8 +156,8 @@ func (r *Report) Inventory(p Plan) Inventory {
 }
 
 // inventoryItem resolves one item's status from the run's results, most
-// decisive first.
-func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) InventoryItem {
+// decisive first. It returns false for an item the inventory leaves out.
+func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) (InventoryItem, bool) {
 	it := InventoryItem{
 		Name:             pi.Name,
 		DisplayName:      pi.DisplayName,
@@ -166,6 +170,7 @@ func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) InventoryItem {
 	}
 	removal := pi.Kind == KindManagedUninstall
 	acted := slices.ContainsFunc(r.InstalledItems, func(i catalog.Item) bool { return i.Name == pi.Name })
+	uninstalled := slices.ContainsFunc(r.UninstalledItems, func(i catalog.Item) bool { return i.Name == pi.Name })
 
 	// installed marks the item present on disk at the catalog version.
 	// CEILING: Gorilla's checks answer present/absent, not which version, so
@@ -179,12 +184,13 @@ func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) InventoryItem {
 	if i := slices.IndexFunc(r.FailedItems, func(f FailedItem) bool { return f.Name == pi.Name }); i >= 0 {
 		it.Status = StatusFailed
 		it.Error = r.FailedItems[i].Error
-		// A failed removal leaves the item in place; a failed post-install
+		// A failed removal leaves the item in place unless the uninstaller
+		// itself succeeded (a post-uninstall script failed); a failed post-install
 		// script follows a real install.
-		if removal || (acted && !checkOnly) {
+		if (removal && !uninstalled) || (!removal && acted && !checkOnly) {
 			installed()
 		}
-		return it
+		return it, true
 	}
 	if i := slices.IndexFunc(r.DeferredItems, func(d DeferredItem) bool { return d.Name == pi.Name }); i >= 0 {
 		it.Status = StatusDeferred
@@ -192,7 +198,7 @@ func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) InventoryItem {
 		if removal {
 			installed()
 		}
-		return it
+		return it, true
 	}
 	if acted {
 		// Check-only records every item it would act on as installed.
@@ -201,35 +207,40 @@ func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) InventoryItem {
 			if removal {
 				installed()
 			}
-			return it
+			return it, true
 		}
 		it.Status = StatusInstalled
 		installed()
-		return it
+		return it, true
 	}
-	if slices.ContainsFunc(r.UninstalledItems, func(i catalog.Item) bool { return i.Name == pi.Name }) {
+	if uninstalled {
 		it.Status = StatusRemoved
-		return it
+		return it, true
 	}
 	if slices.ContainsFunc(r.NoActionItems, func(n NoActionItem) bool { return n.Name == pi.Name }) {
-		if removal {
+		switch {
+		case removal:
 			it.Status = StatusRemoved
-		} else {
+		case pi.Kind == KindManagedUpdate && !pi.Installed:
+			// An update only applies to installed software; Munki leaves an
+			// absent managed_update out of the report.
+			return it, false
+		default:
 			it.Status = StatusInstalled
 			installed()
 		}
-		return it
+		return it, true
 	}
 	if pi.Kind == KindOptionalInstall && !pi.SelfService {
 		it.Status = StatusAvailable
 		if pi.Installed {
 			installed()
 		}
-		return it
+		return it, true
 	}
 	// Not reached this run (e.g. the run stopped early).
 	it.Status = StatusPending
-	return it
+	return it, true
 }
 
 // unplannedItems returns items the run acted on that the plan does not list:

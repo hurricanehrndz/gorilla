@@ -17,11 +17,11 @@ func WriteInventory(path string, inv Inventory) error {
 }
 
 // writeProtected replaces path with data so the result carries only the
-// inventory DACL. The temp file is protected before any data reaches it, and
-// the rename replaces whatever sat at path, including a file planted there by
-// a user, so the planter keeps neither the file nor its ACL.
+// inventory DACL. The temp file has that DACL from creation, before any data
+// reaches it, and the rename replaces whatever sat at path, including a file
+// planted there by a user, so the planter keeps neither the file nor its ACL.
 func writeProtected(path string, data []byte) (err error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	tmp, err := createProtectedTemp(filepath.Dir(path), "."+filepath.Base(path)+".")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -33,11 +33,8 @@ func writeProtected(path string, data []byte) (err error) {
 		}
 	}()
 
-	if err = protectFile(tmpName); err != nil {
-		return fmt.Errorf("protect %s: %w", tmpName, err)
-	}
-	// The handle was opened read/write before the DACL changed, so it can
-	// still write even though the new DACL denies the caller write access.
+	// The handle was opened read/write at creation, so it can write even
+	// though the DACL denies the caller (an admin, not SYSTEM) write access.
 	if _, err = tmp.Write(data); err != nil {
 		return fmt.Errorf("write %s: %w", tmpName, err)
 	}

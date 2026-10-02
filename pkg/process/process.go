@@ -20,6 +20,35 @@ import (
 // firstItem returns the first valid occurrence of an item in a map of catalogs.
 // It logs warnings for invalid/missing items and returns false when no valid item is found.
 func firstItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (catalog.Item, bool) {
+	item, invalidReasons, ok := resolveItem(itemName, catalogsMap)
+	if ok {
+		return item, true
+	}
+
+	// No valid item found. Log why and continue processing other items.
+	if len(invalidReasons) > 0 {
+		slog.Warn(
+			"skipping catalog item: missing required installer/uninstaller type/location fields",
+			"item", itemName,
+			"reasons", strings.Join(invalidReasons, "; "),
+		)
+		return catalog.Item{}, false
+	}
+	slog.Warn("skipping item: not found in any catalog", "item", itemName)
+	return catalog.Item{}, false
+}
+
+// ResolveItem returns the catalog item the run acts on for itemName (the first
+// valid occurrence, as firstItem picks it) without logging. Callers that only
+// report on items use it so they agree with the run.
+func ResolveItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (catalog.Item, bool) {
+	item, _, ok := resolveItem(itemName, catalogsMap)
+	return item, ok
+}
+
+// resolveItem finds the first valid occurrence of itemName and, when there is
+// none, the reasons each occurrence was invalid.
+func resolveItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (catalog.Item, []string, bool) {
 	// Get the keys in the map and sort them so we can loop over them in order
 	keys := make([]int, 0)
 	for k := range catalogsMap {
@@ -40,7 +69,7 @@ func firstItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (ca
 				item.Installer.Type == "msix"
 
 			if validInstallItem || validUninstallItem {
-				return item, true
+				return item, nil, true
 			}
 
 			missing := []string{}
@@ -59,18 +88,7 @@ func firstItem(itemName string, catalogsMap map[int]map[string]catalog.Item) (ca
 			invalidReasons = append(invalidReasons, fmt.Sprintf("catalog index %d missing required fields: %s", k, strings.Join(missing, ", ")))
 		}
 	}
-
-	// No valid item found. Log why and continue processing other items.
-	if len(invalidReasons) > 0 {
-		slog.Warn(
-			"skipping catalog item: missing required installer/uninstaller type/location fields",
-			"item", itemName,
-			"reasons", strings.Join(invalidReasons, "; "),
-		)
-		return catalog.Item{}, false
-	}
-	slog.Warn("skipping item: not found in any catalog", "item", itemName)
-	return catalog.Item{}, false
+	return catalog.Item{}, invalidReasons, false
 }
 
 // Manifests iterates though the first manifest and any included manifests
