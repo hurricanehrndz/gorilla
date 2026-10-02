@@ -28,6 +28,14 @@ type DeferredItem struct {
 	Reason  string
 }
 
+// NoActionItem records an item whose status check found nothing to do: an
+// install or update already present, or an uninstall already absent
+type NoActionItem struct {
+	Name    string
+	Version string
+	Action  string
+}
+
 // Report holds the state of a single managed run (K7: no package globals)
 type Report struct {
 	// Items contains the data we will save to GorillaReport
@@ -44,6 +52,9 @@ type Report struct {
 
 	// DeferredItems contains a list of items whose actions were deferred
 	DeferredItems []DeferredItem
+
+	// NoActionItems contains a list of items whose status check found nothing to do
+	NoActionItems []NoActionItem
 }
 
 // New returns a fresh Report for one run
