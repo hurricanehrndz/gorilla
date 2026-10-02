@@ -53,8 +53,14 @@ func CollectCatalogs(repoPath string) (CatalogSet, error) {
 	var packageInfoQueue []string
 	err := filepath.WalkDir(packagesInfoPath, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			slog.Warn("Failed to access path", "path", path, "err", walkErr)
 			return walkErr
+		}
+		// Skip dotfiles such as macOS AppleDouble `._foo.yaml`, as Munki does.
+		if strings.HasPrefix(d.Name(), ".") && path != packagesInfoPath {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if d.IsDir() {
 			return nil
@@ -73,6 +79,9 @@ func CollectCatalogs(repoPath string) (CatalogSet, error) {
 	set := CatalogSet{Catalogs: make(map[string]map[string]catalog.Item)}
 	// source records which package-info file each catalog item came from.
 	source := make(map[string]map[string]string)
+	// folded maps a lowercased catalog name to the first spelling seen, since
+	// macOS and Windows file systems treat Prod.yaml and prod.yaml as one file.
+	folded := make(map[string]string)
 	for _, packageInfoPath := range packageInfoQueue {
 		yamlFile, err := os.ReadFile(packageInfoPath)
 		if err != nil {
@@ -87,6 +96,17 @@ func CollectCatalogs(repoPath string) (CatalogSet, error) {
 			set.Problems = append(set.Problems, fmt.Sprintf("%s: no catalog; skipped", packageInfoPath))
 			continue
 		}
+		// The catalog name becomes a file name under catalogs/, so it must not
+		// carry a path.
+		if strings.ContainsAny(parsed.Catalog, `/\:`) || parsed.Catalog == "." || parsed.Catalog == ".." {
+			set.Problems = append(set.Problems, fmt.Sprintf("%s: invalid catalog name %q; skipped", packageInfoPath, parsed.Catalog))
+			continue
+		}
+		if first, ok := folded[strings.ToLower(parsed.Catalog)]; ok && first != parsed.Catalog {
+			set.Problems = append(set.Problems, fmt.Sprintf("%s: catalog %q differs from %q only by case; skipped", packageInfoPath, parsed.Catalog, first))
+			continue
+		}
+		folded[strings.ToLower(parsed.Catalog)] = parsed.Catalog
 
 		itemName := strings.TrimSpace(parsed.ItemName)
 		if itemName == "" {
@@ -111,6 +131,12 @@ func CollectCatalogs(repoPath string) (CatalogSet, error) {
 		source[parsed.Catalog][itemName] = packageInfoPath
 	}
 
+	// Writing would replace catalogs/ with nothing; refuse rather than publish
+	// an empty repo.
+	if len(set.Catalogs) == 0 {
+		return CatalogSet{}, fmt.Errorf("no catalogs to write: no package-info file under %s names a valid catalog", packagesInfoPath)
+	}
+
 	return set, nil
 }
 
@@ -118,18 +144,26 @@ func CollectCatalogs(repoPath string) (CatalogSet, error) {
 func WriteCatalogs(repoPath string, set CatalogSet) error {
 	catalogsPath := filepath.Join(repoPath, "catalogs")
 
+	// Marshal everything before touching the existing catalogs.
+	rendered := make(map[string][]byte, len(set.Catalogs))
+	for catalogName, catalogItems := range set.Catalogs {
+		catalogYAML, err := yaml.Marshal(catalogItems)
+		if err != nil {
+			return fmt.Errorf("marshal catalog %s: %w", catalogName, err)
+		}
+		rendered[catalogName] = catalogYAML
+	}
+
+	// CEILING: not atomic. A write error after RemoveAll (disk full, file lock)
+	// leaves catalogs/ partial; rerunning repairs it. Upgrade path: write to a
+	// sibling temp dir and rename it into place.
 	if err := os.RemoveAll(catalogsPath); err != nil {
 		return fmt.Errorf("clean catalogs path %s: %w", catalogsPath, err)
 	}
 	if err := os.MkdirAll(catalogsPath, 0o755); err != nil {
 		return fmt.Errorf("create catalogs path %s: %w", catalogsPath, err)
 	}
-
-	for catalogName, catalogItems := range set.Catalogs {
-		catalogYAML, err := yaml.Marshal(catalogItems)
-		if err != nil {
-			return fmt.Errorf("marshal catalog %s: %w", catalogName, err)
-		}
+	for catalogName, catalogYAML := range rendered {
 		catalogPath := filepath.Join(catalogsPath, catalogName+".yaml")
 		if err := os.WriteFile(catalogPath, catalogYAML, 0o644); err != nil {
 			return fmt.Errorf("write catalog %s: %w", catalogPath, err)

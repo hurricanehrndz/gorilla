@@ -50,8 +50,10 @@ makecatalogs [--check] <repo_path>
 ```
 
 - Without `--check`, it replaces `<repo_path>/catalogs/`. A package-info file
-  with no `catalog`, or a duplicate item name within a catalog, prints a
-  warning and the build carries on (the later file wins).
+  with no `catalog`, a catalog name containing a path, or one that differs from
+  another only by case is skipped with a warning; a duplicate item name within
+  a catalog warns and the later file wins. If nothing is left to write, it
+  fails and leaves `catalogs/` alone. Dotfiles such as `._foo.yaml` are ignored.
 - `--check` validates the repo, prints what it would write, and writes nothing.
   It fails on those warnings too, so use it as a pull-request gate in a package
   repo.

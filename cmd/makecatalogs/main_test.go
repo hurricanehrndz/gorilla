@@ -111,6 +111,22 @@ func TestCheckWritesNothing(t *testing.T) {
 			"chrome-2.yaml": chromeInfo,
 		}, 1},
 		"invalid yaml": {map[string]string{"bad.yaml": ":\n- not valid yaml"}, 1},
+		// A catalog name becomes a file name; it must not escape catalogs/.
+		"path in catalog name": {map[string]string{
+			"chrome.yaml": chromeInfo,
+			"escape.yaml": "item_name: Escape\ncatalog: ../../escaped\n",
+		}, 1},
+		// Prod.yaml and prod.yaml are one file on macOS and Windows.
+		"catalog names differ by case": {map[string]string{
+			"chrome.yaml": chromeInfo,
+			"other.yaml":  "item_name: Other\ncatalog: Production\n",
+		}, 1},
+		"no catalogs at all": {map[string]string{"orphan.yaml": "item_name: Orphan\n"}, 1},
+		// macOS AppleDouble files are not package-info; skip them as Munki does.
+		"dotfile ignored": {map[string]string{
+			"chrome.yaml":   chromeInfo,
+			"._chrome.yaml": "\x00\x05\x16\x07",
+		}, 0},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -189,5 +205,25 @@ func TestDependencyLeaf(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A normal build must not wipe catalogs/ when there is nothing to write.
+func TestBuildWithNoCatalogsKeepsExisting(t *testing.T) {
+	repo := writeRepo(t, map[string]string{"orphan.yaml": "item_name: Orphan\n"})
+	existing := filepath.Join(repo, "catalogs", "production.yaml")
+	if err := os.MkdirAll(filepath.Dir(existing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existing, []byte("Old: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{repo}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1; stderr: %s", code, stderr.String())
+	}
+	if _, err := os.Stat(existing); err != nil {
+		t.Fatalf("existing catalog removed: %v", err)
 	}
 }

@@ -358,7 +358,7 @@ func getOptionalItems(cfg config.Configuration) ([]OptionalInstallItem, error) {
 
 		// Script-only checks are not run on a list call (R9/OQ-C4): report Unknown.
 		if catItem.Check.Script != "" &&
-			catItem.Check.File == nil &&
+			len(catItem.Check.File) == 0 &&
 			catItem.Check.Registry.Version == "" &&
 			catItem.Check.Appx.Name == "" {
 			items = append(items, item)
