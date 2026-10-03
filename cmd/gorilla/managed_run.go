@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
@@ -23,7 +24,7 @@ var (
 	newReportFunc  = report.New
 )
 
-func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*report.Report, error) {
+func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *report.Report, runErr error) {
 	// If not check-only, we need to run adminCheck().
 	if !cfg.CheckOnly {
 		admin, err := adminCheckFunc()
@@ -47,14 +48,12 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*repor
 
 	// Build the run-scoped state: report + status checker (K7)
 	run := newReportFunc()
-	run.Items["Manifest"] = cfg.Manifest
-	run.Items["Catalog"] = cfg.Catalogs
 
-	// Start creating GorillaReport
-	if !cfg.CheckOnly {
-		run.Start()
-		defer run.End()
-	}
+	// The inventory is finished even when the run fails part way, so osquery
+	// sees the failure; plan collects every item the run considers.
+	plan := newPlanBuilder()
+	start := time.Now()
+	defer func() { finishInventory(cfg, run, plan, start, runErr) }()
 
 	// Set the configuration that `download` will use
 	download.SetConfig(cfg)
@@ -81,6 +80,10 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*repor
 	// Process the manifests into install type groups
 	slog.Info("Processing manifest...")
 	installs, uninstalls, updates := process.Manifests(manifests, catalogs)
+	plan.catalogs = catalogs
+	plan.add(report.KindManagedInstall, false, installs...)
+	plan.add(report.KindManagedUninstall, false, uninstalls...)
+	plan.add(report.KindManagedUpdate, false, updates...)
 
 	// Reconcile the self-serve manifest: assert once-only defaults, authorize
 	// user selections against the admin optional_installs, and queue deselected
@@ -100,6 +103,8 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*repor
 	}
 	installs = append(installs, ssInstalls...)
 	uninstalls = append(uninstalls, ssUninstalls...)
+	plan.add(report.KindManagedUninstall, true, ssUninstalls...)
+	plan.addSelfServe(ssInstalls, selfServe)
 
 	// Build the run-scoped installer context (K7)
 	runner := &installer.Runner{
@@ -120,8 +125,12 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*repor
 	for _, name := range installs {
 		installsSet[name] = true
 	}
-	installs = append(installs, process.InstalledReferentUpdaters(catalogs, index, installsSet, runner.Checker, cfg.CachePath)...)
+	riders := process.InstalledReferentUpdaters(catalogs, index, installsSet, runner.Checker, cfg.CachePath)
+	installs = append(installs, riders...)
 	uninstalls = process.ExpandUninstallsWithUpdaters(uninstalls, index)
+	plan.add(report.KindUpdateFor, false, riders...)
+	plan.add(report.KindManagedUninstall, false, uninstalls...)
+	plan.addUpdaters(index)
 
 	// Prepare and install
 	slog.Info("Processing managed installs...")
@@ -144,12 +153,11 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (*repor
 	// Prepare and update
 	slog.Info("Processing managed updates...")
 	process.Updates(updates, catalogs, runner)
+	plan.checkUpdates(run, runner.Checker, cfg.CachePath)
 
-	// Save GorillaReport to disk
-	slog.Info("Saving GorillaReport.json...")
-	if cfg.CheckOnly {
-		run.Print()
-	}
+	// Offered optional installs the user has not selected still belong in the
+	// inventory; the deferred finishInventory saves or prints it.
+	plan.addAvailable(manifests, runner.Checker, cfg.CachePath)
 
 	// Run CleanUp to delete old cached items and empty directories
 	slog.Info("Cleaning up the cache...")

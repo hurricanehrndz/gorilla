@@ -448,8 +448,14 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 		return "", r.recordFailure(item, installerType, fmt.Errorf("unable to check status: %w", err))
 	}
 
-	// If no action is needed, return
+	// If no action is needed, record it so the inventory can report the item
+	// as already installed (or already absent) rather than unknown
 	if !actionNeeded {
+		r.Report.NoActionItems = append(r.Report.NoActionItems, report.NoActionItem{
+			Name:    item.Name,
+			Version: item.Version,
+			Action:  installerType,
+		})
 		return "Item not needed", nil
 	}
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -138,9 +140,29 @@ func TestManagedRunFinalizesReportOnManifestError(t *testing.T) {
 	if captured == nil {
 		t.Fatalf("expected managedRun to build a run report")
 	}
-	if _, ok := captured.Items["EndTime"]; !ok {
-		t.Fatalf("expected report EndTime to be set on manifest retrieval failure")
+	// A failed run must still leave an inventory naming the failure, or
+	// osquery keeps reporting the previous run as current.
+	inv := readInventory(t, cfg.AppDataPath)
+	if inv.EndTime == "" {
+		t.Errorf("expected inventory EndTime to be set on manifest retrieval failure")
 	}
+	if len(inv.Errors) != 1 || !strings.Contains(inv.Errors[0], "unable to retrieve manifest") {
+		t.Errorf("expected the manifest error in inventory Errors, got %#v", inv.Errors)
+	}
+}
+
+// readInventory decodes the inventory.json a real run wrote under appData.
+func readInventory(t *testing.T, appData string) report.Inventory {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(appData, inventoryFile))
+	if err != nil {
+		t.Fatalf("read inventory: %v", err)
+	}
+	var inv report.Inventory
+	if err := json.Unmarshal(data, &inv); err != nil {
+		t.Fatalf("decode inventory: %v", err)
+	}
+	return inv
 }
 
 // TestManagedRunStateIsRunScoped verifies that each managedRun builds a fresh

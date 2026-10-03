@@ -411,7 +411,8 @@ func TestInstallStatusFalse(t *testing.T) {
 	// Run the msi installer with this status bypass to make status return false
 	msiItem.DisplayName = statusNoActionNoError
 	// Run Install
-	actualOutput, err := newTestRunner().Install(msiItem, "install")
+	runner := newTestRunner()
+	actualOutput, err := runner.Install(msiItem, "install")
 	if err != nil {
 		t.Errorf("Install returned an error: %v", err)
 	}
@@ -419,6 +420,14 @@ func TestInstallStatusFalse(t *testing.T) {
 	expectedOutput := "Item not needed"
 	if have, want := actualOutput, expectedOutput; have != want {
 		t.Errorf("\n-----\nhave\n%s\nwant\n%s\n-----", have, want)
+	}
+	// The inventory relies on this record to report the item as installed
+	want := []report.NoActionItem{{Name: msiItem.Name, Version: msiItem.Version, Action: "install"}}
+	if !reflect.DeepEqual(runner.Report.NoActionItems, want) {
+		t.Errorf("NoActionItems = %#v, want %#v", runner.Report.NoActionItems, want)
+	}
+	if len(runner.Report.InstalledItems) != 0 {
+		t.Errorf("no-action item recorded as installed this run: %#v", runner.Report.InstalledItems)
 	}
 }
 

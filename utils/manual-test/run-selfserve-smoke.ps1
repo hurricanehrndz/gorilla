@@ -185,21 +185,22 @@ if ((Get-YamlList $SelfServe "default_installs") -notcontains "DemoDefault") {
 Write-Host "    default stayed removed and is still recorded (once-only)" -ForegroundColor Green
 
 $blockedTxt = Join-Path $MarkerDir "blocked.txt"
-$reportPath = "$env:ProgramData\gorilla\GorillaReport.json"
+$inventoryPath = "$env:ProgramData\gorilla\inventory.json"
 
-# Report-Defers returns $true when GorillaReport.json's DeferredItems names $Item.
-# The report is rewritten at the end of every run.
-function Report-Defers {
+# Inventory-Defers returns $true when inventory.json lists $Item in
+# ManagedInstalls with status "deferred". The inventory is rewritten at the end
+# of every run.
+function Inventory-Defers {
     param([string]$Item)
-    if (-not (Test-Path $reportPath)) { return $false }
+    if (-not (Test-Path $inventoryPath)) { return $false }
     try {
-        $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        $inventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json
     } catch {
         return $false
     }
-    $deferred = $report.DeferredItems
-    if (-not $deferred) { return $false }
-    return @($deferred | Where-Object { $_.Name -eq $Item }).Count -gt 0
+    $items = $inventory.ManagedInstalls
+    if (-not $items) { return $false }
+    return @($items | Where-Object { $_.name -eq $Item -and $_.status -eq "deferred" }).Count -gt 0
 }
 
 # --- Step 8: a running blocking app defers the install (never killed)
@@ -207,7 +208,7 @@ Write-Step "InstallItem:DemoBlocked with notepad running is deferred, not instal
 if (Test-Path $blockedTxt) { Remove-Item -LiteralPath $blockedTxt -Force }
 Start-Process notepad | Out-Null
 Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
-Wait-For { Report-Defers "DemoBlocked" } "GorillaReport.json DeferredItems to name DemoBlocked"
+Wait-For { Inventory-Defers "DemoBlocked" } "inventory.json to list DemoBlocked as deferred"
 if (Test-Path $blockedTxt) {
     Fail "blocked.txt was created while notepad was running (item not deferred)"
 }
@@ -415,7 +416,7 @@ Write-Step "Regression: DemoBlocked defer-then-retry round-trip"
 if (Test-Path $blockedTxt) { Remove-Item -LiteralPath $blockedTxt -Force }
 Start-Process notepad | Out-Null
 Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
-Wait-For { Report-Defers "DemoBlocked" } "GorillaReport.json DeferredItems to name DemoBlocked"
+Wait-For { Inventory-Defers "DemoBlocked" } "inventory.json to list DemoBlocked as deferred"
 if (Test-Path $blockedTxt) { Fail "blocked.txt created while notepad running" }
 Stop-Notepad
 Invoke-Gorilla "InstallItem:DemoBlocked" | Out-Null
