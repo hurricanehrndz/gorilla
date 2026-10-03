@@ -12,16 +12,15 @@ import {
   REQUESTED_STATE,
   activityLine,
   bannerMessage,
+  cardProgress,
   categories,
   deriveAction,
   fromCache,
   isItemActive,
-  isItemPhase,
   isTerminalState,
   localErrorState,
   localRecord,
   monogram,
-  progressLabel,
   releaseOperation,
   restartBadge,
   shouldAcceptRecord,
@@ -75,10 +74,9 @@ const resultStatus = need<HTMLParagraphElement>("#result-status");
 const grid = need<HTMLDivElement>("#item-grid");
 const activityList = need<HTMLOListElement>("#activity-list");
 const activityEmpty = need<HTMLParagraphElement>("#activity-empty");
-const detail = need<HTMLDialogElement>("#detail");
-const detailClose = need<HTMLButtonElement>("#detail-close");
-const viewOperations = need<HTMLElement>("#view-operations");
-const operationList = need<HTMLDivElement>("#operation-list");
+const viewDetail = need<HTMLElement>("#view-detail");
+const detailBack = need<HTMLButtonElement>("#detail-back");
+const detailAction = need<HTMLButtonElement>("#detail-action");
 
 /** OperationView is one locally initiated operation and its display timeline. */
 type OperationView = {
@@ -92,6 +90,8 @@ type OperationView = {
 let view: ListView = { items: [], source: "loading", savedAtUtc: "" };
 let lastError = "";
 let dialogOpener: HTMLElement | null = null;
+// The item shown on the detail page, or null when the list or Activity is up.
+let detailItemName: string | null = null;
 let activity: ActivityRecord[] = loadActivity(storage);
 let active: ActiveOperations = new Map();
 // Operations started in this session, oldest first; Activity keeps the history.
@@ -141,9 +141,17 @@ function card(item: OptionalInstallItem): HTMLElement {
   meta.className = "card-meta";
   meta.textContent = [item.version, item.developer, item.category].filter(Boolean).join(" · ");
 
+  // The status line is the card's one live region: progress and outcome
+  // updates are written into it in place (see updateCardProgress), so a screen
+  // reader hears "Installing… 50%" without the whole grid being re-read.
   const status = document.createElement("p");
   status.className = "card-status";
-  status.textContent = statusLabel(item);
+  status.setAttribute("aria-live", "polite");
+
+  const bar = document.createElement("progress");
+  bar.className = "card-progress";
+  bar.max = 100;
+  bar.hidden = true;
 
   const actions = document.createElement("p");
   actions.className = "card-actions";
@@ -165,8 +173,67 @@ function card(item: OptionalInstallItem): HTMLElement {
   details.addEventListener("click", () => openDetail(item, details));
 
   actions.append(action, details);
-  article.append(glyph, name, meta, status, actions);
+  article.append(glyph, name, meta, status, bar, actions);
+  article.dataset.item = item.itemName;
+  updateCardProgress(article, item);
   return article;
+}
+
+/** latestOperation is the most recently started operation on an item, if any. */
+function latestOperation(itemName: string): OperationView | undefined {
+  let found: OperationView | undefined;
+  for (const operation of operations.values()) {
+    if (operation.item.itemName === itemName) {
+      found = operation;
+    }
+  }
+  return found;
+}
+
+/**
+ * updateCardProgress writes the item's operation state into its card: the
+ * catalog status when nothing is going on, otherwise one line plus a bar while
+ * the operation runs and the outcome afterwards. The full timeline is only in
+ * Activity, the way Managed Software Center keeps its log off the main view.
+ */
+function updateCardProgress(article: HTMLElement, item: OptionalInstallItem): void {
+  const status = article.querySelector<HTMLParagraphElement>(".card-status");
+  const bar = article.querySelector<HTMLProgressElement>(".card-progress");
+  if (!status || !bar) {
+    throw new Error("Gorilla UI card is missing its status line");
+  }
+  const operation = latestOperation(item.itemName);
+  const progress = operation ? cardProgress(item, operation.records, operation.outcome) : null;
+  if (!progress) {
+    status.textContent = statusLabel(item);
+    delete status.dataset.outcome;
+    bar.hidden = true;
+    return;
+  }
+  const percent = typeof progress.percent === "number" ? ` ${progress.percent}%` : "";
+  status.textContent = `${progress.label}${percent}`;
+  status.dataset.outcome = progress.outcome;
+  bar.hidden = progress.outcome !== "active";
+  // No percentage means the engine has not measured this phase: an
+  // indeterminate bar, never a fake 0%.
+  if (typeof progress.percent === "number") {
+    bar.value = progress.percent;
+  } else {
+    bar.removeAttribute("value");
+  }
+  bar.setAttribute("aria-label", `${progress.label} ${item.displayName}`);
+}
+
+/** renderCardFor refreshes one item's card in place, keeping the rest of the grid untouched. */
+function renderCardFor(itemName: string): void {
+  const article = grid.querySelector<HTMLElement>(`[data-item="${CSS.escape(itemName)}"]`);
+  const item = view.items.find((candidate) => candidate.itemName === itemName);
+  if (article && item) {
+    updateCardProgress(article, item);
+  }
+  if (item && detailItemName === itemName) {
+    updateCardProgress(viewDetail, item);
+  }
 }
 
 function renderGrid(): void {
@@ -193,86 +260,11 @@ function renderActivity(): void {
   );
 }
 
-function operationCard(operation: OperationView): HTMLElement {
-  const article = document.createElement("article");
-  article.className = "operation";
-  article.dataset.outcome = operation.outcome;
-
-  const heading = document.createElement("h3");
-  heading.textContent = `${operation.action.label} ${operation.item.displayName}`;
-
-  const latest = operation.records[operation.records.length - 1];
-  const current = document.createElement("p");
-  current.className = "operation-current";
-  // Only the current line is a live region: the container is replaced wholesale
-  // on every event and it also holds the Retry button, so announcing at the
-  // container level would re-read every heading and the whole timeline.
-  // ponytail: the paragraph is recreated by each render, so announcement relies
-  // on the region being re-inserted with its text; hold cards across renders and
-  // update this node in place if a screen reader misses updates.
-  current.setAttribute("aria-live", "polite");
-  current.textContent = activityLine(latest);
-
-  article.append(heading, current);
-
-  if (operation.outcome === "active") {
-    // The engine publishes no aggregate measurement, so the overall indicator
-    // stays indeterminate: a <progress> with no value attribute.
-    const overall = document.createElement("progress");
-    overall.setAttribute("aria-label", `${operation.action.label} ${operation.item.displayName} in progress`);
-    article.append(overall);
-
-    // A percentage is only meaningful for the item the event names, and it may
-    // reset when a dependency or updater takes over.
-    if (isItemPhase(latest.state) && typeof latest.progressPercent === "number") {
-      const label = document.createElement("p");
-      label.className = "operation-item";
-      label.textContent = `${progressLabel(latest)} — ${latest.progressPercent}%`;
-      const bar = document.createElement("progress");
-      bar.max = 100;
-      bar.value = latest.progressPercent;
-      bar.setAttribute("aria-label", progressLabel(latest));
-      article.append(label, bar);
-    }
-  }
-
-  const timeline = document.createElement("ol");
-  timeline.className = "timeline";
-  timeline.replaceChildren(
-    ...operation.records.map((record) => {
-      const entry = document.createElement("li");
-      entry.textContent = activityLine(record);
-      return entry;
-    }),
-  );
-  article.append(timeline);
-
-  if (operation.outcome === "error") {
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.textContent = "Retry";
-    retry.setAttribute("aria-label", `Retry ${operation.action.label} ${operation.item.displayName}`);
-    retry.addEventListener("click", () => {
-      operations.delete(operation.operationId);
-      renderOperations();
-      void runAction(operation.item, operation.action);
-    });
-    article.append(retry);
-  }
-
-  return article;
-}
-
-function renderOperations(): void {
-  viewOperations.hidden = operations.size === 0;
-  operationList.replaceChildren(...[...operations.values()].map(operationCard));
-}
-
 function render(): void {
   renderBanner();
   renderCategories();
   renderGrid();
-  renderOperations();
+  renderDetail();
 }
 
 function pushRecord(operation: OperationView, record: ActivityRecord): void {
@@ -314,7 +306,7 @@ async function runAction(item: OptionalInstallItem, action: ItemAction): Promise
       failed,
       localRecord(failed.operationId, item, localErrorState(reason(error)), reason(error), started),
     );
-    renderOperations();
+    renderCardFor(item.itemName);
     return;
   }
 
@@ -371,23 +363,30 @@ api.onOperationStatus((status) => {
     void refresh();
     return;
   }
-  // Each operation's current line is its own aria-live region, so re-rendering
-  // announces the new state, message and item identity without re-reading the
-  // whole list.
-  renderOperations();
+  // The item's card status line is its own aria-live region, so updating it in
+  // place announces the new state without re-reading the whole grid.
+  renderCardFor(operation.item.itemName);
 });
 
 function setText(selector: string, value: string, fallback = "Not provided"): void {
   need<HTMLElement>(selector).textContent = value.trim() || fallback;
 }
 
-function openDetail(item: OptionalInstallItem, opener: HTMLElement): void {
-  dialogOpener = opener;
+/**
+ * renderDetail fills the drill-down page for the item being viewed. It reads
+ * the item from the current list, so a refresh after a terminal record updates
+ * the status and the action button in place.
+ */
+function renderDetail(): void {
+  const item = detailItemName ? view.items.find((candidate) => candidate.itemName === detailItemName) : undefined;
+  if (!item) {
+    return;
+  }
   need<HTMLElement>("#detail-glyph").textContent = monogram(item);
   setText("#detail-name", item.displayName, item.itemName);
-  setText("#detail-status", statusLabel(item));
+  setText("#detail-developer", item.developer ?? "", "");
   setText("#detail-version", item.version);
-  setText("#detail-developer", item.developer ?? "");
+  setText("#detail-developer-value", item.developer ?? "");
   setText("#detail-category", item.category ?? "");
   setText("#detail-description", item.description ?? "", "No description is published for this item.");
 
@@ -396,7 +395,36 @@ function openDetail(item: OptionalInstallItem, opener: HTMLElement): void {
   restart.textContent = badge;
   restart.hidden = badge === "";
 
-  detail.showModal();
+  const derived = deriveAction(item);
+  detailAction.textContent = derived.label;
+  detailAction.disabled = isItemActive(active, item.itemName);
+  detailAction.setAttribute("aria-label", `${derived.label} ${item.displayName}`);
+  detailAction.onclick = () => void runAction(item, derived);
+
+  updateCardProgress(viewDetail, item);
+}
+
+function openDetail(item: OptionalInstallItem, opener: HTMLElement): void {
+  dialogOpener = opener;
+  detailItemName = item.itemName;
+  renderDetail();
+  viewHome.hidden = true;
+  viewActivity.hidden = true;
+  viewDetail.hidden = false;
+  navHome.setAttribute("aria-current", "false");
+  navActivity.setAttribute("aria-current", "false");
+  detailBack.focus();
+}
+
+/** closeDetail returns to the list and hands focus back to the card it came from. */
+function closeDetail(): void {
+  if (viewDetail.hidden) {
+    return;
+  }
+  detailItemName = null;
+  showView(false);
+  dialogOpener?.focus();
+  dialogOpener = null;
 }
 
 async function refresh(): Promise<void> {
@@ -414,6 +442,8 @@ async function refresh(): Promise<void> {
 }
 
 function showView(activity: boolean): void {
+  viewDetail.hidden = true;
+  detailItemName = null;
   viewHome.hidden = activity;
   viewActivity.hidden = !activity;
   navHome.setAttribute("aria-current", activity ? "false" : "page");
@@ -433,10 +463,12 @@ retryButton.addEventListener("click", () => {
 });
 navHome.addEventListener("click", () => showView(false));
 navActivity.addEventListener("click", () => showView(true));
-detailClose.addEventListener("click", () => detail.close());
-detail.addEventListener("close", () => {
-  dialogOpener?.focus();
-  dialogOpener = null;
+detailBack.addEventListener("click", closeDetail);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !viewDetail.hidden) {
+    event.preventDefault();
+    closeDetail();
+  }
 });
 
 // Render whatever is cached before any network work, then converge on the
