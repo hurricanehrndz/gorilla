@@ -45,6 +45,15 @@ type Checker struct {
 	registryItems map[string]RegistryApplication
 }
 
+// Invalidate drops the cached registry snapshot so the next registry check
+// re-reads the registry. The installer calls it after every install or
+// uninstall command, because those change the very keys the cache holds:
+// without it, the prune of a self-serve uninstall that just succeeded still
+// saw the item as installed and kept it in managed_uninstalls.
+func (c *Checker) Invalidate() {
+	c.registryItems = nil
+}
+
 // checkRegistry iterates through the local registry and compiles all installed software
 func (c *Checker) checkRegistry(catalogItem catalog.Item, installType string) (actionNeeded bool, checkErr error) {
 	// Iterate through the reg keys to compare with the catalog
