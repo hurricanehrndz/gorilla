@@ -16,6 +16,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
@@ -344,7 +345,14 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 		return
 	}
 
-	resp, err := sr.submit(ctx, cmd)
+	var resp CommandResponse
+	if cmd.Action == actionGetBranding {
+		// Branding is a read-only lookup the UI makes before opening its window,
+		// so it skips the command queue rather than wait behind a managed run.
+		resp, err = sr.executeCommandSafe(cmd)
+	} else {
+		resp, err = sr.submit(ctx, cmd)
+	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			result = "canceled"
@@ -481,7 +489,7 @@ func commandFromRequestEnvelope(req serviceEnvelope[json.RawMessage]) (Command, 
 
 	cmd := Command{Action: canonicalAction}
 	switch canonicalAction {
-	case actionListOptionalInstalls:
+	case actionListOptionalInstalls, actionGetBranding:
 		return cmd, nil
 	case actionInstallItem:
 		payload, err := decodeEnvelopePayload[installItemRequest](req.Payload)
@@ -532,6 +540,19 @@ func (sr *serviceRunner) writeSuccessEnvelope(file *os.File, req serviceEnvelope
 			return err
 		}
 		return nil
+	case actionGetBranding:
+		var payload branding.Branding
+		if resp.Branding != nil {
+			payload = *resp.Branding
+		}
+		return json.NewEncoder(file).Encode(serviceEnvelope[branding.Branding]{
+			Version:      pipeProtocolVersion,
+			MessageType:  messageTypeResponse,
+			Operation:    actionGetBranding,
+			RequestID:    req.RequestID,
+			TimestampUTC: nowRFC3339UTC(),
+			Payload:      payload,
+		})
 	case actionInstallItem, actionRemoveItem:
 		if err := json.NewEncoder(file).Encode(serviceEnvelope[AcceptedOperation]{
 			Version:      pipeProtocolVersion,
