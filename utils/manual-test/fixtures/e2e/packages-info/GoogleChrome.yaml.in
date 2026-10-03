@@ -1,0 +1,24 @@
+# Template: build-e2e-repo.sh fills @VERSION@ and @HASH@ from the MSI it
+# downloaded, then makecatalogs compiles the result into catalogs/e2e_catalog.yaml.
+item_name: GoogleChrome
+display_name: Google Chrome
+description: A fast, secure, and free web browser from Google
+category: Browsers
+developer: Google
+restart_action: None
+blocking_apps:
+  - chrome
+check:
+  registry:
+    name: Google Chrome
+    version: "@VERSION@"
+installer:
+  type: msi
+  location: packages/google-chrome/googlechromestandaloneenterprise64.msi
+  hash: "@HASH@"
+uninstaller:
+  type: msi
+  location: packages/google-chrome/googlechromestandaloneenterprise64.msi
+  hash: "@HASH@"
+version: "@VERSION@"
+catalog: e2e_catalog

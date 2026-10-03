@@ -112,3 +112,34 @@ Recommended flow first:
 Optional args:
 - `.\build\manual-test\vm\run-release-integration.bat C:\path\to\gorilla.exe`
 - `.\build\manual-test\vm\run-release-integration.bat C:\path\to\gorilla.exe C:\temp\gorilla-release-integration`
+
+## Chrome end-to-end loop (local file:// repo)
+
+A real-package loop that installs and removes Google Chrome through the
+service, with the repository on the VM's own disk instead of an HTTP server.
+
+```bash
+utils/manual-test/e2e-chrome.sh -v win11-test      # needs devenv shell + windows-test-rig
+```
+
+It runs `build-e2e-repo.sh` (downloads the Chrome enterprise MSI once into
+`build/cache/`, renders `fixtures/e2e/packages-info/GoogleChrome.yaml.in` with
+the MSI's version and SHA-256, compiles the catalog with `makecatalogs`, and
+copies the selfserve fixtures and both binaries into `build/e2e-repo/`), ships
+the tar to `C:\gorilla-repo`, bootstraps the service with
+`-BaseUrl file://C:/gorilla-repo/ -Manifest e2e_manifest`, then runs two
+gates and a visual pass:
+
+- `run-selfserve-smoke.ps1` (prints `SELF-SERVE SMOKE PASSED`), reached here
+  through `included_manifests`.
+- `run-chrome-e2e.ps1` (prints `CHROME E2E PASSED`): metadata and NotInstalled
+  status, streamed install to `Succeeded`, registry entry and `chrome.exe`,
+  `inventory.json` contents and ACL, self-serve manifest, deferred removal while
+  `chrome.exe` runs, then a real uninstall with every trace gone.
+- `gorilla-ui.exe` on the desktop, driven with the keyboard, with screenshots
+  under `build/e2e-shots/`.
+
+Repository URL spellings (verified on Windows): `file://C:/gorilla-repo/`
+works; `file:///C:/gorilla-repo/` returns 404 from the file transport, and a
+bare `C:/gorilla-repo/` or `C:\gorilla-repo\` fails with "unsupported protocol
+scheme".
