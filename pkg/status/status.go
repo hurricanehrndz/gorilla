@@ -311,7 +311,7 @@ func (c *Checker) CheckStatus(catalogItem catalog.Item, installType, cachePath s
 		slog.Info("Checking status via script", "item", catalogItem.DisplayName)
 		return checkScript(catalogItem, cachePath, installType)
 
-	} else if catalogItem.Check.File != nil {
+	} else if len(catalogItem.Check.File) > 0 {
 		slog.Info("Checking status via file", "item", catalogItem.DisplayName)
 		return checkPath(catalogItem, installType)
 
