@@ -5,7 +5,8 @@
 #
 # Builds the local repo (build-e2e-repo.sh), ships it to the VM as
 # C:\gorilla-repo, bootstraps the service against url: file://C:/gorilla-repo/,
-# then runs the two machine-assertable gates (run-selfserve-smoke.ps1 and
+# brands the UI through a config.yaml `branding:` block, then runs the two
+# machine-assertable gates (run-selfserve-smoke.ps1 and
 # run-chrome-e2e.ps1) and finally launches gorilla-ui.exe on the desktop and
 # captures Home, search, installing (bottom strip), installed, details and
 # Activity screenshots into OUT_DIR (default build/e2e-shots). Logs go next
@@ -68,6 +69,46 @@ PS
 step "Bootstrapping the service against file://C:/gorilla-repo/"
 "$rig" "${vm[@]}" ps "$mt/bootstrap-vm.ps1" -BaseUrl file://C:/gorilla-repo/ -Manifest e2e_manifest -Catalogs e2e_catalog -InstallService -StartService -NoPause
 
+step "Branding the UI through config.yaml"
+cat >"$tmp/branding.ps1" <<'PS'
+$ErrorActionPreference = "Stop"
+$dir = "$env:ProgramData\gorilla\branding"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Copy-Item C:\gorilla-repo\branding\logo.png "$dir\logo.png" -Force
+# A prior --no-reset loop must not leave a policy value that outranks the config.
+Remove-Item HKLM:\SOFTWARE\Policies\Gorilla\Branding -Recurse -Force -ErrorAction SilentlyContinue
+Add-Content -Path "$env:ProgramData\gorilla\config.yaml" -Encoding ASCII -Value @"
+
+branding:
+  title: Acme Software Center
+  tagline: Need help? Call the service desk at ext. 1234.
+  logo: $dir\logo.png
+  help_url: https://example.invalid/help
+  help_label: Get help
+  accent: "#0b6e4f"
+"@
+# The service does not answer a stop while its startup run holds it (the
+# bootstrap works around the same thing), so stop it, then end the process.
+sc.exe stop gorilla | Out-Null
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Service gorilla).Status -ne "Stopped" -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+if ((Get-Service gorilla).Status -ne "Stopped") {
+    $svcPid = (Get-CimInstance Win32_Service -Filter "Name='gorilla'").ProcessId
+    if ($svcPid -gt 0) { Stop-Process -Id $svcPid -Force }
+    (Get-Service gorilla).WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+}
+Start-Service gorilla
+$deadline = (Get-Date).AddSeconds(60)
+do {
+    $out = & "$env:ProgramData\gorilla\bin\gorilla.exe" -S GetBranding 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) { Write-Host "branding: $($out.Trim())"; exit 0 }
+    Start-Sleep -Seconds 2
+} while ((Get-Date) -lt $deadline)
+Write-Host "GetBranding did not answer after the restart: $out"
+exit 1
+PS
+"$rig" "${vm[@]}" ps "$tmp/branding.ps1"
+
 status=0
 step "Gate 1: self-serve smoke"
 "$rig" "${vm[@]}" ps "$mt/run-selfserve-smoke.ps1" | tee "$out/smoke.log" | grep -E '^\[|PASSED|FAILED' || status=1
@@ -82,12 +123,13 @@ step "Visual: Gorilla UI on the desktop"
 "$rig" "${vm[@]}" shot --settle 10 "$out/01-home.png"
 # Keys go to the focused window. `rig focus` also restores the window size, so
 # maximize right after it and before any Tab sequence; it keeps the page's
-# focus. From the top of the page the tab order is Software, My items,
-# Activity, search, category, then each card's action and Details buttons.
+# focus. From the top of the page the tab order is the banner's Get help,
+# Software, My items, Activity, search, category, then each card's action and
+# Details buttons.
 ui_focus() { "$rig" "${vm[@]}" focus gorilla-ui; "$rig" "${vm[@]}" key KEY_LEFTMETA KEY_UP; sleep 2; }
 tab() { local n=${1:-1}; while ((n-- > 0)); do "$rig" "${vm[@]}" key KEY_TAB; done; }
 ui_focus
-tab 4; "$rig" "${vm[@]}" type "Chrome"
+tab 5; "$rig" "${vm[@]}" type "Chrome"
 "$rig" "${vm[@]}" shot --settle 3 "$out/02-search-chrome.png"
 tab 2; "$rig" "${vm[@]}" key KEY_ENTER
 "$rig" "${vm[@]}" shot --settle 4 "$out/03-installing.png"

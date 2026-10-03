@@ -6,6 +6,9 @@ through the service pipe and assert every observable side effect.
 .DESCRIPTION
 Drives the running Gorilla service (via `gorilla.exe -S ...`) against the e2e
 fixture set built by build-e2e-repo.sh and asserts, in order:
+  - GetBranding returns the config.yaml branding block e2e-chrome.sh appended, a
+    policy Title under HKLM\SOFTWARE\Policies\Gorilla\Branding wins over it, and
+    removing the policy brings the config title back
   - the item is offered with its catalog metadata and an honest NotInstalled status
   - InstallItem streams Downloading/Installing/ItemCompleted and ends Succeeded
   - the MSI really installed: Uninstall registry entry at the catalog version, chrome.exe on disk
@@ -32,7 +35,8 @@ param(
     [string]$ItemName  = "GoogleChrome",
     [string]$RegistryName = "Google Chrome",
     [string]$ChromeExe = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-    [int]$TimeoutSec   = 600
+    [int]$TimeoutSec   = 600,
+    [string]$BrandingTitle = "Acme Software Center"
 )
 
 $ErrorActionPreference = "Stop"
@@ -200,6 +204,37 @@ function Stop-Chrome {
         -not (Get-Process -Name chrome -ErrorAction SilentlyContinue)
     } "chrome to stop"
 }
+
+function Get-Branding {
+    $res = Invoke-Gorilla "GetBranding"
+    foreach ($l in $res.Out) {
+        $t = "$l".Trim()
+        if ($t.StartsWith('{')) { return ($t | ConvertFrom-Json) }
+    }
+    Fail "GetBranding printed no JSON: $($res.Out -join ' | ')"
+}
+
+# --- Branding: config block, then a policy value that wins over it
+Write-Step "GetBranding returns the config branding; a policy Title wins, and removing it restores the config"
+$PolicyKey = 'HKLM:\SOFTWARE\Policies\Gorilla\Branding'
+$b = Get-Branding
+if ($b.title -ne $BrandingTitle)   { Fail "branding title '$($b.title)', expected '$BrandingTitle' from config.yaml" }
+if ($b.logoMime -ne "image/png")   { Fail "branding logoMime '$($b.logoMime)', expected image/png" }
+if ([int]$b.logoBytes -le 0)       { Fail "branding logo is empty" }
+if ($b.accent -ne "#0b6e4f")       { Fail "branding accent '$($b.accent)'" }
+if ($b.helpUrl -notmatch '^https://') { Fail "branding helpUrl '$($b.helpUrl)'" }
+try {
+    & reg.exe add 'HKLM\SOFTWARE\Policies\Gorilla\Branding' /v Title /t REG_SZ /d 'Policy Title' /f | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "reg add exited $LASTEXITCODE" }
+    $p = Get-Branding
+    if ($p.title -ne "Policy Title") { Fail "policy Title did not win: '$($p.title)'" }
+    if ([int]$p.logoBytes -ne [int]$b.logoBytes) { Fail "policy Title changed an unrelated field (logo)" }
+} finally {
+    Remove-Item -Path $PolicyKey -Recurse -Force -ErrorAction SilentlyContinue
+}
+$b = Get-Branding
+if ($b.title -ne $BrandingTitle) { Fail "config title not restored after removing the policy: '$($b.title)'" }
+Pass "config title '$BrandingTitle' ($($b.logoMime), $($b.logoBytes) bytes); policy 'Policy Title' won; config restored"
 
 # --- Step 1: precondition and honest NotInstalled status with metadata
 Write-Step "ListOptionalInstalls offers $ItemName as NotInstalled with catalog metadata"
