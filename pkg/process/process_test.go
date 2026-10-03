@@ -245,7 +245,7 @@ var (
 )
 
 func init() {
-	// Mirror catalog.Get: stamp each item with its map key as Name so report
+	// Mirror manifest.GetCatalogs: stamp each item with its map key as Name so report
 	// entries key on the catalog name like they do at runtime (R13).
 	for _, items := range testCatalogs {
 		for name, item := range items {

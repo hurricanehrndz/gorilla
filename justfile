@@ -41,6 +41,19 @@ build arch="amd64": ui-assets
         go build -tags production -ldflags "-H windowsgui" \
         -o build/gorilla-ui.exe ./gorilla-ui
 
+# Standalone makecatalogs for every admin platform (pure Go, no cgo)
+# -> build/makecatalogs-<os>-<arch>[.exe]
+makecatalogs:
+    mkdir -p build
+    for os in linux darwin windows; do \
+      for arch in amd64 arm64; do \
+        ext=""; if [ "$os" = windows ]; then ext=".exe"; fi; \
+        GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
+          go build -ldflags "-X github.com/1dustindavis/gorilla/pkg/version.version={{version}}" \
+          -o build/makecatalogs-$os-$arch$ext ./cmd/makecatalogs || exit 1; \
+      done; \
+    done
+
 # Guard that the tree keeps cross-compiling on Linux (CI-without-Windows goal).
 check-xplat:
     GOOS=linux GOARCH=amd64 go build -o /dev/null ./...

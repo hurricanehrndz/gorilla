@@ -702,6 +702,23 @@ func TestCheckStatusRegistry(t *testing.T) {
 	}
 }
 
+// TestCheckStatusRegistryWithEmptyFileList guards catalogs built by the old
+// `gorilla -build`, which wrote `file: []` on every item. An empty list is no
+// file check, so the registry check must still run.
+func TestCheckStatusRegistryWithEmptyFileList(t *testing.T) {
+	execCommand = fakeExecCommand
+	defer func() { execCommand = origExec }()
+	console := captureConsole(t)
+
+	item := registryCheckItem
+	item.Check.File = []catalog.FileCheck{}
+	_, _ = (&Checker{}).CheckStatus(item, "install", "testdata/")
+
+	if want := `msg="Checking status via registry" item=registryCheckItem`; !strings.Contains(console.String(), want) {
+		t.Errorf("console output missing %q:\n%s", want, console.String())
+	}
+}
+
 // TestCheckStatusAppx validates that an appx check is ran
 func TestCheckStatusAppx(t *testing.T) {
 	execCommand = fakeExecCommandAppx

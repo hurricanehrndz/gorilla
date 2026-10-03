@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/1dustindavis/gorilla/pkg/admin"
-	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
 	"github.com/1dustindavis/gorilla/pkg/gorillalog"
@@ -21,19 +19,14 @@ import (
 )
 
 var (
-	adminCheckFunc    = adminCheck
-	mkdirAllFunc      = os.MkdirAll
-	buildCatalogsFunc = admin.BuildCatalogs
-	importItemFunc    = admin.ImportItem
-	newReportFunc     = report.New
+	adminCheckFunc = adminCheck
+	mkdirAllFunc   = os.MkdirAll
+	newReportFunc  = report.New
 )
 
 func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *report.Report, runErr error) {
-	// Build/import modes operate on repo metadata and do not require admin.
-	buildMode := cfg.BuildArg || cfg.ImportArg != ""
-
-	// If not check-only and not build/import, we need to run adminCheck().
-	if !cfg.CheckOnly && !buildMode {
+	// If not check-only, we need to run adminCheck().
+	if !cfg.CheckOnly {
 		admin, err := adminCheckFunc()
 		if err != nil {
 			return nil, fmt.Errorf("unable to check if running as admin: %w", err)
@@ -51,22 +44,6 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *rep
 	// Create a new logger object
 	if err := gorillalog.NewLog(cfg); err != nil {
 		return nil, fmt.Errorf("unable to initialize logger: %w", err)
-	}
-
-	if cfg.BuildArg {
-		slog.Info("Building catalogs...")
-		if err := buildCatalogsFunc(cfg.RepoPath); err != nil {
-			return nil, fmt.Errorf("error building catalogs: %w", err)
-		}
-		return nil, nil
-	}
-
-	if cfg.ImportArg != "" {
-		slog.Info("Importing item...")
-		if err := importItemFunc(cfg.RepoPath, cfg.ImportArg); err != nil {
-			return nil, fmt.Errorf("error importing item: %w", err)
-		}
-		return nil, nil
 	}
 
 	// Build the run-scoped state: report + status checker (K7)
@@ -95,7 +72,7 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *rep
 
 	// Get the catalogs
 	slog.Info("Retrieving catalog", "catalogs", cfg.Catalogs)
-	catalogs, err := catalog.Get(cfg)
+	catalogs, err := manifest.GetCatalogs(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("unable to retrieve catalog: %w", err)
 	}
