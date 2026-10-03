@@ -150,7 +150,7 @@ function sequence(item: OptionalInstallItem, removing: boolean): MockEvent[] {
     return [
       queued,
       [400, { state: "Downloading", progressPercent: 60 }],
-      [900, { state: "Deferred", message: "blocking application is running" }],
+      [900, { state: "Deferred", message: "blocking application(s) running: demoblocked" }],
     ];
   }
 

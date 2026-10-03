@@ -30,10 +30,21 @@ export type ActivityRecord = {
   message: string;
   timestampUtc: string;
   progressPercent?: number;
+  /** The wire errorMessage on its own, so an outcome line can quote just it. */
+  detail?: string;
 };
 
 /** OperationOutcome is where a locally initiated operation has got to. */
 export type OperationOutcome = "active" | "terminal" | "error";
+
+/** OperationView is one locally initiated operation and its display timeline. */
+export type OperationView = {
+  operationId: string;
+  item: OptionalInstallItem;
+  action: ItemAction;
+  records: ActivityRecord[];
+  outcome: OperationOutcome;
+};
 
 /** ActiveOperations maps an accepted, non-terminal operationId to its item. */
 export type ActiveOperations = ReadonlyMap<string, string>;

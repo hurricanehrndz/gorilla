@@ -33,9 +33,10 @@ error/cancellation fields. The frontend subscribes once and routes records by
 
 - `progressPercent` is **per item**. It may reset when the event's item changes
   (for example when a dependency or updater runs). It is never aggregate
-  operation progress. The item's card shows the current phase and a bar; a phase
-  without a percentage gets an indeterminate bar, and there is no overall
-  operation indicator. The record timeline is only in Activity.
+  operation progress. An item's card shows its current phase beside a spinner;
+  the one bar is in the bottom strip, for the operation being worked on, and is
+  indeterminate for a phase without a percentage. The record timeline is only in
+  Activity.
 - `ItemCompleted` and `ItemFailed` are **non-terminal**. A dependency failure does
   not end the operation.
 - Only `Succeeded`, `Failed`, `Deferred`, and `Canceled` end an operation.
@@ -52,13 +53,20 @@ error/cancellation fields. The frontend subscribes once and routes records by
 `localStorage` keys `gorilla.optional-items.v1` and `gorilla.activity.v1` hold the
 last successful list (with timestamp) and locally initiated activity. A valid cache
 renders immediately, then a live refresh replaces it; a failed refresh keeps the
-cached data behind a non-blocking stale/service-unavailable banner with Retry.
+cached data behind a non-blocking stale/service-unavailable notice with Retry in
+the app bar.
 Corrupt or unavailable storage is ignored and never blocks a live request.
 
 Activity is **local display history for this UI profile only** — up to the 100 most
 recent records. It is not inventory, an audit log, or cross-user history, and
 restarting the app does not resume an old stream; the next authoritative list
 refresh provides convergence.
+
+## Keyboard
+
+Everything is reachable with Tab and real buttons. `Ctrl+L` shows or hides
+Activity (like Managed Software Center's ⌘L), and `Escape` leaves the detail page
+or Activity. Both are frontend-only; nothing is added to the bound surface.
 
 ## Development mock
 

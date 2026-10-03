@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ALL_CATEGORIES,
+  REQUESTED_STATE,
   ERROR_STATE,
   STREAM_ENDED_STATE,
   activityLine,
@@ -13,13 +14,16 @@ import {
   compareItems,
   deriveAction,
   fromCache,
+  glyphTone,
   isItemActive,
   isItemPhase,
   isTerminalState,
   localErrorState,
   localRecord,
   monogram,
+  myItems,
   progressLabel,
+  progressText,
   releaseOperation,
   restartBadge,
   shouldAcceptRecord,
@@ -27,6 +31,8 @@ import {
   stateLabel,
   statusLabel,
   statusRecord,
+  stripLine,
+  stripView,
   trackOperation,
   visibleItems,
   withFailure,
@@ -142,7 +148,9 @@ test("restart badge is only shown when restartAction is meaningful", () => {
 });
 
 test("status label stays readable for blank and camel-case values", () => {
-  assert.equal(statusLabel(item({ status: "WillBeInstalled" })), "Will Be Installed");
+  assert.equal(statusLabel(item({ status: "WillBeInstalled" })), "Will be installed");
+  assert.equal(statusLabel(item({ status: "NotInstalled" })), "Not installed");
+  assert.equal(statusLabel(item({ status: "Installed" })), "Installed");
   assert.equal(statusLabel(item({ status: "" })), "Unknown");
 });
 
@@ -296,6 +304,7 @@ test("status records keep the event's own item identity and percentage", () => {
   });
   assert.equal(blankName.displayName, "DemoOptional");
   assert.equal(blankName.message, "install failed (installer exited with code 1)");
+  assert.equal(blankName.detail, "installer exited with code 1", "the bare error is kept for outcome lines");
   assert.equal(isTerminalState(blankName.state), false, "ItemFailed stays non-terminal");
 
   const duplicated = statusRecord({
@@ -338,7 +347,7 @@ test("state labels stay readable for wire and local states", () => {
   assert.equal(stateLabel(STREAM_ENDED_STATE), "Stream ended before a result");
   assert.equal(stateLabel(ERROR_STATE), "Request failed");
   assert.equal(stateLabel(""), "Unknown");
-  assert.equal(statusLabel(item({ status: "WillBeRemoved" })), "Will Be Removed");
+  assert.equal(statusLabel(item({ status: "WillBeRemoved" })), "Will be removed");
 });
 
 test("activity lines name the item, state and message", () => {
@@ -377,9 +386,9 @@ test("card progress shows one line and a bar while active, then only outcomes wo
   });
 
   assert.equal(cardProgress(chrome, [], "active"), null);
-  // Queued/Requested: a line, no percentage (indeterminate bar).
+  // Requested/Queued: the service has not started on it yet.
   assert.deepEqual(cardProgress(chrome, [record({ state: "Requested" })], "active"), {
-    label: "Requested…",
+    label: "Waiting…",
     outcome: "active",
   });
   // Own item phase carries its percentage.
@@ -410,10 +419,117 @@ test("card progress shows one line and a bar while active, then only outcomes wo
   // Deferred/Failed keep their reason on the card until the next action.
   assert.deepEqual(
     cardProgress(chrome, [record({ state: "Deferred", message: "blocking application(s) running: chrome" })], "terminal"),
-    { label: "Deferred — blocking application(s) running: chrome", outcome: "terminal" },
+    { label: "Waiting: close chrome to continue", outcome: "terminal" },
   );
   assert.deepEqual(cardProgress(chrome, [record({ state: ERROR_STATE, message: "pipe closed" })], "error"), {
-    label: "Request failed — pipe closed",
+    label: "Request failed · pipe closed",
     outcome: "error",
   });
+});
+
+test("outcome lines say what failed and quote the service's reason", () => {
+  const failed = {
+    operationId: "op-1",
+    itemName: "DemoFailing",
+    displayName: "Demo Failing",
+    state: "Failed",
+    message: "Operation failed (installer exited with code 1)",
+    detail: "installer exited with code 1",
+    timestampUtc: "2026-10-03T22:22:44Z",
+  };
+  const item = { itemName: "DemoFailing" };
+  assert.equal(
+    cardProgress(item, [failed], "terminal", "InstallItem").label,
+    "Install failed · installer exited with code 1",
+  );
+  assert.equal(
+    cardProgress(item, [failed], "terminal", "RemoveItem").label,
+    "Removal failed · installer exited with code 1",
+  );
+  // Without a wire errorMessage the message itself is the reason.
+  assert.equal(
+    cardProgress(item, [{ ...failed, detail: undefined, message: "boom" }], "terminal").label,
+    "Install failed · boom",
+  );
+  // A deferral that is not about a running app reads as the service's reason.
+  assert.equal(
+    cardProgress(item, [{ ...failed, state: "Deferred", detail: undefined, message: "dependency DemoUpdater deferred" }], "terminal").label,
+    "dependency DemoUpdater deferred",
+  );
+  assert.equal(
+    cardProgress(item, [{ ...failed, state: "Canceled", detail: undefined, message: "Operation canceled" }], "terminal").label,
+    "Canceled · Operation canceled",
+  );
+});
+
+test("My items keeps only installed or managed items", () => {
+  const items = [
+    item({ itemName: "a", isInstalled: true }),
+    item({ itemName: "b", isManaged: true, status: "WillBeInstalled" }),
+    item({ itemName: "c" }),
+  ];
+  assert.deepEqual(myItems(items).map((i) => i.itemName), ["a", "b"]);
+});
+
+test("glyph tone is stable per item and inside the palette", () => {
+  assert.equal(glyphTone({ itemName: "GoogleChrome" }), glyphTone({ itemName: "GoogleChrome" }));
+  for (const name of ["", "a", "GoogleChrome", "DemoOptional", "7-Zip"]) {
+    const tone = glyphTone({ itemName: name });
+    assert.ok(Number.isInteger(tone) && tone >= 0 && tone < 5, `${name} -> ${tone}`);
+  }
+});
+
+test("the strip shows the running operation the service is working on, as n of N", () => {
+  const record = (operationId, itemName, state, progressPercent) => ({
+    operationId,
+    itemName,
+    displayName: itemName,
+    state,
+    message: "",
+    timestampUtc: "2026-10-03T22:22:44Z",
+    ...(progressPercent === undefined ? {} : { progressPercent }),
+  });
+  const operation = (operationId, itemName, outcome, records) => ({
+    operationId,
+    item: item({ itemName, displayName: itemName }),
+    action: { label: "Install", method: "InstallItem" },
+    records,
+    outcome,
+  });
+
+  assert.equal(stripView([]), null, "nothing running hides the strip");
+  assert.equal(
+    stripView([operation("op-0", "Done", "terminal", [record("op-0", "Done", "Succeeded")])]),
+    null,
+    "finished operations never hold the strip open",
+  );
+
+  // Both just accepted: the earliest is shown, with no percentage (indeterminate).
+  const waiting = stripView([
+    operation("op-1", "Chrome", "active", [record("op-1", "Chrome", REQUESTED_STATE)]),
+    operation("op-2", "Zed", "active", [record("op-2", "Zed", "Queued")]),
+  ]);
+  assert.equal(waiting.operation.operationId, "op-1");
+  assert.deepEqual([waiting.position, waiting.total], [1, 2]);
+  assert.equal(waiting.progress.percent, undefined);
+  assert.equal(stripLine(waiting), "Waiting… · 1 of 2");
+
+  // The second one is the one actually reporting: it is shown as 2 of 2 with
+  // its percentage; the first stays "Waiting…" on its own card.
+  const working = stripView([
+    operation("op-0", "Done", "terminal", [record("op-0", "Done", "Failed")]),
+    operation("op-1", "Chrome", "active", [record("op-1", "Chrome", REQUESTED_STATE), record("op-1", "Chrome", "Queued")]),
+    operation("op-2", "Zed", "active", [record("op-2", "Zed", REQUESTED_STATE), record("op-2", "Zed", "Downloading", 42)]),
+  ]);
+  assert.equal(working.operation.operationId, "op-2");
+  assert.deepEqual([working.position, working.total], [2, 2]);
+  assert.equal(working.progress.percent, 42);
+  assert.equal(stripLine(working), "Downloading… 42% · 2 of 2");
+
+  // A phase without a percentage on the wire stays indeterminate.
+  const unmeasured = stripView([
+    operation("op-3", "Chrome", "active", [record("op-3", "Chrome", "ItemCompleted")]),
+  ]);
+  assert.equal(unmeasured.progress.percent, undefined);
+  assert.equal(progressText(unmeasured.progress), "Item Completed…");
 });
