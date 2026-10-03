@@ -7,8 +7,9 @@
 # C:\gorilla-repo, bootstraps the service against url: file://C:/gorilla-repo/,
 # then runs the two machine-assertable gates (run-selfserve-smoke.ps1 and
 # run-chrome-e2e.ps1) and finally launches gorilla-ui.exe on the desktop and
-# captures Home/search/install/Activity screenshots into OUT_DIR
-# (default build/e2e-shots). Logs go next to the screenshots.
+# captures Home, search, installing (bottom strip), installed, details and
+# Activity screenshots into OUT_DIR (default build/e2e-shots). Logs go next
+# to the screenshots.
 #
 # Needs the devenv shell (go, node) and the windows-test-rig skill's `rig`.
 # Exit status is non-zero if either gate fails; the UI capture is visual-only
@@ -24,7 +25,7 @@ while (($#)); do
 	-v) vm=(-v "$2"); shift ;;
 	--no-reset) reset=0 ;;
 	--keep) keep=1 ;;
-	-h | --help) sed -n 2,16p "$0"; exit 0 ;;
+	-h | --help) sed -n 2,17p "$0"; exit 0 ;;
 	*) out=$1 ;;
 	esac
 	shift
@@ -58,6 +59,8 @@ foreach ($p in @("$env:ProgramData\gorilla\service-manifest.yaml", "$env:Program
                  "$env:ProgramData\gorilla\cache", "C:\ProgramData\gorilla-c-smoke", "C:\gorilla-test")) {
     if (Test-Path $p) { Remove-Item -Recurse -Force $p }
 }
+# A OneDrive sign-in prompt appears after a VM reset and steals keystrokes.
+Stop-Process -Name OneDrive -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force C:\gorilla-test | Out-Null
 PS
 "$rig" "${vm[@]}" ps "$tmp/extract.ps1"
@@ -78,13 +81,13 @@ step "Visual: Gorilla UI on the desktop"
 "$rig" "${vm[@]}" run-it "$mt/launch-wails-ui.ps1"
 "$rig" "${vm[@]}" shot --settle 10 "$out/01-home.png"
 # Keys go to the focused window. `rig focus` also restores the window size, so
-# maximize right after it and before any Tab sequence; from a fresh focus the
-# tab order is Home, Activity, search, category, then each card's action and
-# Details buttons.
+# maximize right after it and before any Tab sequence; it keeps the page's
+# focus. From the top of the page the tab order is Software, My items,
+# Activity, search, category, then each card's action and Details buttons.
 ui_focus() { "$rig" "${vm[@]}" focus gorilla-ui; "$rig" "${vm[@]}" key KEY_LEFTMETA KEY_UP; sleep 2; }
 tab() { local n=${1:-1}; while ((n-- > 0)); do "$rig" "${vm[@]}" key KEY_TAB; done; }
 ui_focus
-tab 3; "$rig" "${vm[@]}" type "Chrome"
+tab 4; "$rig" "${vm[@]}" type "Chrome"
 "$rig" "${vm[@]}" shot --settle 3 "$out/02-search-chrome.png"
 tab 2; "$rig" "${vm[@]}" key KEY_ENTER
 "$rig" "${vm[@]}" shot --settle 4 "$out/03-installing.png"
@@ -92,11 +95,14 @@ tab 2; "$rig" "${vm[@]}" key KEY_ENTER
 "$rig" "${vm[@]}" key KEY_END
 "$rig" "${vm[@]}" shot --settle 3 "$out/05-card-installed.png"
 ui_focus
-tab 6; "$rig" "${vm[@]}" key KEY_ENTER
+# The install re-rendered the grid under the focused button, so Tab restarts
+# at the grid: Remove, then Details.
+tab 2; "$rig" "${vm[@]}" key KEY_ENTER
 "$rig" "${vm[@]}" shot --settle 3 "$out/06-details.png"
 "$rig" "${vm[@]}" key KEY_ESC
 ui_focus
-tab 2; "$rig" "${vm[@]}" key KEY_ENTER; "$rig" "${vm[@]}" key KEY_END
+# Ctrl+L opens Activity from anywhere; no Tab counting needed.
+"$rig" "${vm[@]}" key KEY_LEFTCTRL KEY_L; "$rig" "${vm[@]}" key KEY_END
 "$rig" "${vm[@]}" shot --settle 3 "$out/07-activity.png"
 cat >"$tmp/verify.ps1" <<'PS'
 $e = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |

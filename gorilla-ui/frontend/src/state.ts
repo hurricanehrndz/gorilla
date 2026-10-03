@@ -1,4 +1,5 @@
 import type {
+  ActionMethod,
   ActiveOperations,
   ActivityRecord,
   CachedList,
@@ -6,6 +7,7 @@ import type {
   ListView,
   OperationOutcome,
   OperationStatus,
+  OperationView,
   OptionalInstallItem,
 } from "./types.ts";
 
@@ -68,6 +70,11 @@ export function visibleItems(
     .sort(compareItems);
 }
 
+/** myItems is the "My items" view: what is installed or managed from here. */
+export function myItems(items: OptionalInstallItem[]): OptionalInstallItem[] {
+  return items.filter((item) => item.isInstalled || item.isManaged);
+}
+
 export function categories(items: OptionalInstallItem[]): string[] {
   const seen = new Map<string, string>();
   for (const item of items) {
@@ -93,6 +100,18 @@ export function monogram(item: OptionalInstallItem): string {
   return initials || categoryGlyph(item.category);
 }
 
+// Glyph tones are a fixed palette in style.css (.tone-0 … .tone-4).
+const GLYPH_TONES = 5;
+
+/** glyphTone picks a stable palette index from the item name, so a glyph keeps its colour. */
+export function glyphTone(item: Pick<OptionalInstallItem, "itemName">): number {
+  let hash = 0;
+  for (const char of item.itemName) {
+    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+  }
+  return hash % GLYPH_TONES;
+}
+
 /** restartBadge returns "" unless restartAction is meaningful. */
 export function restartBadge(item: OptionalInstallItem): string {
   const raw = (item.restartAction ?? "").trim();
@@ -102,8 +121,10 @@ export function restartBadge(item: OptionalInstallItem): string {
   return RESTART_LABELS[fold(raw)] ?? raw;
 }
 
+/** statusLabel is the catalog status in sentence case: "Will be installed". */
 export function statusLabel(item: OptionalInstallItem): string {
-  return stateLabel(item.status);
+  const label = stateLabel(item.status);
+  return label[0] + label.slice(1).toLowerCase();
 }
 
 /** REQUESTED_STATE is local: the service accepted the request, no event yet. */
@@ -201,6 +222,7 @@ export function statusRecord(status: OperationStatus): ActivityRecord {
     message: [message, detail && detail !== message ? `(${detail})` : ""].filter(Boolean).join(" "),
     timestampUtc: status.timestampUtc,
     progressPercent: status.progressPercent,
+    ...(detail ? { detail } : {}),
   };
 }
 
@@ -238,21 +260,47 @@ export function progressLabel(record: ActivityRecord): string {
 
 /**
  * CardProgress is what an item's own card shows for the operation the user
- * started on it: one short line and a bar while it runs, then only an outcome
- * worth acting on (Failed, Deferred, a request error). The full timeline is in
- * Activity, the way Managed Software Center keeps its log off the main view.
+ * started on it: one short line beside a spinner while it runs, then only an
+ * outcome worth acting on (Failed, Deferred, a request error). The full
+ * timeline is in Activity, the way Managed Software Center keeps its log off
+ * the main view.
  */
 export type CardProgress = {
   label: string;
-  /** Determinate percentage; absent while active means an indeterminate bar. */
+  /** The record's own-item percentage, when the engine measured this phase. */
   percent?: number;
   outcome: OperationOutcome;
 };
+
+// Records that arrive before the service has started work on anything.
+const WAITING_STATES = new Set([REQUESTED_STATE, "Queued"]);
+
+// The installer's deferral reason when a blocking application is running.
+const BLOCKING_APPS = /^blocking application\(s\) running: (.+)$/i;
+
+/** outcomeLabel words a finished operation for its card: what happened, then why. */
+function outcomeLabel(record: ActivityRecord, method: ActionMethod): string {
+  const message = record.message.trim();
+  switch (record.state) {
+    case "Deferred": {
+      const apps = BLOCKING_APPS.exec(message)?.[1];
+      return apps ? `Waiting: close ${apps} to continue` : message || "Deferred";
+    }
+    case "Failed": {
+      const verb = method === "RemoveItem" ? "Removal" : "Install";
+      const why = record.detail || message;
+      return why ? `${verb} failed · ${why}` : `${verb} failed`;
+    }
+    default:
+      return message ? `${stateLabel(record.state)} · ${message}` : stateLabel(record.state);
+  }
+}
 
 export function cardProgress(
   item: Pick<OptionalInstallItem, "itemName">,
   records: ActivityRecord[],
   outcome: OperationOutcome,
+  method: ActionMethod = "InstallItem",
 ): CardProgress | null {
   const latest = records[records.length - 1];
   if (!latest) {
@@ -261,7 +309,7 @@ export function cardProgress(
   if (outcome === "active") {
     const own = latest.itemName === item.itemName;
     if (isItemPhase(latest.state)) {
-      // A dependency or updater can take over mid-run; name it so the bar's
+      // A dependency or updater can take over mid-run; name it so the
       // percentage (which is scoped to that item) is not read as this item's.
       const who = own ? "" : ` ${latest.displayName || latest.itemName}`;
       return {
@@ -270,17 +318,63 @@ export function cardProgress(
         outcome,
       };
     }
+    if (WAITING_STATES.has(latest.state)) {
+      return { label: "Waiting…", outcome };
+    }
     return { label: own ? `${stateLabel(latest.state)}…` : "In progress…", outcome };
   }
   // A success needs no epilogue: the refreshed list status is authoritative.
   if (outcome === "terminal" && latest.state === "Succeeded") {
     return null;
   }
-  const message = latest.message.trim();
+  return { label: outcomeLabel(latest, method), outcome };
+}
+
+/** progressText is a progress line as it reads: the label, then any percentage. */
+export function progressText(progress: CardProgress): string {
+  return typeof progress.percent === "number" ? `${progress.label} ${progress.percent}%` : progress.label;
+}
+
+/**
+ * StripView is what the bottom "current operation" strip shows: one running
+ * operation, its progress, and where it sits among everything still running.
+ */
+export type StripView = {
+  operation: OperationView;
+  progress: CardProgress;
+  position: number;
+  total: number;
+};
+
+/**
+ * stripView picks the operation the strip reports on: the earliest running one
+ * the service has started work on, else the earliest running one. The others
+ * read "Waiting…" on their own cards. Null hides the strip.
+ */
+export function stripView(operations: Iterable<OperationView>): StripView | null {
+  const running = [...operations].filter((operation) => operation.outcome === "active");
+  if (running.length === 0) {
+    return null;
+  }
+  const working = running.findIndex((operation) =>
+    operation.records.some((record) => !WAITING_STATES.has(record.state)),
+  );
+  const index = Math.max(working, 0);
+  const operation = running[index];
   return {
-    label: message ? `${stateLabel(latest.state)} — ${message}` : stateLabel(latest.state),
-    outcome,
+    operation,
+    progress: cardProgress(operation.item, operation.records, "active") ?? {
+      label: "Waiting…",
+      outcome: "active",
+    },
+    position: index + 1,
+    total: running.length,
   };
+}
+
+/** stripLine is the strip's text: the phase, then "n of N". */
+export function stripLine(strip: StripView): string {
+  return `${progressText(strip.progress)} · ${strip.position} of ${strip.total}`;
 }
 
 /**
@@ -324,7 +418,7 @@ export function bannerMessage(view: ListView, error: string): string {
     case "cache":
       return "Showing cached software. Refreshing…";
     case "live":
-      return "Connected to the Gorilla service.";
+      return "Service connected";
     case "stale":
       return (
         (view.items.length

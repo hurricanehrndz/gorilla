@@ -7,23 +7,30 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header class="app-bar">
-      <h1>Gorilla</h1>
-      <nav aria-label="Primary">
-        <button type="button" id="nav-home" class="nav-link" aria-current="page">Home</button>
-        <button type="button" id="nav-activity" class="nav-link">Activity</button>
-      </nav>
-    </header>
+    <!-- Organisation banner: empty and hidden until branding fills it. -->
+    <section id="banner" aria-label="Organisation banner" hidden></section>
 
-    <p id="service-banner" class="banner" role="status">
-      <span id="banner-text">Connecting to the Gorilla service…</span>
-      <button type="button" id="retry" hidden>Retry</button>
-    </p>
+    <header class="app-bar">
+      <h1 class="product"><span class="product-mark" aria-hidden="true">G</span>Gorilla</h1>
+      <nav aria-label="Primary">
+        <button type="button" id="nav-software" class="nav-link" aria-current="page">Software</button>
+        <button type="button" id="nav-mine" class="nav-link">My items</button>
+        <button type="button" id="nav-activity" class="nav-link" aria-keyshortcuts="Control+L">
+          Activity
+          <svg id="nav-busy" class="spinner" aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" hidden>
+            <path d="M8 2a6 6 0 1 1-4.24 1.76" />
+          </svg>
+        </button>
+      </nav>
+      <p id="connection" class="connection" role="status">
+        <span class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-text">Connecting to the Gorilla service…</span>
+        <button type="button" id="retry" class="pill pill-outline" hidden>Retry</button>
+      </p>
+    </header>
 
     <main>
       <section id="view-home" aria-labelledby="home-heading">
-        <h2 id="home-heading">Available software</h2>
-
         <search>
           <form id="filters" class="filters">
             <p>
@@ -39,12 +46,16 @@
           </form>
         </search>
 
+        <h2 id="home-heading">Available software</h2>
         <p id="result-status" role="status" aria-live="polite"></p>
         <div id="item-grid" class="grid"></div>
       </section>
 
       <section id="view-activity" aria-labelledby="activity-heading" hidden>
-        <h2 id="activity-heading">Activity</h2>
+        <div class="view-head">
+          <h2 id="activity-heading">Activity</h2>
+          <kbd class="shortcut" title="Show or hide Activity">Ctrl+L</kbd>
+        </div>
         <p class="disclaimer">
           Local display history for this app on this device — not a system audit log. It keeps the
           100 most recent operations started here, and it is not resumed after the app is closed.
@@ -57,31 +68,54 @@
            Escape) returns to the list and refocuses the card it came from. -->
       <section id="view-detail" aria-labelledby="detail-name" hidden>
         <p class="detail-nav">
-          <button type="button" id="detail-back">‹ Back</button>
+          <button type="button" id="detail-back" class="back">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16"><path d="M10 3 5 8l5 5" /></svg>
+            Back
+          </button>
         </p>
         <div class="detail-head">
           <span id="detail-glyph" class="glyph glyph-large" aria-hidden="true"></span>
           <div class="detail-title">
             <h2 id="detail-name"></h2>
-            <p id="detail-developer" class="card-meta"></p>
+            <p id="detail-developer"></p>
+            <p id="detail-description"></p>
           </div>
-          <button type="button" id="detail-action"></button>
+          <button type="button" id="detail-action" class="pill pill-primary pill-large"></button>
         </div>
-        <p id="detail-restart" class="badge" hidden></p>
-        <p class="card-status" aria-live="polite"></p>
-        <progress class="card-progress" max="100" hidden></progress>
-        <p id="detail-description"></p>
+        <p class="card-status" aria-live="polite">
+          <svg class="spinner" aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" hidden>
+            <path d="M8 2a6 6 0 1 1-4.24 1.76" />
+          </svg>
+          <span class="status-text"></span>
+        </p>
         <h3>Information</h3>
-        <dl>
-          <dt>Version</dt>
-          <dd id="detail-version"></dd>
-          <dt>Developer</dt>
-          <dd id="detail-developer-value"></dd>
-          <dt>Category</dt>
-          <dd id="detail-category"></dd>
+        <dl class="info">
+          <div><dt>Developer</dt><dd id="detail-developer-value"></dd></div>
+          <div><dt>Version</dt><dd id="detail-version"></dd></div>
+          <div><dt>Category</dt><dd id="detail-category"></dd></div>
+          <div><dt>Status</dt><dd id="detail-status"></dd></div>
+          <div><dt>Restart</dt><dd id="detail-restart"></dd></div>
         </dl>
       </section>
     </main>
+
+    <!-- The one operation being worked on right now; each item's own state is on its card. -->
+    <footer id="operation-strip" class="strip" role="status" aria-label="Current operation" hidden>
+      <span id="strip-glyph" class="glyph glyph-small" aria-hidden="true"></span>
+      <div class="strip-body">
+        <p class="strip-line">
+          <span id="strip-name" class="strip-name"></span>
+          <span id="strip-text" class="strip-text"></span>
+        </p>
+        <progress id="strip-progress" max="100"></progress>
+      </div>
+    </footer>
+
+    <template id="spinner">
+      <svg class="spinner" aria-hidden="true" width="14" height="14" viewBox="0 0 16 16">
+        <path d="M8 2a6 6 0 1 1-4.24 1.76" />
+      </svg>
+    </template>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

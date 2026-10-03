@@ -23,14 +23,21 @@ and `Canceled` — from the requested item's real run report or service
 cancellation/error — end an operation.
 
 `progressPercent` is scoped to the record's `itemName` and may reset at an item
-boundary. The UI shows progress on the item's own card: one status line and a
-`<progress max="100">` that is determinate only when the record carries a
-percentage, and names the record's item when a dependency or updater takes
-over, so that item's percentage is not read as the card's. There is no overall
-operation indicator. The record timeline is shown only in Activity, never on the
-Home view. No
+boundary. Each item's card (and its detail page) shows one status line with a
+spinner while its operation runs, naming the record's item when a dependency or
+updater takes over. The only bar is in the bottom `#operation-strip`, which
+reports one running operation — the earliest the service has started work on —
+as "n of N" with a `<progress max="100">` that is determinate only when the
+latest record carries a percentage; other running items read "Waiting…" on
+their cards. The percentage is still the record's item's, not an aggregate. The
+record timeline is shown only in Activity, never on the Home view. No
 percentage is fabricated for status checks, no-action items, blocking-app checks,
 or pre/post scripts.
+
+The app bar carries the connection state (a dot and the cached/stale message
+with Retry). Above it, an empty `#banner` section stays hidden until branding
+fills it. "My items" is the same list filtered on the client to installed or
+managed items; it is not a separate service call.
 
 Installed and managed state come only from an authoritative `ListOptionalInstalls`
 refresh performed after a terminal record, never from progress records. A failed
