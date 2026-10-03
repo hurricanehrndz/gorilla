@@ -7,11 +7,19 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <!-- Organisation banner: empty and hidden until branding fills it. -->
-    <section id="banner" aria-label="Organisation banner" hidden></section>
+    <!-- Organisation banner: hidden until admin branding (policy or config.yaml,
+         via GetBranding) fills it. -->
+    <section id="banner" aria-label="Organisation banner" hidden>
+      <span id="banner-logo" class="banner-logo" hidden><img alt="" /></span>
+      <div class="banner-text">
+        <p id="banner-title" class="banner-title"></p>
+        <p id="banner-tagline" class="banner-tagline"></p>
+      </div>
+      <button type="button" id="banner-help" class="pill banner-help" hidden></button>
+    </section>
 
     <header class="app-bar">
-      <h1 class="product"><span class="product-mark" aria-hidden="true">G</span>Gorilla</h1>
+      <h1 class="product"><span id="product-mark" class="product-mark" aria-hidden="true">G</span><span id="product-name">Gorilla</span></h1>
       <nav aria-label="Primary">
         <button type="button" id="nav-software" class="nav-link" aria-current="page">Software</button>
         <button type="button" id="nav-mine" class="nav-link">My items</button>

@@ -90,7 +90,7 @@ pure-Go, windows-GUI `build/gorilla-ui.exe`
 - Keep `cmd/gorilla` service-message commands updated in lockstep with Gorilla UI protocol changes for testing/debugging.
 - `ListOptionalInstalls` should return JSON-safe subset DTOs, not full internal item objects.
 - The bound Wails surface is exactly `ListOptionalInstalls`, `InstallItem`,
-  `RemoveItem`, and `WatchOperation`, and one `gorilla:operation-status` event.
+  `RemoveItem`, `WatchOperation`, and `GetBranding`, and one `gorilla:operation-status` event.
   Progress percentages are per item, not aggregate; only `Succeeded`, `Failed`,
   `Deferred`, and `Canceled` end an operation.
 

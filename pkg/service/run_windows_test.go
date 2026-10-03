@@ -460,3 +460,41 @@ func TestTrackedOperationPruningDropsOldCompletedEntries(t *testing.T) {
 		t.Fatalf("expected tracked operations count <= %d, got %d", trackedOperationsMaxCount, count)
 	}
 }
+
+// GetBranding must answer while a managed run holds the command queue: the UI
+// asks for it before opening its window.
+func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
+	cfg := config.Configuration{
+		AppDataPath:     t.TempDir(),
+		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
+		ServiceInterval: "1h",
+		ServiceMode:     true,
+		ServiceName:     "gorilla-test",
+		Branding:        config.Branding{Title: "Acme Software Center", Accent: "#0B6E4F"},
+	}
+	release := make(chan struct{})
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) {
+		<-release
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sr.start(ctx); err != nil {
+		t.Fatalf("service start failed: %v", err)
+	}
+	defer func() {
+		close(release)
+		cancel()
+		bestEffortUnblockPipeListener(cfg)
+		sr.stop(context.Background())
+	}()
+
+	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer callCancel()
+	got, err := NewClient(cfg.ServicePipeName).GetBranding(callCtx)
+	if err != nil {
+		t.Fatalf("GetBranding failed: %v", err)
+	}
+	if got.Title != "Acme Software Center" || got.Accent != "#0b6e4f" {
+		t.Fatalf("GetBranding = %#v", got)
+	}
+}

@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/1dustindavis/gorilla/pkg/branding"
 )
 
 const DefaultPipeName = "gorilla-service"
@@ -55,6 +57,20 @@ func (c *Client) ListOptionalInstalls(ctx context.Context) ([]OptionalInstallIte
 		}
 	}
 	return payload.Items, nil
+}
+
+// GetBranding returns the organisation branding the service resolved from
+// policy and config. Unset fields are empty strings.
+func (c *Client) GetBranding(ctx context.Context) (branding.Branding, error) {
+	resp, err := c.doRequest(ctx, newClientRequest(actionGetBranding, "", ""), nil)
+	if err != nil {
+		return branding.Branding{}, err
+	}
+	payload, err := decodeEnvelopePayload[branding.Branding](resp.Payload)
+	if err != nil {
+		return branding.Branding{}, fmt.Errorf("failed to decode GetBranding payload: %w", err)
+	}
+	return payload, nil
 }
 
 func (c *Client) InstallItem(ctx context.Context, itemName string) (AcceptedOperation, error) {
@@ -154,7 +170,7 @@ func decodeClientResponse(dec *json.Decoder, req serviceEnvelope[any], resp *ser
 	}
 
 	switch req.Operation {
-	case actionListOptionalInstalls:
+	case actionListOptionalInstalls, actionGetBranding:
 		if resp.OperationID != "" {
 			return fmt.Errorf("unexpected response operationId %q", resp.OperationID)
 		}

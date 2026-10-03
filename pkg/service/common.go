@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/download"
@@ -38,6 +40,7 @@ type CommandResponse struct {
 	Items         []string              `json:"items,omitempty"`
 	OptionalItems []OptionalInstallItem `json:"optionalItems,omitempty"`
 	OperationID   string                `json:"operationId,omitempty"`
+	Branding      *branding.Branding    `json:"branding,omitempty"`
 
 	// report carries the managed run's per-run report from an actionRun back to
 	// the caller so scheduleRunAfterMutation can emit an honest terminal event
@@ -48,6 +51,7 @@ type CommandResponse struct {
 const (
 	actionRun                   = "run"
 	actionListOptionalInstalls  = "ListOptionalInstalls"
+	actionGetBranding           = "GetBranding"
 	actionInstallItem           = "InstallItem"
 	actionRemoveItem            = "RemoveItem"
 	actionStreamOperationStatus = "StreamOperationStatus"
@@ -59,6 +63,8 @@ func canonicalizeAction(action string) (string, bool) {
 		return actionRun, true
 	case strings.ToLower(actionListOptionalInstalls):
 		return actionListOptionalInstalls, true
+	case strings.ToLower(actionGetBranding):
+		return actionGetBranding, true
 	case strings.ToLower(actionInstallItem):
 		return actionInstallItem, true
 	case strings.ToLower(actionRemoveItem):
@@ -107,7 +113,7 @@ func validateCommand(cmd Command) error {
 		if len(cmd.Items) != 0 {
 			return errors.New("run action does not support items")
 		}
-	case actionListOptionalInstalls:
+	case actionListOptionalInstalls, actionGetBranding:
 		if len(cmd.Items) != 0 {
 			return fmt.Errorf("%s action does not support items", cmd.Action)
 		}
@@ -145,6 +151,16 @@ func SendCommand(cfg config.Configuration, spec string) (CommandResponse, error)
 			resp.Items = append(resp.Items, string(line))
 		}
 		return resp, nil
+	case actionGetBranding:
+		b, err := client.GetBranding(ctx)
+		if err != nil {
+			return CommandResponse{}, err
+		}
+		line, err := brandingSummary(b)
+		if err != nil {
+			return CommandResponse{}, err
+		}
+		return CommandResponse{Status: "ok", Branding: &b, Items: []string{line}}, nil
 	case actionInstallItem:
 		accepted, err := client.InstallItem(ctx, cmd.Items[0])
 		if err != nil {
@@ -171,6 +187,25 @@ func SendCommand(cfg config.Configuration, spec string) (CommandResponse, error)
 	default:
 		return CommandResponse{}, fmt.Errorf("unsupported service action %q", cmd.Action)
 	}
+}
+
+// brandingSummary is the one `-S GetBranding` output line: the payload with
+// logoBase64 swapped for the logo's decoded size, so a console stays readable.
+func brandingSummary(b branding.Branding) (string, error) {
+	logo, err := base64.StdEncoding.DecodeString(b.LogoBase64)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode branding logo: %w", err)
+	}
+	line, err := json.Marshal(struct {
+		Title     string `json:"title"`
+		Tagline   string `json:"tagline"`
+		HelpURL   string `json:"helpUrl"`
+		HelpLabel string `json:"helpLabel"`
+		Accent    string `json:"accent"`
+		LogoMime  string `json:"logoMime"`
+		LogoBytes int    `json:"logoBytes"`
+	}{b.Title, b.Tagline, b.HelpURL, b.HelpLabel, b.Accent, b.LogoMime, len(logo)})
+	return string(line), err
 }
 
 func serviceInstallArgs(configPath string) []string {
@@ -204,6 +239,9 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 			names = append(names, it.ItemName)
 		}
 		return CommandResponse{Status: "ok", Items: names, OptionalItems: items}, nil
+	case actionGetBranding:
+		b := branding.Resolve(cfg.Branding)
+		return CommandResponse{Status: "ok", Branding: &b}, nil
 	default:
 		return CommandResponse{}, fmt.Errorf("unsupported service action %q", cmd.Action)
 	}

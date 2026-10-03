@@ -10,3 +10,10 @@ auth_pass: pizza
 verbose: true
 debug: true
 checkonly: true
+branding:
+  title: Acme Software Center
+  tagline: Need help? Call the service desk at ext. 1234.
+  logo: C:\ProgramData\gorilla\branding\logo.png
+  help_url: https://example.com/help
+  help_label: Get help
+  accent: "#0b6e4f"

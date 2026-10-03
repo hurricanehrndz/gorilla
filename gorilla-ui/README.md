@@ -9,9 +9,9 @@ objects.
 ## Layout
 
 - `main.go`: Wails application, `--pipe-name` flag (default `gorilla-service`),
-  bundled WebView window titled `Gorilla UI`
+  bundled WebView window titled with the branding title, or `Gorilla UI`
 - `service.go`: the bound service — `ListOptionalInstalls`, `InstallItem`,
-  `RemoveItem`, `WatchOperation`
+  `RemoveItem`, `WatchOperation`, `GetBranding`
 - `log.go`: opt-in diagnostics
 - `assets_production.go` / `assets_development.go`: embedded `frontend/dist` under
   the `production` tag, compile-safe source filesystem otherwise
@@ -23,7 +23,7 @@ objects.
 
 ## Backend surface
 
-Four bound methods and exactly one event channel, `gorilla:operation-status`.
+Five bound methods and exactly one event channel, `gorilla:operation-status`.
 Each status record carries `operationId`, `itemName`, `displayName`, `state`,
 item-scoped `progressPercent`, `message`, timestamp, and terminal
 error/cancellation fields. The frontend subscribes once and routes records by
@@ -47,6 +47,43 @@ error/cancellation fields. The frontend subscribes once and routes records by
 - `Failed`, `Deferred`, `Canceled`, pipe unavailability, request timeout, and
   premature stream end (`stream_ended`) are shown as-is and never converted into
   success.
+
+## Branding
+
+An organisation can put its name, a tagline, a logo, a help link and an accent
+colour on the UI with no rebuild or re-signing, and it works offline. The SYSTEM
+service resolves the branding and validates it; the UI only asks for it with
+`GetBranding` and never reads `config.yaml` or the registry itself. Each field
+comes from the first source that sets it:
+
+1. Policy values under `HKLM\SOFTWARE\Policies\Gorilla\Branding`, all REG_SZ.
+2. The `branding:` block in `config.yaml` (see `examples/example_config.yaml`).
+3. Nothing. The UI then looks exactly as it does unbranded.
+
+| Policy value | `config.yaml` key | Accepted |
+|---|---|---|
+| `Title` | `title` | Plain text, up to 120 characters. Also the window title and the app-bar name. |
+| `Tagline` | `tagline` | Plain text, up to 240 characters. |
+| `LogoPath` | `logo` | Local path to a PNG, JPEG or SVG of at most 512 KiB, checked by content. |
+| `HelpUrl` | `help_url` | Absolute `http` or `https` URL, opened in the system browser. |
+| `HelpLabel` | `help_label` | Plain text, up to 60 characters. Defaults to "Get help". |
+| `Accent` | `accent` | `#rrggbb`. Recolours buttons, links and the banner. |
+
+Set the policy values with Intune (a custom OMA-URI or a registry script), Group
+Policy Preferences, or `reg add`:
+
+```bat
+reg add HKLM\SOFTWARE\Policies\Gorilla\Branding /v Title /t REG_SZ /d "Acme Software Center" /f
+reg add HKLM\SOFTWARE\Policies\Gorilla\Branding /v Accent /t REG_SZ /d "#0b6e4f" /f
+```
+
+Policy values apply on the next `GetBranding` call. A `config.yaml` change needs
+a service restart, like any other config change. A value that fails its check is
+dropped (debug log only) and is not replaced by the config value. Check the
+result with `gorilla.exe -S GetBranding`, which prints the payload with the logo
+replaced by its size in bytes. The UI caches the last payload in
+`localStorage` key `gorilla.branding.v1`, applies it at start, then fetches
+again.
 
 ## Cache and Activity limitations
 

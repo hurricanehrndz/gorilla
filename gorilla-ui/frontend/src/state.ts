@@ -2,6 +2,7 @@ import type {
   ActionMethod,
   ActiveOperations,
   ActivityRecord,
+  BrandingView,
   CachedList,
   ItemAction,
   ListView,
@@ -441,4 +442,69 @@ function formatReason(error: string): string {
 function formatSavedAt(savedAtUtc: string): string {
   const saved = new Date(savedAtUtc);
   return Number.isNaN(saved.getTime()) ? "" : ` from ${saved.toLocaleString()}`;
+}
+
+// Branding is admin configuration the service resolved from policy or
+// config.yaml; no catalog data is involved. The service already validated
+// every field; these checks repeat the ones that guard what the WebView does
+// with a value (open a URL, build a data: URL, set a CSS colour).
+
+const DEFAULT_PRODUCT = "Gorilla";
+const DEFAULT_HELP_LABEL = "Get help";
+const LOGO_MIMES = new Set(["image/png", "image/jpeg", "image/svg+xml"]);
+
+export function isHexColor(value: string): boolean {
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+/** httpUrl returns value when it is an absolute http(s) URL, else "". */
+export function httpUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function channel(hex: string, at: number): number {
+  const c = parseInt(hex.slice(at, at + 2), 16) / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+/** onAccent picks white or near-black text, whichever contrasts more with hex. */
+export function onAccent(hex: string): string {
+  const luminance = 0.2126 * channel(hex, 1) + 0.7152 * channel(hex, 3) + 0.0722 * channel(hex, 5);
+  const ink = 0.0116; // relative luminance of #1b1b1f
+  return 1.05 / (luminance + 0.05) >= (luminance + 0.05) / (ink + 0.05) ? "#ffffff" : "#1b1b1f";
+}
+
+function text(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** brandingView turns a GetBranding payload (or a cached copy) into what the shell shows. */
+export function brandingView(payload: unknown): BrandingView {
+  const raw = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+  const title = text(raw, "title");
+  const tagline = text(raw, "tagline");
+  const mime = text(raw, "logoMime");
+  const base64 = text(raw, "logoBase64");
+  const logoSrc =
+    LOGO_MIMES.has(mime) && /^[A-Za-z0-9+/]+={0,2}$/.test(base64) ? `data:${mime};base64,${base64}` : "";
+  const helpUrl = httpUrl(text(raw, "helpUrl"));
+  const accent = isHexColor(text(raw, "accent")) ? text(raw, "accent").toLowerCase() : "";
+  return {
+    title,
+    tagline,
+    logoSrc,
+    helpUrl,
+    helpLabel: helpUrl ? text(raw, "helpLabel") || DEFAULT_HELP_LABEL : "",
+    accent,
+    onAccent: accent ? onAccent(accent) : "",
+    productName: title || DEFAULT_PRODUCT,
+    productMark: (Array.from(title)[0] ?? DEFAULT_PRODUCT[0]).toUpperCase(),
+    showBanner: Boolean(title || tagline || logoSrc || helpUrl),
+  };
 }

@@ -3,8 +3,10 @@ package service
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/installer"
@@ -210,5 +212,38 @@ func TestServiceInstallArgs(t *testing.T) {
 	}
 	if got[2] != "-service" {
 		t.Fatalf("expected final arg -service, got %q", got[2])
+	}
+}
+
+func TestParseCommandSpecGetBranding(t *testing.T) {
+	cmd, err := parseCommandSpec("getbranding")
+	if err != nil || cmd.Action != actionGetBranding || len(cmd.Items) != 0 {
+		t.Fatalf("parse GetBranding = %#v, %v", cmd, err)
+	}
+	if _, err := parseCommandSpec("GetBranding:extra"); err == nil {
+		t.Fatal("GetBranding accepted an argument")
+	}
+}
+
+// GetBranding resolves the config block in the service (off Windows there is
+// no policy store), and validation drops a bad field without failing the call.
+func TestExecuteCommandGetBranding(t *testing.T) {
+	cfg := config.Configuration{Branding: config.Branding{Title: " Acme ", Accent: "green", HelpURL: "javascript:alert(1)"}}
+	resp, err := executeCommand(cfg, Command{Action: actionGetBranding}, nil)
+	if err != nil || resp.Branding == nil {
+		t.Fatalf("GetBranding = %#v, %v", resp, err)
+	}
+	if want := (branding.Branding{Title: "Acme"}); *resp.Branding != want {
+		t.Fatalf("branding = %#v, want %#v", *resp.Branding, want)
+	}
+}
+
+func TestBrandingSummaryReplacesLogoWithSize(t *testing.T) {
+	line, err := brandingSummary(branding.Branding{Title: "Acme", LogoMime: "image/png", LogoBase64: "AAECAw=="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(line, "logoBase64") || !strings.Contains(line, `"logoBytes":4`) || !strings.Contains(line, `"title":"Acme"`) {
+		t.Fatalf("summary %s", line)
 	}
 }

@@ -110,6 +110,10 @@ const items: OptionalInstallItem[] = [
 const handlers: ((status: OperationStatus) => void)[] = [];
 let operationCounter = 0;
 
+function branded(): boolean {
+  return globalThis.location?.search.includes("branded") ?? false;
+}
+
 function offline(): boolean {
   return globalThis.location?.search.includes("offline") ?? false;
 }
@@ -255,6 +259,21 @@ export const api: GorillaApi = {
   installItem: (itemName) => mutate(itemName, false),
   removeItem: (itemName) => mutate(itemName, true),
   watchOperation: (operationId) => watch(operationId),
+  // `?branded` shows the Branding board's organisation banner.
+  getBranding: () =>
+    Promise.resolve({
+      title: branded() ? "Acme Software Center" : "",
+      tagline: branded() ? "Need help? Call the service desk at ext. 1234." : "",
+      helpUrl: branded() ? "https://example.invalid/help" : "",
+      helpLabel: branded() ? "Get help" : "",
+      accent: branded() ? "#0b6e4f" : "",
+      logoMime: "",
+      logoBase64: "",
+    }),
+  openExternal(url) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return Promise.resolve();
+  },
   onOperationStatus(handler) {
     handlers.push(handler);
   },

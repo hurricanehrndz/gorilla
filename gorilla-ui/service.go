@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	gorillaservice "github.com/1dustindavis/gorilla/pkg/service"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -15,6 +16,7 @@ const operationStatusEvent = "gorilla:operation-status"
 
 type serviceClient interface {
 	ListOptionalInstalls(context.Context) ([]gorillaservice.OptionalInstallItem, error)
+	GetBranding(context.Context) (branding.Branding, error)
 	InstallItem(context.Context, string) (gorillaservice.AcceptedOperation, error)
 	RemoveItem(context.Context, string) (gorillaservice.AcceptedOperation, error)
 	StreamOperationStatus(context.Context, string, func(gorillaservice.OperationStatus) error) error
@@ -55,6 +57,20 @@ func (s *UIService) ListOptionalInstalls() ([]gorillaservice.OptionalInstallItem
 	items, err := s.client.ListOptionalInstalls(ctx)
 	s.logResult("ListOptionalInstalls", "", err, started)
 	return items, err
+}
+
+// GetBranding returns the organisation branding the service resolved from policy
+// and config. The UI never reads either source itself.
+func (s *UIService) GetBranding() (branding.Branding, error) {
+	started := time.Now()
+	ctx, err := s.callContext()
+	if err != nil {
+		s.logResult("GetBranding", "", err, started)
+		return branding.Branding{}, err
+	}
+	b, err := s.client.GetBranding(ctx)
+	s.logResult("GetBranding", "", err, started)
+	return b, err
 }
 
 func (s *UIService) InstallItem(itemName string) (gorillaservice.AcceptedOperation, error) {
