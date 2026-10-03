@@ -40,6 +40,8 @@ func main() {
 		Name:            "Gorilla UI",
 		Title:           "Gorilla UI",
 		URL:             "/",
+		Width:           1100,
+		Height:          760,
 		DevToolsEnabled: false,
 	})
 

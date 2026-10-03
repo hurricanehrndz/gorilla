@@ -237,6 +237,53 @@ export function progressLabel(record: ActivityRecord): string {
 }
 
 /**
+ * CardProgress is what an item's own card shows for the operation the user
+ * started on it: one short line and a bar while it runs, then only an outcome
+ * worth acting on (Failed, Deferred, a request error). The full timeline is in
+ * Activity, the way Managed Software Center keeps its log off the main view.
+ */
+export type CardProgress = {
+  label: string;
+  /** Determinate percentage; absent while active means an indeterminate bar. */
+  percent?: number;
+  outcome: OperationOutcome;
+};
+
+export function cardProgress(
+  item: Pick<OptionalInstallItem, "itemName">,
+  records: ActivityRecord[],
+  outcome: OperationOutcome,
+): CardProgress | null {
+  const latest = records[records.length - 1];
+  if (!latest) {
+    return null;
+  }
+  if (outcome === "active") {
+    const own = latest.itemName === item.itemName;
+    if (isItemPhase(latest.state)) {
+      // A dependency or updater can take over mid-run; name it so the bar's
+      // percentage (which is scoped to that item) is not read as this item's.
+      const who = own ? "" : ` ${latest.displayName || latest.itemName}`;
+      return {
+        label: `${stateLabel(latest.state)}${who}…`,
+        percent: typeof latest.progressPercent === "number" ? latest.progressPercent : undefined,
+        outcome,
+      };
+    }
+    return { label: own ? `${stateLabel(latest.state)}…` : "In progress…", outcome };
+  }
+  // A success needs no epilogue: the refreshed list status is authoritative.
+  if (outcome === "terminal" && latest.state === "Succeeded") {
+    return null;
+  }
+  const message = latest.message.trim();
+  return {
+    label: message ? `${stateLabel(latest.state)} — ${message}` : stateLabel(latest.state),
+    outcome,
+  };
+}
+
+/**
  * deriveAction maps an item to its single primary action. Cancelling a pending
  * install or removal reuses the opposite mutation; it is not a new protocol
  * operation.

@@ -21,11 +21,6 @@
     </p>
 
     <main>
-      <section id="view-operations" aria-labelledby="operations-heading" hidden>
-        <h2 id="operations-heading">Operations started in this session</h2>
-        <div id="operation-list" class="operations"></div>
-      </section>
-
       <section id="view-home" aria-labelledby="home-heading">
         <h2 id="home-heading">Available software</h2>
 
@@ -57,27 +52,36 @@
         <ol id="activity-list" class="activity"></ol>
         <p id="activity-empty">No operations have been started from this app yet.</p>
       </section>
-    </main>
 
-    <dialog id="detail" aria-labelledby="detail-name">
-      <div class="detail-head">
-        <span id="detail-glyph" class="glyph" aria-hidden="true"></span>
-        <h2 id="detail-name"></h2>
-        <button type="button" id="detail-close" aria-label="Close details">Close</button>
-      </div>
-      <p id="detail-restart" class="badge" hidden></p>
-      <dl>
-        <dt>Status</dt>
-        <dd id="detail-status"></dd>
-        <dt>Version</dt>
-        <dd id="detail-version"></dd>
-        <dt>Developer</dt>
-        <dd id="detail-developer"></dd>
-        <dt>Category</dt>
-        <dd id="detail-category"></dd>
-      </dl>
-      <p id="detail-description"></p>
-    </dialog>
+      <!-- Drill-down detail page, like Managed Software Center's: Back (and
+           Escape) returns to the list and refocuses the card it came from. -->
+      <section id="view-detail" aria-labelledby="detail-name" hidden>
+        <p class="detail-nav">
+          <button type="button" id="detail-back">‹ Back</button>
+        </p>
+        <div class="detail-head">
+          <span id="detail-glyph" class="glyph glyph-large" aria-hidden="true"></span>
+          <div class="detail-title">
+            <h2 id="detail-name"></h2>
+            <p id="detail-developer" class="card-meta"></p>
+          </div>
+          <button type="button" id="detail-action"></button>
+        </div>
+        <p id="detail-restart" class="badge" hidden></p>
+        <p class="card-status" aria-live="polite"></p>
+        <progress class="card-progress" max="100" hidden></progress>
+        <p id="detail-description"></p>
+        <h3>Information</h3>
+        <dl>
+          <dt>Version</dt>
+          <dd id="detail-version"></dd>
+          <dt>Developer</dt>
+          <dd id="detail-developer-value"></dd>
+          <dt>Category</dt>
+          <dd id="detail-category"></dd>
+        </dl>
+      </section>
+    </main>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

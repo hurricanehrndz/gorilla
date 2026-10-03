@@ -33,7 +33,9 @@ error/cancellation fields. The frontend subscribes once and routes records by
 
 - `progressPercent` is **per item**. It may reset when the event's item changes
   (for example when a dependency or updater runs). It is never aggregate
-  operation progress; the overall operation indicator is indeterminate.
+  operation progress. The item's card shows the current phase and a bar; a phase
+  without a percentage gets an indeterminate bar, and there is no overall
+  operation indicator. The record timeline is only in Activity.
 - `ItemCompleted` and `ItemFailed` are **non-terminal**. A dependency failure does
   not end the operation.
 - Only `Succeeded`, `Failed`, `Deferred`, and `Canceled` end an operation.

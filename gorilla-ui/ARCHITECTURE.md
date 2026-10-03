@@ -23,8 +23,12 @@ and `Canceled` — from the requested item's real run report or service
 cancellation/error — end an operation.
 
 `progressPercent` is scoped to the record's `itemName` and may reset at an item
-boundary, so the UI renders a determinate `<progress max="100">` only for the
-current item and leaves the overall operation indicator indeterminate. No
+boundary. The UI shows progress on the item's own card: one status line and a
+`<progress max="100">` that is determinate only when the record carries a
+percentage, and names the record's item when a dependency or updater takes
+over, so that item's percentage is not read as the card's. There is no overall
+operation indicator. The record timeline is shown only in Activity, never on the
+Home view. No
 percentage is fabricated for status checks, no-action items, blocking-app checks,
 or pre/post scripts.
 

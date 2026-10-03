@@ -7,6 +7,7 @@ import {
   STREAM_ENDED_STATE,
   activityLine,
   bannerMessage,
+  cardProgress,
   categories,
   categoryGlyph,
   compareItems,
@@ -361,4 +362,58 @@ test("activity lines name the item, state and message", () => {
     }),
     "not-a-date — DemoUpdater: Queued",
   );
+});
+
+test("card progress shows one line and a bar while active, then only outcomes worth acting on", () => {
+  const chrome = { itemName: "GoogleChrome" };
+  const record = (overrides) => ({
+    operationId: "op-1",
+    itemName: "GoogleChrome",
+    displayName: "Google Chrome",
+    state: "Installing",
+    message: "",
+    timestampUtc: "2026-10-03T22:22:44Z",
+    ...overrides,
+  });
+
+  assert.equal(cardProgress(chrome, [], "active"), null);
+  // Queued/Requested: a line, no percentage (indeterminate bar).
+  assert.deepEqual(cardProgress(chrome, [record({ state: "Requested" })], "active"), {
+    label: "Requested…",
+    outcome: "active",
+  });
+  // Own item phase carries its percentage.
+  assert.deepEqual(cardProgress(chrome, [record({ progressPercent: 50 })], "active"), {
+    label: "Installing…",
+    percent: 50,
+    outcome: "active",
+  });
+  // Another item's phase (updater, dependency, or an unrelated item in the
+  // same run) is named so its percentage is not read as this item's.
+  assert.deepEqual(
+    cardProgress(
+      chrome,
+      [record({ itemName: "DemoFailing", displayName: "Demo Failing", progressPercent: 50 })],
+      "active",
+    ),
+    { label: "Installing Demo Failing…", percent: 50, outcome: "active" },
+  );
+  assert.deepEqual(
+    cardProgress(chrome, [record({ itemName: "DemoFailing", displayName: "Demo Failing", state: "ItemFailed" })], "active"),
+    { label: "In progress…", outcome: "active" },
+  );
+  // Success leaves the card to the refreshed list status.
+  assert.equal(
+    cardProgress(chrome, [record({ state: "Succeeded", message: "Operation completed" })], "terminal"),
+    null,
+  );
+  // Deferred/Failed keep their reason on the card until the next action.
+  assert.deepEqual(
+    cardProgress(chrome, [record({ state: "Deferred", message: "blocking application(s) running: chrome" })], "terminal"),
+    { label: "Deferred — blocking application(s) running: chrome", outcome: "terminal" },
+  );
+  assert.deepEqual(cardProgress(chrome, [record({ state: ERROR_STATE, message: "pipe closed" })], "error"), {
+    label: "Request failed — pipe closed",
+    outcome: "error",
+  });
 });

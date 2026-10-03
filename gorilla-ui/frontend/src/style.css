@@ -218,52 +218,23 @@ h2 {
   font-size: 0.8rem;
 }
 
-.operations {
-  display: grid;
-  gap: 1rem;
+/* Progress lives on the item's own card; the log is in Activity. */
+.card progress {
+  width: 100%;
+  height: 0.5rem;
+  accent-color: var(--accent);
 }
 
-.operation {
-  display: grid;
-  gap: 0.4rem;
-  justify-items: start;
-  padding: 1rem;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+.card-status[data-outcome] {
+  color: var(--ink);
 }
 
-.operation[data-outcome="error"] {
-  border-color: var(--warn-line);
+.card-status[data-outcome="error"],
+.card-status[data-outcome="terminal"] {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--warn-line);
   background: var(--warn-bg);
-}
-
-.operation h3 {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.operation p {
-  margin: 0;
-}
-
-.operation progress {
-  width: min(28rem, 100%);
-}
-
-.operation-current {
-  color: var(--muted);
-}
-
-.operation-item {
-  font-size: 0.85rem;
-}
-
-.timeline {
-  margin: 0.25rem 0 0;
-  padding-left: 1.25rem;
-  color: var(--muted);
-  font-size: 0.85rem;
+  border-radius: 6px;
 }
 
 .disclaimer {
@@ -276,41 +247,68 @@ h2 {
   padding-left: 1.25rem;
 }
 
-dialog {
-  max-width: min(38rem, 92vw);
-  padding: 1.25rem;
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+/* Detail page: a drill-down, not a dialog. Back (and Escape) returns to the list. */
+#view-detail {
+  max-width: 60rem;
 }
 
-dialog::backdrop {
-  background: rgb(0 0 0 / 45%);
+.detail-nav {
+  margin: 0 0 1rem;
 }
 
 .detail-head {
   display: flex;
-  gap: 0.75rem;
+  gap: 1rem;
   align-items: center;
 }
 
-.detail-head h2 {
+.detail-title {
   flex: 1;
+  min-width: 0;
+}
+
+.detail-title h2,
+.detail-title p {
   margin: 0;
 }
 
-dialog dl {
+.detail-head h2 {
+  font-size: 1.5rem;
+}
+
+.glyph-large {
+  width: 4.5rem;
+  height: 4.5rem;
+  font-size: 1.5rem;
+}
+
+#view-detail .card-status {
+  margin: 0.75rem 0 0.25rem;
+}
+
+#view-detail .card-progress {
+  width: min(28rem, 100%);
+}
+
+#view-detail h3 {
+  margin: 1.5rem 0 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 1rem;
+}
+
+#view-detail dl {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.25rem 1rem;
+  margin: 0;
 }
 
-dialog dt {
+#view-detail dt {
   color: var(--muted);
 }
 
-dialog dd {
+#view-detail dd {
   margin: 0;
 }
 
