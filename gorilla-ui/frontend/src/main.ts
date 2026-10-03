@@ -182,7 +182,8 @@ function card(item: OptionalInstallItem): HTMLElement {
   const action = document.createElement("button");
   const derived = deriveAction(item);
   action.type = "button";
-  action.className = "pill pill-primary";
+  // Board B draws Remove outlined; the other primary actions are solid.
+  action.className = `pill ${derived.label === "Remove" ? "pill-outline" : "pill-primary"}`;
   action.textContent = derived.label;
   // Only the item that owns an in-flight operation is disabled; other items
   // stay actionable and route independently by operation ID.
@@ -448,6 +449,7 @@ function renderDetail(): void {
   setText("#detail-restart", restartBadge(item), "None");
 
   const derived = deriveAction(item);
+  detailAction.className = `pill pill-large ${derived.label === "Remove" ? "pill-outline" : "pill-primary"}`;
   detailAction.textContent = derived.label;
   detailAction.disabled = isItemActive(active, item.itemName);
   detailAction.setAttribute("aria-label", `${derived.label} ${item.displayName}`);
