@@ -746,3 +746,22 @@ func TestCheckStatusNone(t *testing.T) {
 		t.Errorf("console output missing %q:\n%s", want, console.String())
 	}
 }
+
+// TestInvalidateDropsRegistryCache validates that Invalidate makes the next
+// registry check re-read the registry instead of the run's earlier snapshot.
+// Found by the Chrome e2e: after a real MSI uninstall the self-serve prune
+// still saw the item as installed and never cleared managed_uninstalls.
+func TestInvalidateDropsRegistryCache(t *testing.T) {
+	c := &Checker{registryItems: fakeRegistryItems}
+	actionNeeded, _ := c.checkRegistry(registryCheckItem, "uninstall")
+	if !actionNeeded {
+		t.Fatalf("expected the seeded cache to report the item as installed")
+	}
+
+	// The uninstall happened; the cache must not outlive it.
+	c.Invalidate()
+	actionNeeded, _ = c.checkRegistry(registryCheckItem, "uninstall")
+	if actionNeeded {
+		t.Errorf("checkRegistry still reported the item installed after Invalidate")
+	}
+}
