@@ -85,3 +85,14 @@ export function loadActivity(storage: StorageLike): ActivityRecord[] {
 export function saveActivity(storage: StorageLike, records: ActivityRecord[]): void {
   write(storage, ACTIVITY_KEY, records.slice(0, ACTIVITY_LIMIT));
 }
+
+export const BRANDING_KEY = "gorilla.branding.v1";
+
+/** loadBranding returns the last GetBranding payload; brandingView validates it. */
+export function loadBranding(storage: StorageLike): unknown {
+  return read(storage, BRANDING_KEY);
+}
+
+export function saveBranding(storage: StorageLike, payload: unknown): void {
+  write(storage, BRANDING_KEY, payload);
+}

@@ -4,10 +4,13 @@ import test from "node:test";
 import {
   ACTIVITY_KEY,
   ACTIVITY_LIMIT,
+  BRANDING_KEY,
   LIST_KEY,
   loadActivity,
+  loadBranding,
   loadList,
   saveActivity,
+  saveBranding,
   saveList,
 } from "./cache.ts";
 
@@ -123,4 +126,15 @@ test("activity records missing a rendered field are rejected, not shown as undef
 test("an over-long stored activity list is still capped on read", () => {
   const oversized = JSON.stringify(Array.from({ length: 120 }, (_, i) => record(i)));
   assert.equal(loadActivity(memoryStorage({ [ACTIVITY_KEY]: oversized })).length, ACTIVITY_LIMIT);
+});
+
+test("branding round-trips and a broken store reads as nothing", () => {
+  const storage = memoryStorage();
+  const payload = { title: "Acme", accent: "#0b6e4f" };
+  saveBranding(storage, payload);
+  assert.deepEqual(JSON.parse(storage.data[BRANDING_KEY]), payload);
+  assert.deepEqual(loadBranding(storage), payload);
+  assert.equal(loadBranding(memoryStorage({ [BRANDING_KEY]: "{not json" })), null);
+  assert.equal(loadBranding(brokenStorage), null);
+  saveBranding(brokenStorage, payload);
 });

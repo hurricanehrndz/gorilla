@@ -1,9 +1,10 @@
+import type { Branding } from "../bindings/github.com/1dustindavis/gorilla/pkg/branding/models.js";
 import type {
   AcceptedOperation,
   OptionalInstallItem,
 } from "../bindings/github.com/1dustindavis/gorilla/pkg/service/models.js";
 
-export type { AcceptedOperation, OptionalInstallItem };
+export type { AcceptedOperation, Branding, OptionalInstallItem };
 
 // ponytail: OperationStatus is hand-typed because the committed bindings are
 // generated with -noevents, so no generated model exists for the event payload.
@@ -28,6 +29,9 @@ export type GorillaApi = {
   removeItem(itemName: string): Promise<AcceptedOperation>;
   watchOperation(operationId: string): Promise<void>;
   onOperationStatus(handler: (status: OperationStatus) => void): void;
+  getBranding(): Promise<Branding>;
+  /** openExternal opens an http(s) URL in the system browser, never in the WebView. */
+  openExternal(url: string): Promise<void>;
 };
 
 // The implementation is selected by mode in vite.config.ts: development

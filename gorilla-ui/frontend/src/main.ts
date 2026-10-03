@@ -3,8 +3,10 @@ import {
   ACTIVITY_LIMIT,
   type StorageLike,
   loadActivity,
+  loadBranding,
   loadList,
   saveActivity,
+  saveBranding,
   saveList,
 } from "./cache.ts";
 import {
@@ -12,11 +14,13 @@ import {
   REQUESTED_STATE,
   activityLine,
   bannerMessage,
+  brandingView,
   cardProgress,
   categories,
   deriveAction,
   fromCache,
   glyphTone,
+  httpUrl,
   isItemActive,
   isTerminalState,
   localErrorState,
@@ -40,6 +44,7 @@ import {
 import type {
   ActiveOperations,
   ActivityRecord,
+  BrandingView,
   ItemAction,
   ListView,
   OperationView,
@@ -105,6 +110,62 @@ let active: ActiveOperations = new Map();
 // Operations started in this session, oldest first; Activity keeps the history.
 const operations = new Map<string, OperationView>();
 let localOperations = 0;
+
+const brandBanner = need<HTMLElement>("#banner");
+const bannerLogo = need<HTMLSpanElement>("#banner-logo");
+const bannerHelp = need<HTMLButtonElement>("#banner-help");
+const productMark = need<HTMLSpanElement>("#product-mark");
+let branding: BrandingView = brandingView(null);
+
+function logoImage(src: string): HTMLImageElement {
+  const img = document.createElement("img");
+  img.alt = "";
+  img.src = src;
+  return img;
+}
+
+/**
+ * applyBranding shows the organisation branding: admin configuration from the
+ * service (policy registry or config.yaml), never catalog data. With nothing
+ * configured it leaves the shell exactly as the default markup draws it.
+ */
+function applyBranding(next: BrandingView): void {
+  branding = next;
+  brandBanner.hidden = !next.showBanner;
+  bannerLogo.hidden = !next.logoSrc;
+  bannerLogo.replaceChildren(...(next.logoSrc ? [logoImage(next.logoSrc)] : []));
+  need<HTMLParagraphElement>("#banner-title").textContent = next.title;
+  need<HTMLParagraphElement>("#banner-tagline").textContent = next.tagline;
+  bannerHelp.hidden = !next.helpUrl;
+  bannerHelp.textContent = next.helpLabel;
+  need<HTMLSpanElement>("#product-name").textContent = next.productName;
+  if (next.logoSrc) {
+    productMark.replaceChildren(logoImage(next.logoSrc));
+  } else {
+    productMark.textContent = next.productMark;
+  }
+  const root = document.documentElement;
+  if (next.accent) {
+    root.style.setProperty("--brand", next.accent);
+    root.style.setProperty("--on-brand", next.onAccent);
+    root.dataset.accent = "";
+  } else {
+    root.style.removeProperty("--brand");
+    root.style.removeProperty("--on-brand");
+    delete root.dataset.accent;
+  }
+}
+
+/** refreshBranding converges on the service's branding; a failure keeps the cached one. */
+async function refreshBranding(): Promise<void> {
+  try {
+    const payload = await api.getBranding();
+    saveBranding(storage, payload);
+    applyBranding(brandingView(payload));
+  } catch {
+    // An older service or a stopped one: the list refresh reports the connection.
+  }
+}
 
 function renderBanner(): void {
   connectionText.textContent = bannerMessage(view, lastError);
@@ -516,6 +577,14 @@ function showView(next: View): void {
   }
 }
 
+bannerHelp.addEventListener("click", () => {
+  // The service validated the URL; check again so nothing but http(s) ever
+  // leaves the WebView, and open it in the system browser, never in here.
+  const url = httpUrl(branding.helpUrl);
+  if (url) {
+    void api.openExternal(url).catch(() => {});
+  }
+});
 filtersForm.addEventListener("submit", (event) => event.preventDefault());
 searchInput.addEventListener("input", renderGrid);
 categorySelect.addEventListener("change", renderGrid);
@@ -551,7 +620,9 @@ document.addEventListener("keydown", (event) => {
 
 // Render whatever is cached before any network work, then converge on the
 // authoritative service response.
+applyBranding(brandingView(loadBranding(storage)));
 view = fromCache(loadList(storage));
 render();
 showView("software");
 void refresh();
+void refreshBranding();

@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	gorillaservice "github.com/1dustindavis/gorilla/pkg/service"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 type fakeServiceClient struct {
 	items       []gorillaservice.OptionalInstallItem
+	branding    branding.Branding
 	accepted    gorillaservice.AcceptedOperation
 	listCalls   int
 	installName string
@@ -27,6 +29,10 @@ type fakeServiceClient struct {
 func (f *fakeServiceClient) ListOptionalInstalls(context.Context) ([]gorillaservice.OptionalInstallItem, error) {
 	f.listCalls++
 	return f.items, nil
+}
+
+func (f *fakeServiceClient) GetBranding(context.Context) (branding.Branding, error) {
+	return f.branding, nil
 }
 
 func (f *fakeServiceClient) InstallItem(_ context.Context, itemName string) (gorillaservice.AcceptedOperation, error) {
@@ -48,8 +54,13 @@ func TestUIServiceValidationAndForwarding(t *testing.T) {
 	client := &fakeServiceClient{
 		items:    []gorillaservice.OptionalInstallItem{{ItemName: "demo", DisplayName: "Demo"}},
 		accepted: gorillaservice.AcceptedOperation{OperationID: "op-1", Accepted: true},
+		branding: branding.Branding{Title: "Acme"},
 	}
 	service := &UIService{client: client, logger: discardLogger(), ctx: context.Background()}
+
+	if b, err := service.GetBranding(); err != nil || b.Title != "Acme" {
+		t.Fatalf("branding forwarding failed: %#v %v", b, err)
+	}
 
 	items, err := service.ListOptionalInstalls()
 	if err != nil || len(items) != 1 || client.listCalls != 1 {
@@ -95,6 +106,9 @@ func TestUIServiceWithoutStartupRejectsCalls(t *testing.T) {
 	}
 	if err := service.WatchOperation("op-1"); err == nil || client.streamID != "" {
 		t.Fatalf("watch forwarded without startup: id=%q err=%v", client.streamID, err)
+	}
+	if _, err := service.GetBranding(); err == nil {
+		t.Fatal("branding forwarded without startup")
 	}
 }
 
@@ -265,4 +279,24 @@ func testApplication() *application.App {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// The window opens with the branded title, and falls back to the default when
+// the service is down or nothing is configured.
+func TestWindowTitle(t *testing.T) {
+	get := func(b branding.Branding, err error) func(context.Context) (branding.Branding, error) {
+		return func(context.Context) (branding.Branding, error) { return b, err }
+	}
+	for _, tt := range []struct {
+		get  func(context.Context) (branding.Branding, error)
+		want string
+	}{
+		{get(branding.Branding{Title: "Acme Software Center"}, nil), "Acme Software Center"},
+		{get(branding.Branding{}, nil), defaultWindowTitle},
+		{get(branding.Branding{Title: "ignored"}, errors.New("pipe down")), defaultWindowTitle},
+	} {
+		if got := windowTitle(tt.get, discardLogger()); got != tt.want {
+			t.Errorf("windowTitle = %q, want %q", got, tt.want)
+		}
+	}
 }

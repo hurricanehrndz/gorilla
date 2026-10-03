@@ -8,6 +8,7 @@ import {
   STREAM_ENDED_STATE,
   activityLine,
   bannerMessage,
+  brandingView,
   cardProgress,
   categories,
   categoryGlyph,
@@ -15,6 +16,8 @@ import {
   deriveAction,
   fromCache,
   glyphTone,
+  httpUrl,
+  isHexColor,
   isItemActive,
   isItemPhase,
   isTerminalState,
@@ -22,6 +25,7 @@ import {
   localRecord,
   monogram,
   myItems,
+  onAccent,
   progressLabel,
   progressText,
   releaseOperation,
@@ -532,4 +536,81 @@ test("the strip shows the running operation the service is working on, as n of N
   ]);
   assert.equal(unmeasured.progress.percent, undefined);
   assert.equal(progressText(unmeasured.progress), "Item Completed…");
+});
+
+// With nothing configured the shell must look exactly as it does unbranded.
+test("brandingView of an empty or missing payload is the default shell", () => {
+  for (const payload of [null, undefined, "junk", {}, { title: "  ", accent: "", helpUrl: "" }]) {
+    const view = brandingView(payload);
+    assert.equal(view.showBanner, false);
+    assert.equal(view.productName, "Gorilla");
+    assert.equal(view.productMark, "G");
+    assert.equal(view.accent, "");
+    assert.equal(view.logoSrc, "");
+    assert.equal(view.helpUrl, "");
+  }
+});
+
+test("brandingView shows the banner for any of title, tagline, logo or help", () => {
+  const png = { logoMime: "image/png", logoBase64: "iVBORw0KGgo=" };
+  for (const payload of [{ title: "Acme" }, { tagline: "Call ext. 1234" }, png, { helpUrl: "https://example.invalid/help" }]) {
+    assert.equal(brandingView(payload).showBanner, true, JSON.stringify(payload));
+  }
+  // An accent alone recolours the shell but is not banner content.
+  assert.equal(brandingView({ accent: "#0b6e4f" }).showBanner, false);
+  // A help label without a URL has nothing to open.
+  assert.equal(brandingView({ helpLabel: "Get help" }).showBanner, false);
+});
+
+test("brandingView maps the branded board", () => {
+  const view = brandingView({
+    title: "Acme Software Center",
+    tagline: "Need help? Call the service desk at ext. 1234.",
+    helpUrl: "https://example.invalid/help",
+    helpLabel: "",
+    accent: "#0B6E4F",
+    logoMime: "image/png",
+    logoBase64: "iVBORw0KGgo=",
+  });
+  assert.equal(view.productName, "Acme Software Center");
+  assert.equal(view.productMark, "A");
+  assert.equal(view.logoSrc, "data:image/png;base64,iVBORw0KGgo=");
+  assert.equal(view.helpLabel, "Get help");
+  assert.equal(view.accent, "#0b6e4f");
+  assert.equal(view.onAccent, "#ffffff");
+});
+
+// The WebView only ever opens http(s), builds an image data: URL, or sets a
+// #rrggbb colour, even if a cached or tampered payload says otherwise.
+test("brandingView drops values the WebView must not use", () => {
+  const view = brandingView({
+    title: "Acme",
+    helpUrl: "javascript:alert(1)",
+    helpLabel: "Click",
+    accent: "red; --x: url(evil)",
+    logoMime: "text/html",
+    logoBase64: "PHNjcmlwdD4=",
+  });
+  assert.equal(view.helpUrl, "");
+  assert.equal(view.helpLabel, "");
+  assert.equal(view.accent, "");
+  assert.equal(view.logoSrc, "");
+  assert.equal(brandingView({ logoMime: "image/svg+xml", logoBase64: '"><script>' }).logoSrc, "");
+});
+
+test("isHexColor and httpUrl", () => {
+  assert.equal(isHexColor("#0b6e4f"), true);
+  assert.equal(isHexColor("#0b6e4"), false);
+  assert.equal(isHexColor("0b6e4f"), false);
+  assert.equal(httpUrl("https://example.invalid/help"), "https://example.invalid/help");
+  assert.equal(httpUrl("HTTP://intranet/help"), "http://intranet/help");
+  assert.equal(httpUrl("file:///C:/Windows"), "");
+  assert.equal(httpUrl("/help"), "");
+});
+
+test("onAccent picks readable text", () => {
+  assert.equal(onAccent("#0b6e4f"), "#ffffff");
+  assert.equal(onAccent("#1a5fb4"), "#ffffff");
+  assert.equal(onAccent("#ffd400"), "#1b1b1f");
+  assert.equal(onAccent("#ffffff"), "#1b1b1f");
 });

@@ -4,12 +4,13 @@
 
 The Wails process runs as the interactive standard user. The SYSTEM Gorilla service remains the authorization and filesystem boundary. UI code receives no Gorilla configuration, credentials, arbitrary paths, package-server settings, or internal catalog objects.
 
-`UIService` binds exactly four calls backed by the shared `pkg/service.Client`:
+`UIService` binds exactly five calls backed by the shared `pkg/service.Client`:
 
 1. `ListOptionalInstalls`
 2. `InstallItem`
 3. `RemoveItem`
 4. `WatchOperation`
+5. `GetBranding`
 
 `WatchOperation` uses Wails' application-lifetime context and emits typed records only on `gorilla:operation-status`. The frontend imports generated calls through `frontend/src/wails-api.ts`.
 
@@ -35,13 +36,41 @@ percentage is fabricated for status checks, no-action items, blocking-app checks
 or pre/post scripts.
 
 The app bar carries the connection state (a dot and the cached/stale message
-with Retry). Above it, an empty `#banner` section stays hidden until branding
-fills it. "My items" is the same list filtered on the client to installed or
+with Retry). Above it, the `#banner` section stays hidden until branding
+fills it (see Branding). "My items" is the same list filtered on the client to installed or
 managed items; it is not a separate service call.
 
 Installed and managed state come only from an authoritative `ListOptionalInstalls`
 refresh performed after a terminal record, never from progress records. A failed
 refresh keeps the prior data and marks it stale.
+
+## Branding
+
+Branding is admin configuration, not catalog data. The SYSTEM service resolves
+it on each `GetBranding` call, field by field, first match wins:
+
+1. REG_SZ values under `HKLM\SOFTWARE\Policies\Gorilla\Branding` (`Title`,
+   `Tagline`, `LogoPath`, `HelpUrl`, `HelpLabel`, `Accent`), for MDM and GPO.
+2. The `branding:` block in `config.yaml`.
+3. Nothing, and the UI keeps its default look.
+
+`pkg/branding` validates after the merge, so a bad policy value is dropped rather
+than replaced by the config value. Text is trimmed, stripped of control
+characters and capped (title 120, tagline 240, help label 60 runes). The help
+URL must be absolute http or https. The accent must match `#rrggbb`. The logo is
+read from its local path on every call, capped at 512 KiB, and kept only if its
+bytes sniff as PNG, JPEG or SVG. A dropped field is logged at debug level and
+never fails the call.
+
+`GetBranding` skips the service command queue, because the UI calls it once
+before creating its window to pick the window title and must not wait behind a
+managed run. That startup call gives up after two seconds and falls back to
+"Gorilla UI". The frontend then applies the cached payload from
+`gorilla.branding.v1`, fetches a fresh one and reapplies it. The banner shows
+when a title, tagline, logo or help URL is set. The logo is an `<img>` from a
+`data:` URL, so an SVG cannot run script. The help button opens its URL in the
+system browser through the Wails Browser API after the frontend checks the
+scheme again. The UI never reads `config.yaml` or the registry itself.
 
 ## Frontend state
 

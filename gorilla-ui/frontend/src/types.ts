@@ -57,3 +57,24 @@ export type ListView = {
   source: ListSource;
   savedAtUtc: string;
 };
+
+/**
+ * BrandingView is the shell's organisation branding: admin configuration from
+ * the service (policy registry or config.yaml), never catalog data. Empty
+ * strings mean "not configured"; brandingView fills in the defaults.
+ */
+export type BrandingView = {
+  title: string;
+  tagline: string;
+  /** A data: URL for <img>, or "" when there is no usable logo. */
+  logoSrc: string;
+  helpUrl: string;
+  helpLabel: string;
+  /** #rrggbb, or "" to keep the default accent. */
+  accent: string;
+  /** Text colour that reads on `accent`. */
+  onAccent: string;
+  productName: string;
+  productMark: string;
+  showBanner: boolean;
+};
