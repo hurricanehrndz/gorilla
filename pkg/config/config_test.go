@@ -33,7 +33,15 @@ func TestGet(t *testing.T) {
 		ServiceName:     "gorilla",
 		ServiceInterval: "1h",
 		ServicePipeName: "gorilla-service",
-		ConfigPath:      "testdata/test_config.yaml",
+		Branding: Branding{
+			Title:     "Acme Software Center",
+			Tagline:   "Need help? Call the service desk at ext. 1234.",
+			Logo:      `C:\ProgramData\gorilla\branding\logo.png`,
+			HelpURL:   "https://example.com/help",
+			HelpLabel: "Get help",
+			Accent:    "#0b6e4f",
+		},
+		ConfigPath: "testdata/test_config.yaml",
 	}
 
 	// Save the original arguments
@@ -199,7 +207,7 @@ func Example() {
 	// -a, -about          displays the version number and other build info
 	// -V, -version        display the version number
 	// -s, -service        run Gorilla as a Windows service
-	// -S, -servicecmd     send a command to a running Gorilla service (ListOptionalInstalls|InstallItem:itemName|RemoveItem:itemName|StreamOperationStatus:operationId)
+	// -S, -servicecmd     send a command to a running Gorilla service (ListOptionalInstalls|GetBranding|InstallItem:itemName|RemoveItem:itemName|StreamOperationStatus:operationId)
 	// -serviceinstall     install Gorilla as a Windows service
 	// -serviceremove      remove Gorilla Windows service
 	// -servicestart       start Gorilla Windows service
