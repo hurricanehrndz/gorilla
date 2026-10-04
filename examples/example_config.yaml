@@ -8,3 +8,13 @@ app_data_path: c:/cpe/gorilla/cache
 # service_name: gorilla
 # service_interval: 1h
 # service_pipe_name: gorilla-service
+# Optional organisation branding for Gorilla UI. Policy values under
+# HKLM\SOFTWARE\Policies\Gorilla\Branding override each field. Leave the block
+# out to keep the default look.
+# branding:
+#   title: Acme Software Center
+#   tagline: Need help? Call the service desk at ext. 1234.
+#   logo: C:\ProgramData\gorilla\branding\logo.png   # local PNG, JPEG or SVG, at most 512 KiB
+#   help_url: https://help.example.com/               # http or https only
+#   help_label: Get help
+#   accent: "#0b6e4f"                                 # 6-digit hex

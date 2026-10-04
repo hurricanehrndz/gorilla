@@ -70,6 +70,15 @@ func TestReconcileSelfServe(t *testing.T) {
 			wantUninstalls: []string{"GoneItem"},
 			wantChanged:    false,
 		},
+		{
+			// A self-service request must never remove an item the admin
+			// requires, even when the file asks for it (e.g. written by hand).
+			name:           "uninstall of a managed_installs item is dropped",
+			selfServe:      manifest.Item{Uninstalls: []string{"EDRAgent", "GoneItem"}},
+			manifests:      []manifest.Item{{Installs: []string{"EDRAgent"}, OptionalInstalls: []string{"EDRAgent"}}},
+			wantUninstalls: []string{"GoneItem"},
+			wantChanged:    false,
+		},
 	}
 
 	for _, tc := range tests {

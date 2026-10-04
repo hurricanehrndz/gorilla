@@ -23,10 +23,11 @@ func resetMainHooks() {
 	mkdirAllFunc = os.MkdirAll
 	newReportFunc = report.New
 	managedRunFunc = managedRun
-	runServiceFunc = func(cfg config.Configuration) error { return service.Run(cfg, managedRunFunc) }
+	runServiceFunc = runService
 	sendServiceCommandFunc = service.SendCommand
 	runServiceActionFunc = service.RunAction
 	serviceStatusFunc = service.ServiceStatus
+	protectAppDataFunc = func(string) error { return nil }
 }
 
 func TestRunAdminCheckError(t *testing.T) {
@@ -40,7 +41,7 @@ func TestRunAdminCheckError(t *testing.T) {
 		return nil
 	}
 
-	_, err := managedRun(cfg, nil)
+	_, err := managedRun(cfg, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -60,7 +61,7 @@ func TestRunRequiresAdmin(t *testing.T) {
 		return nil
 	}
 
-	_, err := managedRun(cfg, nil)
+	_, err := managedRun(cfg, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -81,7 +82,7 @@ func TestRunCheckOnlySkipsAdminCheck(t *testing.T) {
 	}
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return errors.New("mkdir failed") }
 
-	_, err := managedRun(cfg, nil)
+	_, err := managedRun(cfg, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -101,7 +102,7 @@ func TestRunCreateCacheError(t *testing.T) {
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return errors.New("mkdir failed") }
 
-	_, err := managedRun(cfg, nil)
+	_, err := managedRun(cfg, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -132,7 +133,7 @@ func TestManagedRunFinalizesReportOnManifestError(t *testing.T) {
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return nil }
 
-	_, err := managedRun(cfg, nil)
+	_, err := managedRun(cfg, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error from manifest retrieval")
 	}
@@ -192,14 +193,14 @@ func TestManagedRunStateIsRunScoped(t *testing.T) {
 	mkdirAllFunc = func(path string, mode os.FileMode) error { return nil }
 
 	// Run 1 fails at manifest retrieval; simulate items recorded during it
-	if _, err := managedRun(cfg, nil); err == nil {
+	if _, err := managedRun(cfg, nil, nil); err == nil {
 		t.Fatalf("expected error from manifest retrieval")
 	}
 	reports[0].InstalledItems = append(reports[0].InstalledItems, catalog.Item{DisplayName: "run1-item"})
 	reports[0].FailedItems = append(reports[0].FailedItems, report.FailedItem{Name: "run1-failure"})
 
 	// Run 2 must build fresh state that shares nothing with run 1
-	if _, err := managedRun(cfg, nil); err == nil {
+	if _, err := managedRun(cfg, nil, nil); err == nil {
 		t.Fatalf("expected error from manifest retrieval")
 	}
 	if len(reports) != 2 {
@@ -223,7 +224,7 @@ func TestExecuteServiceModesSkipRun(t *testing.T) {
 	serviceStatusCalled := false
 	runCalled := false
 
-	managedRunFunc = func(cfg config.Configuration, progress installer.ProgressFn) (*report.Report, error) {
+	managedRunFunc = func(cfg config.Configuration, progress installer.ProgressFn, _ *installer.Cancels) (*report.Report, error) {
 		if progress != nil {
 			t.Fatal("ordinary route unexpectedly supplied progress callback")
 		}
@@ -377,7 +378,7 @@ func TestRoutePrecedenceServiceInstallWins(t *testing.T) {
 		serviceStatusCalled = true
 		return "running", nil
 	}
-	managedRunFunc = func(cfg config.Configuration, _ installer.ProgressFn) (*report.Report, error) {
+	managedRunFunc = func(cfg config.Configuration, _ installer.ProgressFn, _ *installer.Cancels) (*report.Report, error) {
 		runCalled = true
 		return nil, nil
 	}
@@ -607,4 +608,33 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 
 	return fmt.Sprint(buf.String())
+}
+
+// TestRouteServiceInstallProtectsAppData: -serviceinstall must protect the
+// data directory, and a failure to do so must not stop the install.
+func TestRouteServiceInstallProtectsAppData(t *testing.T) {
+	resetMainHooks()
+	defer resetMainHooks()
+
+	protected := ""
+	installed := false
+	protectAppDataFunc = func(path string) error {
+		protected = path
+		return errors.New("access denied")
+	}
+	runServiceActionFunc = func(cfg config.Configuration, action string) error {
+		installed = action == "install"
+		return nil
+	}
+
+	cfg := config.Configuration{ServiceInstall: true, AppDataPath: `C:\ProgramData\gorilla`}
+	if err := route(cfg); err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if protected != cfg.AppDataPath {
+		t.Errorf("protected %q, want %q", protected, cfg.AppDataPath)
+	}
+	if !installed {
+		t.Error("install did not run after the protect failure")
+	}
 }

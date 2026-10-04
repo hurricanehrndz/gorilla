@@ -14,87 +14,63 @@ func TestClientDefaults(t *testing.T) {
 	}
 }
 
-func TestDecodeClientResponseValidatesEnvelope(t *testing.T) {
-	req := newClientRequest(actionStreamOperationStatus, "", "op-1")
-	valid := serviceEnvelope[any]{
-		Version:      pipeProtocolVersion,
-		MessageType:  messageTypeResponse,
-		Operation:    req.Operation,
-		RequestID:    req.RequestID,
-		OperationID:  req.OperationID,
-		TimestampUTC: nowRFC3339UTC(),
-		Payload:      streamOperationStatusAckResponse{StreamAccepted: true},
-	}
+func TestDecodeResponseValidatesResponse(t *testing.T) {
+	id := json.RawMessage(`"req-1"`)
+	valid := `{"jsonrpc":"2.0","id":"req-1","result":{"streamAccepted":true}}`
 
-	tests := []struct {
-		name   string
-		mutate func(*serviceEnvelope[any])
-	}{
-		{"version", func(resp *serviceEnvelope[any]) { resp.Version = "v2" }},
-		{"message type", func(resp *serviceEnvelope[any]) { resp.MessageType = messageTypeEvent }},
-		{"operation", func(resp *serviceEnvelope[any]) { resp.Operation = actionInstallItem }},
-		{"request ID", func(resp *serviceEnvelope[any]) { resp.RequestID = "wrong" }},
-		{"operation ID", func(resp *serviceEnvelope[any]) { resp.OperationID = "wrong" }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := valid
-			tt.mutate(&resp)
-			var decoded serviceEnvelope[json.RawMessage]
-			if err := decodeClientResponse(json.NewDecoder(strings.NewReader(mustJSON(t, resp))), req, &decoded); err == nil {
+	for name, input := range map[string]string{
+		"version":     `{"jsonrpc":"1.0","id":"req-1","result":{}}`,
+		"id":          `{"jsonrpc":"2.0","id":"other","result":{}}`,
+		"null id":     `{"jsonrpc":"2.0","id":null,"result":{}}`,
+		"no result":   `{"jsonrpc":"2.0","id":"req-1"}`,
+		"bad result":  `{"jsonrpc":"2.0","id":"req-1","result":{"streamAccepted":"yes"}}`,
+		"error id":    `{"jsonrpc":"2.0","id":"other","error":{"code":-32001,"message":"boom","data":{"code":"command_failed"}}}`,
+		"error shape": `{"jsonrpc":"2.0","id":"req-1","error":{"code":-32001,"message":"boom"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var ack streamOperationStatusAckResponse
+			if err := decodeResponse(json.NewDecoder(strings.NewReader(input)), id, &ack); err == nil {
 				t.Fatal("expected validation error")
 			}
 		})
 	}
 
-	var decoded serviceEnvelope[json.RawMessage]
-	if err := decodeClientResponse(json.NewDecoder(strings.NewReader(mustJSON(t, valid))), req, &decoded); err != nil {
-		t.Fatalf("valid response rejected: %v", err)
+	var ack streamOperationStatusAckResponse
+	if err := decodeResponse(json.NewDecoder(strings.NewReader(valid)), id, &ack); err != nil || !ack.StreamAccepted {
+		t.Fatalf("valid response rejected: ack=%#v err=%v", ack, err)
 	}
 }
 
-func TestDecodeClientResponseRejectsErrorEnvelope(t *testing.T) {
-	req := newClientRequest(actionListOptionalInstalls, "", "")
-	resp := serviceEnvelope[errorResponsePayload]{
-		Version:     pipeProtocolVersion,
-		MessageType: messageTypeError,
-		Operation:   req.Operation,
-		RequestID:   req.RequestID,
-		Payload: errorResponsePayload{
-			ErrorCode:    "command_failed",
-			ErrorMessage: "boom",
-		},
-	}
-	var decoded serviceEnvelope[json.RawMessage]
-	if err := decodeClientResponse(json.NewDecoder(strings.NewReader(mustJSON(t, resp))), req, &decoded); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("expected service error, got %v", err)
+// An error the service sends before reading the request (server_busy) has a
+// null id. The v1 client could not read it at all.
+func TestDecodeResponseReturnsServiceError(t *testing.T) {
+	for _, id := range []string{`"req-1"`, `null`} {
+		input := `{"jsonrpc":"2.0","id":` + id + `,"error":{"code":-32000,"message":"service is busy; retry shortly","data":{"code":"server_busy"}}}`
+		var result struct{}
+		err := decodeResponse(json.NewDecoder(strings.NewReader(input)), json.RawMessage(`"req-1"`), &result)
+		var rpcErr *Error
+		if !errors.As(err, &rpcErr) || rpcErr.Code != codeServerBusy || !IsErrorCode(err, "server_busy") {
+			t.Fatalf("id %s: expected a server_busy *Error, got %v", id, err)
+		}
+		if err.Error() != "server_busy: service is busy; retry shortly" {
+			t.Fatalf("id %s: error text = %q", id, err.Error())
+		}
 	}
 }
 
 func TestConsumeOperationStreamTerminalAndItemFailure(t *testing.T) {
 	operationID := "op-" + t.Name()
-	requestID := t.Name()
-	events := []serviceEnvelope[OperationStatusPayload]{
-		statusEnvelope(operationID, OperationStatusPayload{ItemName: "Dependency", DisplayName: "Dependency", State: "ItemFailed", ProgressPercent: 50}),
-		statusEnvelope(operationID, OperationStatusPayload{ItemName: "Requested", DisplayName: "Requested", State: "Deferred", ProgressPercent: 100}),
-	}
-	var input strings.Builder
-	for _, event := range events {
-		input.WriteString(mustJSON(t, event))
-		input.WriteByte('\n')
-	}
+	input := statusNotification(t, OperationStatus{OperationID: operationID, Seq: 1, ItemName: "Dependency", DisplayName: "Dependency", State: "ItemFailed", ProgressPercent: 50}) +
+		statusNotification(t, OperationStatus{OperationID: operationID, Seq: 2, ItemName: "Requested", DisplayName: "Requested", State: "Deferred", ProgressPercent: 100})
 	var got []OperationStatus
-	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(input.String())), requestID, operationID, func(status OperationStatus) error {
+	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(input)), operationID, func(status OperationStatus) error {
 		got = append(got, status)
 		return nil
 	}); err != nil {
 		t.Fatalf("consume stream: %v", err)
 	}
-	if len(got) != 2 || got[0].State != "ItemFailed" || got[1].State != "Deferred" {
+	if len(got) != 2 || got[0].State != "ItemFailed" || got[1].State != "Deferred" || got[1].Seq != 2 {
 		t.Fatalf("unexpected statuses: %#v", got)
-	}
-	if got[0].OperationID != operationID || got[0].TimestampUTC == "" {
-		t.Fatalf("missing envelope fields: %#v", got[0])
 	}
 	if !IsTerminalOperationState("Deferred") || IsTerminalOperationState("ItemFailed") {
 		t.Fatal("terminal state detection is incorrect")
@@ -103,38 +79,40 @@ func TestConsumeOperationStreamTerminalAndItemFailure(t *testing.T) {
 
 func TestConsumeOperationStreamErrors(t *testing.T) {
 	operationID := "op-" + t.Name()
-	requestID := t.Name()
-	event := statusEnvelope(operationID, OperationStatusPayload{ItemName: "Item", DisplayName: "Item", State: "Installing", ProgressPercent: 50})
-	input := mustJSON(t, event) + "\n"
+	record := OperationStatus{OperationID: operationID, Seq: 1, ItemName: "Item", DisplayName: "Item", State: "Installing", ProgressPercent: 50}
+	input := statusNotification(t, record)
 
 	callbackErr := errors.New("stop")
-	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(input)), requestID, operationID, func(OperationStatus) error { return callbackErr }); !errors.Is(err, callbackErr) {
+	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(input)), operationID, func(OperationStatus) error { return callbackErr }); !errors.Is(err, callbackErr) {
 		t.Fatalf("expected callback error, got %v", err)
 	}
-	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(input)), requestID, operationID, func(OperationStatus) error { return nil }); err == nil || !strings.Contains(err.Error(), "before a terminal") {
+	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(input)), operationID, func(OperationStatus) error { return nil }); err == nil || !strings.Contains(err.Error(), "before a terminal") {
 		t.Fatalf("expected premature EOF error, got %v", err)
 	}
 
-	malformed := statusEnvelope(operationID, OperationStatusPayload{State: "Installing", ProgressPercent: 50})
-	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(mustJSON(t, malformed))), requestID, operationID, func(OperationStatus) error { return nil }); err == nil || !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("expected malformed record error, got %v", err)
+	malformed := record
+	malformed.ItemName = ""
+	skipped := record
+	skipped.Seq = 2
+	for name, bad := range map[string]OperationStatus{"identity": malformed, "seq gap": skipped} {
+		if err := consumeOperationStream(json.NewDecoder(strings.NewReader(statusNotification(t, bad))), operationID, func(OperationStatus) error { return nil }); err == nil || !strings.Contains(err.Error(), "malformed") {
+			t.Fatalf("%s: expected malformed record error, got %v", name, err)
+		}
 	}
 
-	wrongOperation := statusEnvelope("wrong", OperationStatusPayload{ItemName: "Item", DisplayName: "Item", State: "Installing", ProgressPercent: 50})
-	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(mustJSON(t, wrongOperation))), requestID, operationID, func(OperationStatus) error { return nil }); err == nil || !strings.Contains(err.Error(), "operationId") {
+	wrongOperation := record
+	wrongOperation.OperationID = "wrong"
+	if err := consumeOperationStream(json.NewDecoder(strings.NewReader(statusNotification(t, wrongOperation))), operationID, func(OperationStatus) error { return nil }); err == nil || !strings.Contains(err.Error(), "operationId") {
 		t.Fatalf("expected operationId correlation error, got %v", err)
 	}
 }
 
-func statusEnvelope(operationID string, payload OperationStatusPayload) serviceEnvelope[OperationStatusPayload] {
-	return serviceEnvelope[OperationStatusPayload]{
-		Version:      pipeProtocolVersion,
-		MessageType:  messageTypeEvent,
-		Operation:    actionStreamOperationStatus,
-		OperationID:  operationID,
-		TimestampUTC: nowRFC3339UTC(),
-		Payload:      payload,
+func statusNotification(t *testing.T, record OperationStatus) string {
+	t.Helper()
+	if record.TimestampUTC == "" {
+		record.TimestampUTC = nowRFC3339UTC()
 	}
+	return mustJSON(t, rpcNotification{JSONRPC: jsonrpcVersion, Method: notificationOperationStatus, Params: json.RawMessage(mustJSON(t, record))}) + "\n"
 }
 
 func mustJSON(t *testing.T, value any) string {

@@ -1,11 +1,14 @@
 import type {
+  ActionMethod,
   ActiveOperations,
   ActivityRecord,
+  BrandingView,
   CachedList,
   ItemAction,
   ListView,
   OperationOutcome,
   OperationStatus,
+  OperationView,
   OptionalInstallItem,
 } from "./types.ts";
 
@@ -68,6 +71,11 @@ export function visibleItems(
     .sort(compareItems);
 }
 
+/** myItems is the "My items" view: what is installed or managed from here. */
+export function myItems(items: OptionalInstallItem[]): OptionalInstallItem[] {
+  return items.filter((item) => item.isInstalled || item.isManaged);
+}
+
 export function categories(items: OptionalInstallItem[]): string[] {
   const seen = new Map<string, string>();
   for (const item of items) {
@@ -93,6 +101,18 @@ export function monogram(item: OptionalInstallItem): string {
   return initials || categoryGlyph(item.category);
 }
 
+// Glyph tones are a fixed palette in style.css (.tone-0 … .tone-4).
+const GLYPH_TONES = 5;
+
+/** glyphTone picks a stable palette index from the item name, so a glyph keeps its colour. */
+export function glyphTone(item: Pick<OptionalInstallItem, "itemName">): number {
+  let hash = 0;
+  for (const char of item.itemName) {
+    hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+  }
+  return hash % GLYPH_TONES;
+}
+
 /** restartBadge returns "" unless restartAction is meaningful. */
 export function restartBadge(item: OptionalInstallItem): string {
   const raw = (item.restartAction ?? "").trim();
@@ -102,8 +122,19 @@ export function restartBadge(item: OptionalInstallItem): string {
   return RESTART_LABELS[fold(raw)] ?? raw;
 }
 
+/** REQUIRED_LABEL is the status of an item an admin manifest requires. */
+export const REQUIRED_LABEL = "Managed by your organisation";
+
+/**
+ * statusLabel is the catalog status in sentence case: "Will be installed". An
+ * item the organisation requires says so instead; it has no action to take.
+ */
 export function statusLabel(item: OptionalInstallItem): string {
-  return stateLabel(item.status);
+  if (item.isRequired) {
+    return REQUIRED_LABEL;
+  }
+  const label = stateLabel(item.status);
+  return label[0] + label.slice(1).toLowerCase();
 }
 
 /** REQUESTED_STATE is local: the service accepted the request, no event yet. */
@@ -176,13 +207,63 @@ export function isItemActive(active: ActiveOperations, itemName: string): boolea
 
 /**
  * shouldAcceptRecord decides whether a newly arrived status record still
- * belongs to an operation. Wails emits every event on its own goroutine and the
- * service flushes a whole poll batch at once, so a non-terminal record can
- * arrive after the terminal one; accepting it would show finished work as still
- * running.
+ * belongs to an operation. A finished operation still takes a late record,
+ * which insertRecord files before the terminal one; an operation that ended in
+ * a local error does not, because its last record is the local one.
  */
 export function shouldAcceptRecord(outcome: OperationOutcome): boolean {
-  return outcome === "active";
+  return outcome !== "error";
+}
+
+/**
+ * insertRecord files a record in its operation's timeline. Wails emits every
+ * event on its own goroutine, so records can arrive in any order; a wire
+ * record goes where its seq puts it, so the last record is always the latest
+ * the service recorded. A local record (no seq) is appended. It returns false
+ * for a seq the timeline already holds.
+ */
+export function insertRecord(records: ActivityRecord[], record: ActivityRecord): boolean {
+  const seq = record.seq;
+  if (seq === undefined) {
+    records.push(record);
+    return true;
+  }
+  if (records.some((existing) => existing.seq === seq)) {
+    return false;
+  }
+  let at = records.length;
+  while (at > 0 && (records[at - 1].seq ?? 0) > seq) {
+    at -= 1;
+  }
+  records.splice(at, 0, record);
+  return true;
+}
+
+/** isNewer is whether a belongs above b in newest-first Activity. */
+function isNewer(a: ActivityRecord, b: ActivityRecord): boolean {
+  const at = Date.parse(a.timestampUtc);
+  const bt = Date.parse(b.timestampUtc);
+  if (at !== bt) {
+    return at > bt;
+  }
+  return a.operationId === b.operationId && (a.seq ?? 0) > (b.seq ?? 0);
+}
+
+/**
+ * addActivity files a record in newest-first Activity by its timestamp, then
+ * by seq within one operation, and keeps the newest `limit` records. A record
+ * with an unreadable timestamp, or a tie between operations, goes on top.
+ */
+export function addActivity(
+  activity: ActivityRecord[],
+  record: ActivityRecord,
+  limit: number,
+): ActivityRecord[] {
+  let at = 0;
+  while (at < activity.length && isNewer(activity[at], record)) {
+    at += 1;
+  }
+  return [...activity.slice(0, at), record, ...activity.slice(at)].slice(0, limit);
 }
 
 /**
@@ -200,7 +281,10 @@ export function statusRecord(status: OperationStatus): ActivityRecord {
     state: status.state,
     message: [message, detail && detail !== message ? `(${detail})` : ""].filter(Boolean).join(" "),
     timestampUtc: status.timestampUtc,
+    ...(typeof status.seq === "number" ? { seq: status.seq } : {}),
     progressPercent: status.progressPercent,
+    ...(detail ? { detail } : {}),
+    ...(status.state === "Canceled" && status.canceledBy ? { canceledBy: status.canceledBy } : {}),
   };
 }
 
@@ -222,11 +306,17 @@ export function localRecord(
   };
 }
 
+// How Activity names who ended an operation; the service sends "user" or "service".
+const CANCELED_BY: Record<string, string> = { user: "by you", service: "by the service" };
+
 export function activityLine(record: ActivityRecord): string {
   const when = new Date(record.timestampUtc);
   const stamp = Number.isNaN(when.getTime()) ? record.timestampUtc : when.toLocaleString();
   const name = record.displayName || record.itemName;
-  return [`${stamp} — ${name}: ${stateLabel(record.state)}`, record.message.trim()]
+  // A cancel says who did it, and that replaces the service's message.
+  const who = record.canceledBy ? (CANCELED_BY[record.canceledBy] ?? `by ${record.canceledBy}`) : "";
+  const label = who ? `${stateLabel(record.state)} ${who}` : stateLabel(record.state);
+  return [`${stamp} — ${name}: ${label}`, who ? "" : record.message.trim()]
     .filter(Boolean)
     .join(" — ");
 }
@@ -237,11 +327,144 @@ export function progressLabel(record: ActivityRecord): string {
 }
 
 /**
+ * CardProgress is what an item's own card shows for the operation the user
+ * started on it: one short line beside a spinner while it runs, then only an
+ * outcome worth acting on (Failed, Deferred, a request error). The full
+ * timeline is in Activity, the way Managed Software Center keeps its log off
+ * the main view.
+ */
+export type CardProgress = {
+  label: string;
+  /** The record's own-item percentage, when the engine measured this phase. */
+  percent?: number;
+  outcome: OperationOutcome;
+  /** A finished outcome that needs no attention, shown as plain text. */
+  plain?: boolean;
+};
+
+// Records that arrive before the service has started work on anything.
+const WAITING_STATES = new Set([REQUESTED_STATE, "Queued"]);
+
+// The installer's deferral reason when a blocking application is running.
+const BLOCKING_APPS = /^blocking application\(s\) running: (.+)$/i;
+
+/** outcomeLabel words a finished operation for its card: what happened, then why. */
+function outcomeLabel(record: ActivityRecord, method: ActionMethod): string {
+  const message = record.message.trim();
+  switch (record.state) {
+    case "Deferred": {
+      const apps = BLOCKING_APPS.exec(message)?.[1];
+      return apps ? `Waiting: close ${apps} to continue` : message || "Deferred";
+    }
+    case "Canceled":
+      return "Canceled";
+    case "Failed": {
+      const verb = method === "RemoveItem" ? "Removal" : "Install";
+      const why = record.detail || message;
+      return why ? `${verb} failed · ${why}` : `${verb} failed`;
+    }
+    default:
+      return message ? `${stateLabel(record.state)} · ${message}` : stateLabel(record.state);
+  }
+}
+
+export function cardProgress(
+  item: Pick<OptionalInstallItem, "itemName">,
+  records: ActivityRecord[],
+  outcome: OperationOutcome,
+  method: ActionMethod = "InstallItem",
+  notice = "",
+): CardProgress | null {
+  const latest = records[records.length - 1];
+  if (!latest) {
+    return null;
+  }
+  if (outcome === "active" && notice) {
+    // A refused cancel: the service's reason, while the work carries on.
+    return { label: notice, outcome };
+  }
+  if (outcome === "active") {
+    const own = latest.itemName === item.itemName;
+    if (isItemPhase(latest.state)) {
+      // A dependency or updater can take over mid-run; name it so the
+      // percentage (which is scoped to that item) is not read as this item's.
+      const who = own ? "" : ` ${latest.displayName || latest.itemName}`;
+      return {
+        label: `${stateLabel(latest.state)}${who}…`,
+        percent: typeof latest.progressPercent === "number" ? latest.progressPercent : undefined,
+        outcome,
+      };
+    }
+    if (WAITING_STATES.has(latest.state)) {
+      return { label: "Waiting…", outcome };
+    }
+    return { label: own ? `${stateLabel(latest.state)}…` : "In progress…", outcome };
+  }
+  // A success needs no epilogue: the refreshed list status is authoritative.
+  if (outcome === "terminal" && latest.state === "Succeeded") {
+    return null;
+  }
+  // The user asked for a cancel, so it is not a problem to flag.
+  return { label: outcomeLabel(latest, method), outcome, ...(latest.state === "Canceled" ? { plain: true } : {}) };
+}
+
+/** progressText is a progress line as it reads: the label, then any percentage. */
+export function progressText(progress: CardProgress): string {
+  return typeof progress.percent === "number" ? `${progress.label} ${progress.percent}%` : progress.label;
+}
+
+/**
+ * StripView is what the bottom "current operation" strip shows: one running
+ * operation, its progress, and where it sits among everything still running.
+ */
+export type StripView = {
+  operation: OperationView;
+  progress: CardProgress;
+  position: number;
+  total: number;
+};
+
+/**
+ * stripView picks the operation the strip reports on: the earliest running one
+ * the service has started work on, else the earliest running one. The others
+ * read "Waiting…" on their own cards. Null hides the strip.
+ */
+export function stripView(operations: Iterable<OperationView>): StripView | null {
+  const running = [...operations].filter((operation) => operation.outcome === "active");
+  if (running.length === 0) {
+    return null;
+  }
+  const working = running.findIndex((operation) =>
+    operation.records.some((record) => !WAITING_STATES.has(record.state)),
+  );
+  const index = Math.max(working, 0);
+  const operation = running[index];
+  return {
+    operation,
+    progress: cardProgress(operation.item, operation.records, "active") ?? {
+      label: "Waiting…",
+      outcome: "active",
+    },
+    position: index + 1,
+    total: running.length,
+  };
+}
+
+/** stripLine is the strip's text: the phase, then "n of N". */
+export function stripLine(strip: StripView): string {
+  return `${progressText(strip.progress)} · ${strip.position} of ${strip.total}`;
+}
+
+/**
  * deriveAction maps an item to its single primary action. Cancelling a pending
  * install or removal reuses the opposite mutation; it is not a new protocol
- * operation.
+ * operation. An item the organisation requires has no action: the service
+ * refuses to remove it, and every managed run installs it anyway.
  */
-export function deriveAction(item: OptionalInstallItem): ItemAction {
+export function deriveAction(item: OptionalInstallItem): ItemAction | null {
+  if (item.isRequired) {
+    return null;
+  }
   switch (item.status) {
     case "WillBeInstalled":
       return { label: "Cancel", method: "RemoveItem" };
@@ -277,13 +500,30 @@ export function bannerMessage(view: ListView, error: string): string {
     case "cache":
       return "Showing cached software. Refreshing…";
     case "live":
-      return "Connected to the Gorilla service.";
+      return "Service connected";
     case "stale":
       return (
         (view.items.length
           ? `Service unavailable — showing cached software${formatSavedAt(view.savedAtUtc)}.`
           : "Service unavailable and no cached software is stored.") + formatReason(error)
       );
+  }
+}
+
+/**
+ * connectionLabel is the short app-bar text; bannerMessage is the full sentence
+ * with the reason, shown on hover and read by assistive technology.
+ */
+export function connectionLabel(view: ListView): string {
+  switch (view.source) {
+    case "loading":
+      return "Connecting…";
+    case "cache":
+      return "Showing cached software";
+    case "live":
+      return "Service connected";
+    case "stale":
+      return "Service unavailable";
   }
 }
 
@@ -300,4 +540,97 @@ function formatReason(error: string): string {
 function formatSavedAt(savedAtUtc: string): string {
   const saved = new Date(savedAtUtc);
   return Number.isNaN(saved.getTime()) ? "" : ` from ${saved.toLocaleString()}`;
+}
+
+// Branding is admin configuration the service resolved from policy or
+// config.yaml; no catalog data is involved. The service already validated
+// every field; these checks repeat the ones that guard what the WebView does
+// with a value (open a URL, build a data: URL, set a CSS colour).
+
+const DEFAULT_PRODUCT = "Gorilla";
+const DEFAULT_HELP_LABEL = "Get help";
+const LOGO_MIMES = new Set(["image/png", "image/jpeg", "image/svg+xml"]);
+
+export function isHexColor(value: string): boolean {
+  return /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+/** httpUrl returns value when it is an absolute http(s) URL, else "". */
+export function httpUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function channel(hex: string, at: number): number {
+  const c = parseInt(hex.slice(at, at + 2), 16) / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+/** onAccent picks white or near-black text, whichever contrasts more with hex. */
+export function onAccent(hex: string): string {
+  const luminance = 0.2126 * channel(hex, 1) + 0.7152 * channel(hex, 3) + 0.0722 * channel(hex, 5);
+  const ink = 0.0116; // relative luminance of #1b1b1f
+  return 1.05 / (luminance + 0.05) >= (luminance + 0.05) / (ink + 0.05) ? "#ffffff" : "#1b1b1f";
+}
+
+function text(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/** brandingView turns a GetBranding payload (or a cached copy) into what the shell shows. */
+export function brandingView(payload: unknown): BrandingView {
+  const raw = typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
+  const title = text(raw, "title");
+  const tagline = text(raw, "tagline");
+  const mime = text(raw, "logoMime");
+  const base64 = text(raw, "logoBase64");
+  const logoSrc =
+    LOGO_MIMES.has(mime) && /^[A-Za-z0-9+/]+={0,2}$/.test(base64) ? `data:${mime};base64,${base64}` : "";
+  const helpUrl = httpUrl(text(raw, "helpUrl"));
+  const accent = isHexColor(text(raw, "accent")) ? text(raw, "accent").toLowerCase() : "";
+  return {
+    title,
+    tagline,
+    logoSrc,
+    helpUrl,
+    helpLabel: helpUrl ? text(raw, "helpLabel") || DEFAULT_HELP_LABEL : "",
+    accent,
+    onAccent: accent ? onAccent(accent) : "",
+    productName: title || DEFAULT_PRODUCT,
+    productMark: (Array.from(title)[0] ?? DEFAULT_PRODUCT[0]).toUpperCase(),
+    showBanner: Boolean(title || tagline || logoSrc || helpUrl),
+  };
+}
+
+// Cancel is offered only before the service starts the item's installer or
+// uninstaller; the service refuses later and never interrupts a running one.
+const CANCELABLE_STATES = new Set([REQUESTED_STATE, "Queued", "Downloading"]);
+
+/** canCancel is whether an operation whose latest record has this state can still be canceled. */
+export function canCancel(state: string): boolean {
+  return CANCELABLE_STATES.has(state.trim());
+}
+
+/** cancelTitle explains the strip's Cancel button: what it does, or why it is off. */
+export function cancelTitle(state: string, pending = false): string {
+  if (pending) {
+    return "Canceling…";
+  }
+  return canCancel(state)
+    ? "Cancel before the installer starts"
+    : "Can't cancel now: work on this item has started, and a running installer is never interrupted";
+}
+
+/**
+ * refusalText turns a refused CancelOperation into the line the card shows: the
+ * service's message without its error code, as a sentence.
+ */
+export function refusalText(error: string): string {
+  const message = error.replace(/^\s*operation_not_cancelable:\s*/i, "").trim();
+  return message ? message[0].toUpperCase() + message.slice(1) : "The operation can no longer be canceled";
 }

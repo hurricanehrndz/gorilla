@@ -11,6 +11,7 @@
 #   packages-info/GoogleChrome.yaml    rendered from the .in template
 #   packages/google-chrome/*.msi       Chrome enterprise MSI (cached in build/)
 #   packages/scripts/                  selfserve marker installers
+#   branding/logo.png                   logo for the Gorilla UI branding step
 #
 # Run inside the devenv shell (needs go). Set CHROME_MSI to reuse a downloaded
 # MSI instead of fetching it.
@@ -34,7 +35,9 @@ elif [[ ! -s $cache/$msi_name ]]; then
 	mv "$cache/$msi_name.part" "$cache/$msi_name"
 fi
 
-[[ -x build/gorilla.exe && -x build/gorilla-ui.exe ]] || make build
+# Always rebuild: staging older executables once made the gates test code the
+# branch no longer had.
+make build
 
 hash=$(sha256sum "$cache/$msi_name" | cut -d' ' -f1)
 # The MSI summary-information Comments field carries "<version> Copyright ...".
@@ -50,6 +53,8 @@ mkdir -p "$repo"/{manifests,catalogs,packages-info,packages/google-chrome}
 cp build/gorilla.exe build/gorilla-ui.exe "$repo/"
 cp "$fixtures"/selfserve/manifests/*.yaml "$fixtures"/e2e/manifests/*.yaml "$repo/manifests/"
 cp -R "$fixtures"/selfserve/packages/scripts "$repo/packages/scripts"
+# Branding assets e2e-chrome.sh installs on the guest (not part of a served repo).
+cp -R "$fixtures"/e2e/branding "$repo/branding"
 cp "$cache/$msi_name" "$repo/packages/google-chrome/$msi_name"
 sed -e "s/@VERSION@/$version/g" -e "s/@HASH@/$hash/g" \
 	"$fixtures/e2e/packages-info/GoogleChrome.yaml.in" >"$repo/packages-info/GoogleChrome.yaml"

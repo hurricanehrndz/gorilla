@@ -1,8 +1,10 @@
 package manifest
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -55,5 +57,33 @@ func TestSaveSelfServePersistsAndDropsLists(t *testing.T) {
 	// Save nils these lists; they marshal as `[]` and load back empty (not nil).
 	if len(got.Includes) != 0 || len(got.Catalogs) != 0 || len(got.Updates) != 0 {
 		t.Fatalf("expected includes/catalogs/updates dropped, got %#v", got)
+	}
+}
+
+// Concurrent updates must all land: a cancel reverts a selection while a run
+// may be saving the same file.
+func TestUpdateSelfServeKeepsConcurrentWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service-manifest.yaml")
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := UpdateSelfServe(path, func(entry *Item) bool {
+				entry.Installs = append(entry.Installs, fmt.Sprintf("item-%02d", i))
+				return true
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	got, err := LoadSelfServe(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Installs) != 20 {
+		t.Fatalf("kept %d of 20 concurrent writes: %v", len(got.Installs), got.Installs)
 	}
 }

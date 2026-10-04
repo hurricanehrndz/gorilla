@@ -877,9 +877,10 @@ func TestProgressEvents(t *testing.T) {
 	installTestOverrides(t)
 	r := newTestRunner()
 
-	var events []string
+	var events, messages []string
 	r.Emit = func(item catalog.Item, state string, percent int, message string) {
 		events = append(events, fmt.Sprintf("%s:%d", state, percent))
+		messages = append(messages, message)
 	}
 
 	// Success emits downloading -> installing -> done
@@ -912,6 +913,14 @@ func TestProgressEvents(t *testing.T) {
 	want = []string{"downloading:0", "removing:50", "done:100"}
 	if !reflect.DeepEqual(want, events) {
 		t.Errorf("\nExpected: %#v\nReceived: %#v", want, events)
+	}
+
+	// Progress reaches every local user over the pipe, and a package URL can
+	// carry signed-query tokens, so no message may name it.
+	for _, message := range messages {
+		if strings.Contains(message, "example.com") {
+			t.Errorf("progress message %q leaks the package URL", message)
+		}
 	}
 }
 

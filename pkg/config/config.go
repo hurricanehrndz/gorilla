@@ -55,8 +55,8 @@ Options:
 -a, -about          displays the version number and other build info
 -V, -version        display the version number
 -s, -service        run Gorilla as a Windows service
--S, -servicecmd     send a command to a running Gorilla service (ListOptionalInstalls|InstallItem:itemName|RemoveItem:itemName|StreamOperationStatus:operationId)
--serviceinstall     install Gorilla as a Windows service
+-S, -servicecmd     send a command to a running Gorilla service (GetServiceInfo|ListOptionalInstalls|GetBranding|InstallItem:itemName|RemoveItem:itemName|StreamOperationStatus:operationId|CancelOperation:operationId)
+-serviceinstall     install Gorilla as a Windows service and restrict its data directory to SYSTEM and Administrators
 -serviceremove      remove Gorilla Windows service
 -servicestart       start Gorilla Windows service
 -servicestop        stop Gorilla Windows service
@@ -91,10 +91,26 @@ type Configuration struct {
 	ServiceStart    bool
 	ServiceStop     bool
 	ServiceStatus   bool
-	ServiceName     string `yaml:"service_name,omitempty"`
-	ServiceInterval string `yaml:"service_interval,omitempty"`
-	ServicePipeName string `yaml:"service_pipe_name,omitempty"`
+	ServiceName     string   `yaml:"service_name,omitempty"`
+	ServiceInterval string   `yaml:"service_interval,omitempty"`
+	ServicePipeName string   `yaml:"service_pipe_name,omitempty"`
+	Branding        Branding `yaml:"branding,omitempty"`
 	ConfigPath      string
+	// RequestedBy maps a self-service item to the user whose request the run
+	// is carrying out, for the inventory. The service sets it per run; it is
+	// never read from config.yaml.
+	RequestedBy map[string]string `yaml:"-"`
+}
+
+// Branding is the optional organisation branding block for Gorilla UI. Policy
+// registry values override it per field; pkg/branding merges and validates both.
+type Branding struct {
+	Title     string `yaml:"title,omitempty"`
+	Tagline   string `yaml:"tagline,omitempty"`
+	Logo      string `yaml:"logo,omitempty"`
+	HelpURL   string `yaml:"help_url,omitempty"`
+	HelpLabel string `yaml:"help_label,omitempty"`
+	Accent    string `yaml:"accent,omitempty"`
 }
 
 func init() {

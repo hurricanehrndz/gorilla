@@ -32,9 +32,12 @@ const legacyReportFile = "GorillaReport.json"
 // the order the run meets them. The first kind recorded for a name wins.
 type planBuilder struct {
 	catalogs map[int]map[string]catalog.Item
-	items    []report.PlanItem
-	seen     map[string]bool
-	warnings []string
+	// requestedBy names the user behind each self-service request this run
+	// carries out (cfg.RequestedBy).
+	requestedBy map[string]string
+	items       []report.PlanItem
+	seen        map[string]bool
+	warnings    []string
 }
 
 func newPlanBuilder() *planBuilder {
@@ -63,8 +66,17 @@ func (b *planBuilder) add(kind string, selfService bool, names ...string) {
 			Version:     item.Version,
 			Kind:        kind,
 			SelfService: selfService,
+			RequestedBy: b.requestedFor(name, selfService),
 		})
 	}
+}
+
+// requestedFor is the user who asked for name, for a self-service item.
+func (b *planBuilder) requestedFor(name string, selfService bool) string {
+	if !selfService {
+		return ""
+	}
+	return b.requestedBy[name]
 }
 
 // addSelfServe records the self-serve installs, telling defaults apart from
