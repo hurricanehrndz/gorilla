@@ -10,6 +10,12 @@ export class AcceptedOperation {
     "accepted": boolean;
     "queuedAtUtc": string;
 
+    /**
+     * RequestedBy is the user who called, as the service resolved it from the
+     * connection: DOMAIN\user on Windows, "" when unresolved.
+     */
+    "requestedBy": string;
+
     /** Creates a new AcceptedOperation instance. */
     constructor($$source: Partial<AcceptedOperation> = {}) {
         if (!("accepted" in $$source)) {
@@ -17,6 +23,9 @@ export class AcceptedOperation {
         }
         if (!("queuedAtUtc" in $$source)) {
             this["queuedAtUtc"] = "";
+        }
+        if (!("requestedBy" in $$source)) {
+            this["requestedBy"] = "";
         }
 
         Object.assign(this, $$source);

@@ -6,7 +6,7 @@ The Wails process runs as the interactive standard user. The SYSTEM Gorilla serv
 
 Any local user can reach the service, so it authorizes each mutation by item, not by caller. `installItem` accepts only an item offered in the admin manifests' `optional_installs`. `removeItem` accepts an item offered there or in `default_installs`, or one already in the self-serve manifest's own lists, so an item stays removable after it leaves the offer. An item an admin manifest lists in `managed_installs` is never removable, even when it is also offered: the service refuses with `item_not_removable`, and the managed run also skips a self-serve uninstall of such an item. `listOptionalInstalls` marks it `isRequired`, and the UI shows it as "Managed by your organisation" with Details but no Install or Remove.
 
-Gorilla assumes one interactive user per machine. The self-serve manifest is per machine, as in Munki, so on a shared machine (fast user switching, Remote Desktop Services) every user shares one self-service selection and can reverse another user's request. Operations are not owned either: anyone who knows an operation ID can stream or cancel it. IDs are therefore 128 random bits from `crypto/rand`, hex encoded, which no other user can guess.
+Gorilla assumes one interactive user per machine. The self-serve manifest is per machine, as in Munki, so on a shared machine (fast user switching, Remote Desktop Services) every user shares one self-service selection and can reverse another user's request. Operations are not owned either: anyone who knows an operation ID can stream or cancel it. IDs are therefore 128 random bits from `crypto/rand`, hex encoded, which no other user can guess. The service records who requested each operation (see Protocol) for audit, not for authorization.
 
 `UIService` binds exactly six calls backed by the shared `pkg/service.Client`:
 
@@ -36,7 +36,7 @@ answer echoes the `id` with a `result` or an `error`:
 
 ```json
 {"jsonrpc":"2.0","id":"1759580000000000000","method":"installItem","params":{"itemName":"GoogleChrome"}}
-{"jsonrpc":"2.0","id":"1759580000000000000","result":{"operationId":"9f2c4e7a1b3d5f60718293a4b5c6d7e8","accepted":true,"queuedAtUtc":"2026-10-04T12:00:00.123Z"}}
+{"jsonrpc":"2.0","id":"1759580000000000000","result":{"operationId":"9f2c4e7a1b3d5f60718293a4b5c6d7e8","accepted":true,"queuedAtUtc":"2026-10-04T12:00:00.123Z","requestedBy":"PC01\\alice"}}
 ```
 
 | Method | Params | Result |
@@ -59,13 +59,23 @@ the operation, from the first, as `operationStatus` notifications on the same
 connection, until a terminal record, and closes:
 
 ```json
-{"jsonrpc":"2.0","method":"operationStatus","params":{"operationId":"9f2c4e7a1b3d5f60718293a4b5c6d7e8","seq":2,"timestampUtc":"2026-10-04T12:00:01.480Z","itemName":"GoogleChrome","displayName":"Google Chrome","state":"Downloading","progressPercent":40,"message":"Downloading"}}
+{"jsonrpc":"2.0","method":"operationStatus","params":{"operationId":"9f2c4e7a1b3d5f60718293a4b5c6d7e8","seq":2,"timestampUtc":"2026-10-04T12:00:01.480Z","itemName":"GoogleChrome","displayName":"Google Chrome","state":"Downloading","progressPercent":40,"message":"Downloading","requestedBy":"PC01\\alice"}}
 ```
 
 `seq` numbers an operation's records from 1 in the order the service recorded
 them, and `timestampUtc` is RFC 3339 UTC with milliseconds. Records can reach
 the frontend out of order (Wails emits each event on its own goroutine), so the
 frontend files them by `seq`, and Activity by time and then `seq`.
+
+`requestedBy` names the user who called `installItem` or `removeItem`. The
+service reads it from the connection, never from the request: on Windows from
+the token of the pipe client's process (`DOMAIN\user`; the SID goes to the
+log), elsewhere from the socket's peer credentials (the user name). It is in
+the `AcceptedOperation`, on every record of the operation, in the service log
+at info level with the operation ID, and in `inventory.json` as `requested_by`
+on the item, for the run the operation triggered. When the service cannot
+resolve the user it records `""` and logs why at debug; it never refuses a
+request for it. It is an audit record, not an authorization check.
 
 Errors use the standard codes for malformed requests and the server range for
 application errors. `data.code` is the stable string clients branch on, and

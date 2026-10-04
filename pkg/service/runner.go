@@ -27,10 +27,24 @@ import (
 // Everything else in the service is portable.
 type listener interface {
 	// Accept waits for the next client connection.
-	Accept() (io.ReadWriteCloser, error)
+	Accept() (clientConn, error)
 	// Close makes a blocked Accept return. Connections already accepted stay
 	// open.
 	Close() error
+}
+
+// clientConn is one accepted client connection.
+type clientConn interface {
+	io.ReadWriteCloser
+	// Peer resolves the user on the other end from the operating system, not
+	// from anything the client sent.
+	Peer() (peer, error)
+}
+
+// peer is a connected client's user: Name is DOMAIN\user on Windows and the
+// user name elsewhere, ID the SID or the uid. Either is "" when unresolved.
+type peer struct {
+	Name, ID string
 }
 
 type queuedCommand struct {
@@ -80,9 +94,12 @@ type trackedOperation struct {
 	events               []OperationStatus
 	requestedItemName    string
 	requestedDisplayName string
-	done                 bool
-	lastUpdated          time.Time
-	completedAt          time.Time
+	// requestedBy is the user who made the request, "" when unresolved; every
+	// record of the operation carries it.
+	requestedBy string
+	done        bool
+	lastUpdated time.Time
+	completedAt time.Time
 
 	// prior and requested are the self-serve selections before and after the
 	// request, for cancelOperation to revert.
@@ -327,7 +344,7 @@ func decodeParams[T any](raw json.RawMessage) (T, error) {
 }
 
 // handleConn reads one request from conn and answers it.
-func (sr *serviceRunner) handleConn(ctx context.Context, conn io.ReadWriter) {
+func (sr *serviceRunner) handleConn(ctx context.Context, conn clientConn) {
 	startedAt := time.Now()
 	result := "error"
 	var req rpcRequest
@@ -405,7 +422,7 @@ func (sr *serviceRunner) handleConn(ctx context.Context, conn io.ReadWriter) {
 
 // dispatch runs one request. It returns the result to send, or the error to
 // send, or neither when it has written the response itself.
-func (sr *serviceRunner) dispatch(ctx context.Context, conn io.Writer, req rpcRequest, logger *slog.Logger) (any, *Error) {
+func (sr *serviceRunner) dispatch(ctx context.Context, conn clientConn, req rpcRequest, logger *slog.Logger) (any, *Error) {
 	switch req.Method {
 	case methodGetServiceInfo:
 		busy, _ := sr.busyAction.Load().(string)
@@ -455,12 +472,15 @@ func (sr *serviceRunner) dispatch(ctx context.Context, conn io.Writer, req rpcRe
 		if err != nil {
 			return nil, commandError(err, "")
 		}
-		sr.registerTrackedOperation(itemName, resp)
-		accepted := AcceptedOperation{OperationID: resp.OperationID, Accepted: true, QueuedAtUTC: nowRFC3339UTC()}
+		requestedBy := requester(conn, logger)
+		logger.Info("self-service request accepted", "operationId", resp.OperationID, "item", itemName,
+			"requestedBy", requestedBy.Name, "requestedByID", requestedBy.ID)
+		sr.registerTrackedOperation(itemName, requestedBy.Name, resp)
+		accepted := AcceptedOperation{OperationID: resp.OperationID, Accepted: true, QueuedAtUTC: nowRFC3339UTC(), RequestedBy: requestedBy.Name}
 		if err := writeResult(conn, req.ID, accepted); err != nil {
 			logger.Warn("failed to write response", "err", err)
 		}
-		sr.scheduleRunAfterMutation(ctx, action, itemName, resp.OperationID)
+		sr.scheduleRunAfterMutation(ctx, action, itemName, requestedBy.Name, resp.OperationID)
 		return nil, nil
 
 	case methodCancelOperation:
@@ -494,6 +514,18 @@ func (sr *serviceRunner) dispatch(ctx context.Context, conn io.Writer, req rpcRe
 	}
 }
 
+// requester is the user on the other end of conn, for the record of who asked
+// for a mutation. It is never a reason to refuse one: an unresolved user is
+// logged at debug and recorded as "" (with whatever ID was resolved).
+func requester(conn clientConn, logger *slog.Logger) peer {
+	who, err := conn.Peer()
+	if err != nil {
+		logger.Debug("could not resolve the caller's identity", "id", who.ID, "err", err)
+		return peer{ID: who.ID}
+	}
+	return who
+}
+
 // commandError maps a command's failure to its JSON-RPC error.
 func commandError(err error, operationID string) *Error {
 	switch {
@@ -508,7 +540,10 @@ func commandError(err error, operationID string) *Error {
 	}
 }
 
-func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, itemName, operationID string) {
+// scheduleRunAfterMutation queues the run that carries out a mutation and ends
+// its operation with the outcome. The run records requestedBy against the item
+// in the inventory.
+func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, itemName, requestedBy, operationID string) {
 	if action != actionInstallItem && action != actionRemoveItem {
 		return
 	}
@@ -516,7 +551,11 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, i
 	sr.wg.Add(1)
 	go func() {
 		defer sr.wg.Done()
-		resp, err := sr.submit(ctx, Command{Action: actionRun, progress: sr.operationProgressCallback(operationID)})
+		run := Command{Action: actionRun, progress: sr.operationProgressCallback(operationID)}
+		if requestedBy != "" {
+			run.requestedBy = map[string]string{itemName: requestedBy}
+		}
+		resp, err := sr.submit(ctx, run)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				sr.appendOperationEvent(operationID, OperationStatus{
@@ -646,7 +685,7 @@ func (sr *serviceRunner) streamOperationStatus(w io.Writer, id json.RawMessage, 
 // operation resp accepted for itemName. resp.displayName is the catalog display
 // name when the mutation knew it; otherwise the item name stands in until a
 // progress event for the item carries the catalog name.
-func (sr *serviceRunner) registerTrackedOperation(itemName string, resp CommandResponse) {
+func (sr *serviceRunner) registerTrackedOperation(itemName, requestedBy string, resp CommandResponse) {
 	operationID := resp.OperationID
 	if strings.TrimSpace(operationID) == "" || strings.TrimSpace(itemName) == "" {
 		return
@@ -657,6 +696,7 @@ func (sr *serviceRunner) registerTrackedOperation(itemName string, resp CommandR
 	sr.pruneTrackedOperationsLocked(time.Now())
 	sr.operations[operationID] = &trackedOperation{
 		requestedItemName:    itemName,
+		requestedBy:          requestedBy,
 		requestedDisplayName: displayName,
 		prior:                resp.prior,
 		requested:            resp.requested,
@@ -699,6 +739,7 @@ func (sr *serviceRunner) appendOperationEventLocked(operationID string, event Op
 	}
 	now := time.Now()
 	event.OperationID = operationID
+	event.RequestedBy = op.requestedBy
 	event.Seq = len(op.events) + 1
 	event.TimestampUTC = now.UTC().Format(timestampLayout)
 	op.events = append(op.events, event)

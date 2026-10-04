@@ -16,9 +16,11 @@ fixture set built by build-e2e-repo.sh and asserts, in order:
     ends Canceled by the user, nothing is installed, the selection is reverted, and a
     second cancel is refused with operation_not_cancelable
   - Restart-Service completes within 30 s while a managed run is busy
-  - InstallItem streams Downloading/Installing/ItemCompleted and ends Succeeded
+  - InstallItem answers with a 32-hex operationId and requestedBy naming the calling
+    user, streams Downloading/Installing/ItemCompleted (each record carrying
+    requestedBy) and ends Succeeded
   - the MSI really installed: Uninstall registry entry at the catalog version, chrome.exe on disk
-  - inventory.json records the item as installed, with the documented ACL
+  - inventory.json records the item as installed with requested_by, with the documented ACL
   - the self-serve manifest records the selection
   - a running chrome.exe defers RemoveItem (blocking_apps) and the inventory says why
   - with Chrome closed, RemoveItem streams Removing/ItemCompleted, ends Succeeded, and the
@@ -132,6 +134,15 @@ function Parse-OperationId {
     foreach ($l in $Lines) { if ("$l" -match 'operationId:\s*(\S+)') { return $Matches[1] } }
     return $null
 }
+
+function Parse-RequestedBy {
+    param([string[]]$Lines)
+    foreach ($l in $Lines) { if ("$l" -match 'requestedBy:\s*(\S+)') { return $Matches[1] } }
+    return $null
+}
+
+# The service resolves the caller from the pipe; the gate calls as this user.
+$Caller = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 function Stream-OperationEvents {
     param([string]$OpId)
@@ -318,12 +329,17 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $installOut = Invoke-Gorilla "InstallItem:$ItemName"
 $opId = Parse-OperationId $installOut.Out
 if (-not $opId) { Fail "no operationId returned for InstallItem:$ItemName" }
+if ($opId -notmatch '^[0-9a-f]{32}$') { Fail "operationId '$opId' is not 32 hex characters" }
+$requestedBy = Parse-RequestedBy $installOut.Out
+if ($requestedBy -ne $Caller) { Fail "requestedBy '$requestedBy', expected the calling user '$Caller'" }
 $events = @(Stream-OperationEvents $opId)
 $terminal = Get-TerminalEvent $events
 if (-not $terminal) { Fail "no terminal event for the install" }
 if ($terminal.state -ne "Succeeded") { Fail "install terminal state '$($terminal.state)' (errorCode=$($terminal.errorCode))" }
 Assert-ItemProgress -Events $events -Name $ItemName -ActionState "Installing"
-Pass ("install Succeeded in {0:n0}s with {1} events" -f $sw.Elapsed.TotalSeconds, $events.Count)
+$unattributed = @($events | Where-Object { $_.requestedBy -ne $Caller })
+if ($unattributed.Count -gt 0) { Fail "$($unattributed.Count) records lack requestedBy '$Caller'" }
+Pass ("install Succeeded in {0:n0}s with {1} events; operationId {2}; requestedBy {3} on every record" -f $sw.Elapsed.TotalSeconds, $events.Count, $opId, $requestedBy)
 
 # --- Step 3: the MSI really installed
 Write-Step "Registry has '$RegistryName' at $expectedVersion and chrome.exe exists"
@@ -335,7 +351,7 @@ $fileVersion = (Get-Item $ChromeExe).VersionInfo.ProductVersion
 Pass "DisplayVersion=$($entry.DisplayVersion) chrome.exe ProductVersion=$fileVersion"
 
 # --- Step 4: inventory.json records it, with the documented ACL
-Write-Step "inventory.json lists $ItemName installed (optional_install, self_service) with SYSTEM/Administrators-only ACL"
+Write-Step "inventory.json lists $ItemName installed (optional_install, self_service, requested_by) with SYSTEM/Administrators-only ACL"
 Wait-For { $null -ne (Get-InventoryItem $ItemName) } "inventory.json to mention $ItemName"
 $inv = Read-Inventory
 $rec = Get-InventoryItem $ItemName
@@ -345,6 +361,7 @@ if (-not $rec.installed)                    { Fail "inventory installed=false" }
 if ($rec.status -ne "installed")            { Fail "inventory status '$($rec.status)'" }
 if ($rec.kind -ne "optional_install")       { Fail "inventory kind '$($rec.kind)'" }
 if (-not $rec.self_service)                 { Fail "inventory self_service=false" }
+if ($rec.requested_by -ne $Caller)          { Fail "inventory requested_by '$($rec.requested_by)', expected '$Caller'" }
 if ("$($rec.installed_version)" -ne $expectedVersion) { Fail "inventory installed_version '$($rec.installed_version)'" }
 if (@($inv.InstalledItems) -notcontains $ItemName)   { Fail "InstalledItems lacks $ItemName" }
 if (Test-Path (Join-Path (Split-Path $Inventory) "GorillaReport.json")) { Fail "legacy GorillaReport.json still present" }
@@ -353,7 +370,7 @@ if ($acl -notmatch 'NT AUTHORITY\\SYSTEM:\(F\)')     { Fail "inventory ACL lacks
 if ($acl -notmatch 'BUILTIN\\Administrators:\(R\)')  { Fail "inventory ACL lacks Administrators:(R): $acl" }
 $principals = @([regex]::Matches($acl, '([A-Z ]+\\[A-Za-z ]+):\(') | ForEach-Object { $_.Groups[1].Value.Trim() } | Sort-Object -Unique)
 if ($principals.Count -ne 2) { Fail "inventory ACL has extra principals: $($principals -join ', ')" }
-Pass "installed=$($rec.installed) status=$($rec.status) kind=$($rec.kind) version=$($rec.installed_version); ACL=$($principals -join ', ')"
+Pass "installed=$($rec.installed) status=$($rec.status) kind=$($rec.kind) version=$($rec.installed_version) requested_by=$($rec.requested_by); ACL=$($principals -join ', ')"
 
 # --- Step 5: self-serve manifest and honest Installed status
 Write-Step "Self-serve manifest records $ItemName and ListOptionalInstalls now says Installed"

@@ -10,6 +10,7 @@ import type {
 import { isTerminalState } from "./state.ts";
 
 const MOCK_MARKER = "GORILLA_VITE_MOCK_ONLY";
+const MOCK_USER = "WORKSTATION\\demo";
 
 const items: OptionalInstallItem[] = [
   {
@@ -145,6 +146,7 @@ function accept(): AcceptedOperation {
     operationId: `${MOCK_MARKER}-op-${operationCounter}`,
     accepted: true,
     queuedAtUtc: new Date().toISOString(),
+    requestedBy: MOCK_USER,
   };
 }
 
@@ -272,6 +274,7 @@ function watch(operationId: string): Promise<void> {
             state: "",
             progressPercent: 0,
             message: "",
+            requestedBy: MOCK_USER,
             ...partial,
           };
           if (status.state === "Succeeded") {
@@ -322,6 +325,7 @@ function cancel(operationId: string): Promise<void> {
     progressPercent: 0,
     message: "Canceled by user",
     canceledBy: "user",
+    requestedBy: MOCK_USER,
   });
   entry.settle();
   return Promise.resolve();

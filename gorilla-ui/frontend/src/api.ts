@@ -23,6 +23,8 @@ export type OperationStatus = {
   errorCode?: string;
   errorMessage?: string;
   canceledBy?: string;
+  /** The user whose request started the operation, "" when the service could not tell. */
+  requestedBy: string;
 };
 
 /** GorillaApi is the entire frontend view of the backend. */

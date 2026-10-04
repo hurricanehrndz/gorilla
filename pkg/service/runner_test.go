@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"slices"
 	"strconv"
 	"strings"
@@ -226,12 +227,12 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
 	sr := newServiceRunner(config.Configuration{}, noopRun)
 	operationID := "op-canceled"
-	sr.registerTrackedOperation("Slack", CommandResponse{OperationID: operationID})
+	sr.registerTrackedOperation("Slack", "", CommandResponse{OperationID: operationID})
 
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	sr.scheduleRunAfterMutation(canceledCtx, actionInstallItem, "Slack", operationID)
+	sr.scheduleRunAfterMutation(canceledCtx, actionInstallItem, "Slack", "", operationID)
 	sr.wg.Wait()
 
 	events, done, ok := sr.snapshotTrackedOperation(operationID)
@@ -347,7 +348,7 @@ func mustStreamTerminal(t *testing.T, cfg config.Configuration, operationID stri
 func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
 	sr := newServiceRunner(config.Configuration{}, noopRun)
 	const operationID = "op-progress"
-	sr.registerTrackedOperation("DemoOptional", CommandResponse{OperationID: operationID})
+	sr.registerTrackedOperation("DemoOptional", "", CommandResponse{OperationID: operationID})
 
 	emit := sr.operationProgressCallback(operationID)
 	emit(catalog.Item{Name: "DemoDependency", DisplayName: "Demo Dependency"}, "downloading", 0, "download")
@@ -456,7 +457,7 @@ func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
 // a run that never emits progress for the item names it properly at the end.
 func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
 	sr := newServiceRunner(config.Configuration{}, noopRun)
-	sr.registerTrackedOperation("GoogleChrome", CommandResponse{OperationID: "op-named", displayName: "Google Chrome"})
+	sr.registerTrackedOperation("GoogleChrome", "", CommandResponse{OperationID: "op-named", displayName: "Google Chrome"})
 	sr.appendOperationEvent("op-named", resolveTerminalEvent("GoogleChrome", nil))
 
 	events, done, _ := sr.snapshotTrackedOperation("op-named")
@@ -655,5 +656,46 @@ func TestSendCommandOverTransport(t *testing.T) {
 	}
 	if _, err := SendCommand(cfg, "CancelOperation:"+accepted.OperationID); !IsErrorCode(err, "operation_not_cancelable") {
 		t.Fatalf("CancelOperation of a finished operation = %v", err)
+	}
+}
+
+// Every mutation names the user who asked, resolved from the connection: in
+// the answer, on every record of its operation, and in the run it triggers,
+// which writes it into the inventory.
+func TestMutationRecordsWhoAsked(t *testing.T) {
+	me, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := testServiceConfig(t)
+	stubOptional(t, "Slack")
+	runs := make(chan map[string]string, 4)
+	_, ctx := startTestRunner(t, cfg, func(in config.Configuration, _ installer.ProgressFn, _ *installer.Cancels) (*report.Report, error) {
+		runs <- in.RequestedBy
+		return nil, nil
+	})
+	if got := <-runs; got != nil {
+		t.Fatalf("the scheduled start-up run has requestedBy %v, want none", got)
+	}
+
+	client := NewClient(cfg.ServicePipeName)
+	accepted, err := client.InstallItem(ctx, "Slack")
+	if err != nil {
+		t.Fatalf("InstallItem: %v", err)
+	}
+	if !strings.EqualFold(accepted.RequestedBy, me.Username) {
+		t.Fatalf("requestedBy = %q, want %q", accepted.RequestedBy, me.Username)
+	}
+	err = client.StreamOperationStatus(ctx, accepted.OperationID, func(record OperationStatus) error {
+		if record.RequestedBy != accepted.RequestedBy {
+			t.Errorf("%s record requestedBy = %q, want %q", record.State, record.RequestedBy, accepted.RequestedBy)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := <-runs; len(got) != 1 || got["Slack"] != accepted.RequestedBy {
+		t.Fatalf("the operation's run has requestedBy %v, want Slack: %s", got, accepted.RequestedBy)
 	}
 }

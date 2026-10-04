@@ -35,6 +35,9 @@ type Command struct {
 	// cancels is the service's withdrawal bookkeeping, set by the service for
 	// every command it executes; nil from the command line.
 	cancels *installer.Cancels
+	// requestedBy maps the item of the mutation a run carries out to the user
+	// who asked for it, for the inventory. Only on an actionRun.
+	requestedBy map[string]string
 }
 
 type CommandResponse struct {
@@ -43,6 +46,7 @@ type CommandResponse struct {
 	Items         []string              `json:"items,omitempty"`
 	OptionalItems []OptionalInstallItem `json:"optionalItems,omitempty"`
 	OperationID   string                `json:"operationId,omitempty"`
+	RequestedBy   string                `json:"requestedBy,omitempty"`
 	Branding      *branding.Branding    `json:"branding,omitempty"`
 
 	// displayName is the catalog display name InstallItem resolved while
@@ -193,13 +197,13 @@ func SendCommand(cfg config.Configuration, spec string) (CommandResponse, error)
 		if err != nil {
 			return CommandResponse{}, err
 		}
-		return CommandResponse{Status: "ok", OperationID: accepted.OperationID}, nil
+		return CommandResponse{Status: "ok", OperationID: accepted.OperationID, RequestedBy: accepted.RequestedBy}, nil
 	case actionRemoveItem:
 		accepted, err := client.RemoveItem(ctx, cmd.Items[0])
 		if err != nil {
 			return CommandResponse{}, err
 		}
-		return CommandResponse{Status: "ok", OperationID: accepted.OperationID}, nil
+		return CommandResponse{Status: "ok", OperationID: accepted.OperationID, RequestedBy: accepted.RequestedBy}, nil
 	case actionStreamOperationStatus:
 		resp := CommandResponse{Status: "ok", Message: "StreamOperationStatus acknowledged by service"}
 		err := client.StreamOperationStatus(ctx, cmd.Items[0], func(status OperationStatus) error {
@@ -248,6 +252,7 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 	switch cmd.Action {
 	case actionRun:
 		defer cmd.cancels.EndRun()
+		cfg.RequestedBy = cmd.requestedBy
 		rep, err := managedRun(cfg, cmd.progress, cmd.cancels)
 		return CommandResponse{Status: "ok", report: rep}, err
 	case actionInstallItem:

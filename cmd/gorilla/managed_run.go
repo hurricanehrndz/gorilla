@@ -54,6 +54,7 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn, cancels
 	// The inventory is finished even when the run fails part way, so osquery
 	// sees the failure; plan collects every item the run considers.
 	plan := newPlanBuilder()
+	plan.requestedBy = cfg.RequestedBy
 	start := time.Now()
 	defer func() { finishInventory(cfg, run, plan, start, runErr) }()
 

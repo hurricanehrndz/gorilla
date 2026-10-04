@@ -39,7 +39,7 @@ func listen(name string) (listener, error) {
 }
 
 // Accept creates a pipe instance and waits for a client to connect to it.
-func (l *pipeListener) Accept() (io.ReadWriteCloser, error) {
+func (l *pipeListener) Accept() (clientConn, error) {
 	for {
 		if l.closed.Load() {
 			return nil, net.ErrClosed
@@ -94,6 +94,35 @@ func (c *pipeConn) Close() error {
 		err = c.File.Close()
 	})
 	return err
+}
+
+// Peer is the user of the connecting process: the service, as SYSTEM, opens
+// the client process named by the pipe and reads its token.
+func (c *pipeConn) Peer() (peer, error) {
+	var pid uint32
+	if err := windows.GetNamedPipeClientProcessId(c.handle, &pid); err != nil {
+		return peer{}, fmt.Errorf("client process id: %w", err)
+	}
+	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return peer{}, fmt.Errorf("open client process %d: %w", pid, err)
+	}
+	defer func() { _ = windows.CloseHandle(proc) }()
+	var token windows.Token
+	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &token); err != nil {
+		return peer{}, fmt.Errorf("open client token: %w", err)
+	}
+	defer func() { _ = token.Close() }()
+	tokenUser, err := token.GetTokenUser()
+	if err != nil {
+		return peer{}, fmt.Errorf("read client token user: %w", err)
+	}
+	sid := tokenUser.User.Sid
+	account, domain, _, err := sid.LookupAccount("")
+	if err != nil {
+		return peer{ID: sid.String()}, fmt.Errorf("look up %s: %w", sid, err)
+	}
+	return peer{Name: domain + `\` + account, ID: sid.String()}, nil
 }
 
 func flushAndDisconnectNamedPipe(handle windows.Handle) {

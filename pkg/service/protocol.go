@@ -172,6 +172,9 @@ type AcceptedOperation struct {
 	OperationID string `json:"operationId,omitempty"`
 	Accepted    bool   `json:"accepted"`
 	QueuedAtUTC string `json:"queuedAtUtc"`
+	// RequestedBy is the user who called, as the service resolved it from the
+	// connection: DOMAIN\user on Windows, "" when unresolved.
+	RequestedBy string `json:"requestedBy"`
 }
 
 type streamOperationStatusAckResponse struct {
@@ -185,9 +188,10 @@ type cancelOperationResponse struct {
 // OperationStatus is one status record, the params of an operationStatus
 // notification. Seq numbers an operation's records from 1 in the order the
 // service recorded them, so a client can order records that arrive out of
-// order. ProgressPercent is scoped to ItemName and may reset when the item
-// changes; it is not aggregate operation progress. Only Succeeded, Failed,
-// Deferred, and Canceled end an operation.
+// order. RequestedBy is the user whose request started the operation, "" when
+// the service could not resolve it. ProgressPercent is scoped to ItemName and
+// may reset when the item changes; it is not aggregate operation progress.
+// Only Succeeded, Failed, Deferred, and Canceled end an operation.
 type OperationStatus struct {
 	OperationID     string `json:"operationId"`
 	Seq             int    `json:"seq"`
@@ -200,6 +204,7 @@ type OperationStatus struct {
 	ErrorCode       string `json:"errorCode,omitempty"`
 	ErrorMessage    string `json:"errorMessage,omitempty"`
 	CanceledBy      string `json:"canceledBy,omitempty"`
+	RequestedBy     string `json:"requestedBy"`
 }
 
 func IsTerminalOperationState(state string) bool {

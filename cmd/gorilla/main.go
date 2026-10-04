@@ -91,6 +91,9 @@ func route(cfg config.Configuration) error {
 		if resp.OperationID != "" {
 			fmt.Printf("operationId: %s\n", resp.OperationID)
 		}
+		if resp.RequestedBy != "" {
+			fmt.Printf("requestedBy: %s\n", resp.RequestedBy)
+		}
 		if resp.Message != "" {
 			fmt.Println(resp.Message)
 			return nil

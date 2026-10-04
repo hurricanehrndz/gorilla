@@ -10,8 +10,10 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -38,11 +40,8 @@ type unixListener struct {
 }
 
 // listen binds the socket. The directory is 0755 and the socket 0666, the
-// rough equivalent of the pipe's Authenticated Users read/write.
-//
-// CEILING: any local user can connect, as on Windows, and the service does
-// not check who did. Peer credentials (SO_PEERCRED on Linux, LOCAL_PEERCRED
-// on macOS) are not read; read them in Accept once operations need an owner.
+// rough equivalent of the pipe's Authenticated Users read/write: any local
+// user can connect, and the peer credentials name who did.
 func listen(name string) (listener, error) {
 	path := socketPath(name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -68,8 +67,31 @@ func listen(name string) (listener, error) {
 	return unixListener{ln}, nil
 }
 
-func (l unixListener) Accept() (io.ReadWriteCloser, error) {
-	return l.Listener.Accept()
+func (l unixListener) Accept() (clientConn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return unixConn{c.(*net.UnixConn)}, nil
+}
+
+// unixConn is an accepted socket connection.
+type unixConn struct {
+	*net.UnixConn
+}
+
+// Peer is the user of the connecting process, from its peer credentials.
+func (c unixConn) Peer() (peer, error) {
+	uid, err := peerUID(c.UnixConn)
+	if err != nil {
+		return peer{}, fmt.Errorf("read peer credentials: %w", err)
+	}
+	id := strconv.FormatUint(uint64(uid), 10)
+	u, err := user.LookupId(id)
+	if err != nil {
+		return peer{ID: id}, fmt.Errorf("look up uid %s: %w", id, err)
+	}
+	return peer{Name: u.Username, ID: id}, nil
 }
 
 func dial(ctx context.Context, name string, timeout time.Duration) (io.ReadWriteCloser, error) {

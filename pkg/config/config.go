@@ -96,6 +96,10 @@ type Configuration struct {
 	ServicePipeName string   `yaml:"service_pipe_name,omitempty"`
 	Branding        Branding `yaml:"branding,omitempty"`
 	ConfigPath      string
+	// RequestedBy maps a self-service item to the user whose request the run
+	// is carrying out, for the inventory. The service sets it per run; it is
+	// never read from config.yaml.
+	RequestedBy map[string]string `yaml:"-"`
 }
 
 // Branding is the optional organisation branding block for Gorilla UI. Policy
