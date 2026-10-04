@@ -35,7 +35,9 @@ elif [[ ! -s $cache/$msi_name ]]; then
 	mv "$cache/$msi_name.part" "$cache/$msi_name"
 fi
 
-[[ -x build/gorilla.exe && -x build/gorilla-ui.exe ]] || make build
+# Always rebuild: staging older executables once made the gates test code the
+# branch no longer had.
+make build
 
 hash=$(sha256sum "$cache/$msi_name" | cut -d' ' -f1)
 # The MSI summary-information Comments field carries "<version> Copyright ...".

@@ -277,7 +277,14 @@ function Stream-OperationEvents {
         $t = "$l".Trim()
         if (-not $t.StartsWith('{')) { continue }
         try { $ev = $t | ConvertFrom-Json } catch { continue }
-        if ($ev.operationId -eq $OpId -and $ev.state) { $events += $ev }
+        if ($ev.operationId -eq $OpId -and $ev.state) {
+            # Every JSON-RPC status record carries a numeric seq; a record
+            # without one means a stale, pre-JSON-RPC gorilla.exe was staged.
+            if (-not ($ev.seq -is [int] -or $ev.seq -is [long])) {
+                Fail "status record has no numeric seq (stale gorilla.exe staged?): $t"
+            }
+            $events += $ev
+        }
     }
     return $events
 }
