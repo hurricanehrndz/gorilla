@@ -29,6 +29,8 @@ export type ActivityRecord = {
   state: string;
   message: string;
   timestampUtc: string;
+  /** The service's order for the operation's records, from 1; absent on local records. */
+  seq?: number;
   progressPercent?: number;
   /** The wire errorMessage on its own, so an outcome line can quote just it. */
   detail?: string;

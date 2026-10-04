@@ -208,6 +208,8 @@ function mutate(itemName: string, removing: boolean): Promise<AcceptedOperation>
 type Watched = {
   item: OptionalInstallItem;
   state: string;
+  // seq is the last record number sent, as the service numbers them.
+  seq: number;
   timers: ReturnType<typeof setTimeout>[];
   settle: () => void;
 };
@@ -235,13 +237,14 @@ function watch(operationId: string): Promise<void> {
   const [lastDelay, lastPartial] = events[events.length - 1];
 
   return new Promise((resolve, reject) => {
-    const entry: Watched = { item, state: "", timers: [], settle: resolve };
+    const entry: Watched = { item, state: "", seq: 0, timers: [], settle: resolve };
     watched.set(operationId, entry);
     for (const [delay, partial] of events) {
       entry.timers.push(
         setTimeout(() => {
           const status: OperationStatus = {
             operationId,
+            seq: ++entry.seq,
             timestampUtc: new Date().toISOString(),
             itemName: item.itemName,
             displayName: item.displayName,
@@ -290,6 +293,7 @@ function cancel(operationId: string): Promise<void> {
   watched.delete(operationId);
   emit({
     operationId,
+    seq: entry.seq + 1,
     timestampUtc: new Date().toISOString(),
     itemName: entry.item.itemName,
     displayName: entry.item.displayName,

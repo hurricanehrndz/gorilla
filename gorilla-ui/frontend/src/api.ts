@@ -11,6 +11,9 @@ export type { AcceptedOperation, Branding, OptionalInstallItem };
 // Upgrade path: regenerate bindings with events and re-export that model here.
 export type OperationStatus = {
   operationId: string;
+  /** Numbers the operation's records from 1 in the order the service recorded them. */
+  seq: number;
+  /** RFC 3339 UTC with milliseconds, like Date.toISOString. */
   timestampUtc: string;
   itemName: string;
   displayName: string;

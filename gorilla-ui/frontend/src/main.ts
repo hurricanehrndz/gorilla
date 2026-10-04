@@ -13,6 +13,7 @@ import {
   ALL_CATEGORIES,
   REQUESTED_STATE,
   activityLine,
+  addActivity,
   bannerMessage,
   connectionLabel,
   brandingView,
@@ -24,6 +25,7 @@ import {
   fromCache,
   glyphTone,
   httpUrl,
+  insertRecord,
   isItemActive,
   isTerminalState,
   localErrorState,
@@ -404,13 +406,17 @@ function render(): void {
   renderStrip();
 }
 
-function pushRecord(operation: OperationView, record: ActivityRecord): void {
-  operation.records.push(record);
-  activity = [record, ...activity].slice(0, ACTIVITY_LIMIT);
+/** pushRecord files a record in its operation and in Activity; false for a duplicate. */
+function pushRecord(operation: OperationView, record: ActivityRecord): boolean {
+  if (!insertRecord(operation.records, record)) {
+    return false;
+  }
+  activity = addActivity(activity, record, ACTIVITY_LIMIT);
   saveActivity(storage, activity);
   if (!viewActivity.hidden) {
     renderActivity();
   }
+  return true;
 }
 
 function reason(error: unknown): string {
@@ -494,21 +500,19 @@ function failOperation(operationId: string, message: string): void {
   render();
 }
 
-// ponytail: timeline records are kept in arrival order. Wails emits each event
-// on its own goroutine and never serialises them, so records inside one poll
-// batch can arrive out of order. Anything arriving after the operation reached a
-// terminal or error outcome is dropped, which is what keeps a finished operation
-// from reverting to a progress line; an inversion between two non-terminal
-// records is cosmetic and tolerated. Sorting by timestampUtc is not an option
-// until the wire carries sub-second precision — it is second-granular today, so
-// it cannot break ties inside a 20ms batch.
+// Wails emits each event on its own goroutine and never serialises them, so
+// records can arrive out of order. pushRecord files each by the seq the service
+// gave it: a record that arrives after the terminal one lands before it, and
+// the finished operation keeps its terminal record as its latest.
 api.onOperationStatus((status) => {
   const operation = operations.get(status.operationId);
   if (!operation || !shouldAcceptRecord(operation.outcome)) {
     return;
   }
   const record = statusRecord(status);
-  pushRecord(operation, record);
+  if (!pushRecord(operation, record) || operation.outcome === "terminal") {
+    return;
+  }
   // ItemCompleted and ItemFailed are per-item records; only the four terminal
   // states end the operation, and only an authoritative list changes the cards.
   if (isTerminalState(record.state)) {

@@ -198,13 +198,63 @@ export function isItemActive(active: ActiveOperations, itemName: string): boolea
 
 /**
  * shouldAcceptRecord decides whether a newly arrived status record still
- * belongs to an operation. Wails emits every event on its own goroutine and the
- * service flushes a whole poll batch at once, so a non-terminal record can
- * arrive after the terminal one; accepting it would show finished work as still
- * running.
+ * belongs to an operation. A finished operation still takes a late record,
+ * which insertRecord files before the terminal one; an operation that ended in
+ * a local error does not, because its last record is the local one.
  */
 export function shouldAcceptRecord(outcome: OperationOutcome): boolean {
-  return outcome === "active";
+  return outcome !== "error";
+}
+
+/**
+ * insertRecord files a record in its operation's timeline. Wails emits every
+ * event on its own goroutine, so records can arrive in any order; a wire
+ * record goes where its seq puts it, so the last record is always the latest
+ * the service recorded. A local record (no seq) is appended. It returns false
+ * for a seq the timeline already holds.
+ */
+export function insertRecord(records: ActivityRecord[], record: ActivityRecord): boolean {
+  const seq = record.seq;
+  if (seq === undefined) {
+    records.push(record);
+    return true;
+  }
+  if (records.some((existing) => existing.seq === seq)) {
+    return false;
+  }
+  let at = records.length;
+  while (at > 0 && (records[at - 1].seq ?? 0) > seq) {
+    at -= 1;
+  }
+  records.splice(at, 0, record);
+  return true;
+}
+
+/** isNewer is whether a belongs above b in newest-first Activity. */
+function isNewer(a: ActivityRecord, b: ActivityRecord): boolean {
+  const at = Date.parse(a.timestampUtc);
+  const bt = Date.parse(b.timestampUtc);
+  if (at !== bt) {
+    return at > bt;
+  }
+  return a.operationId === b.operationId && (a.seq ?? 0) > (b.seq ?? 0);
+}
+
+/**
+ * addActivity files a record in newest-first Activity by its timestamp, then
+ * by seq within one operation, and keeps the newest `limit` records. A record
+ * with an unreadable timestamp, or a tie between operations, goes on top.
+ */
+export function addActivity(
+  activity: ActivityRecord[],
+  record: ActivityRecord,
+  limit: number,
+): ActivityRecord[] {
+  let at = 0;
+  while (at < activity.length && isNewer(activity[at], record)) {
+    at += 1;
+  }
+  return [...activity.slice(0, at), record, ...activity.slice(at)].slice(0, limit);
 }
 
 /**
@@ -222,6 +272,7 @@ export function statusRecord(status: OperationStatus): ActivityRecord {
     state: status.state,
     message: [message, detail && detail !== message ? `(${detail})` : ""].filter(Boolean).join(" "),
     timestampUtc: status.timestampUtc,
+    ...(typeof status.seq === "number" ? { seq: status.seq } : {}),
     progressPercent: status.progressPercent,
     ...(detail ? { detail } : {}),
     ...(status.state === "Canceled" && status.canceledBy ? { canceledBy: status.canceledBy } : {}),

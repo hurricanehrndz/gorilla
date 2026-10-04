@@ -7,6 +7,7 @@ import {
   ERROR_STATE,
   STREAM_ENDED_STATE,
   activityLine,
+  addActivity,
   bannerMessage,
   connectionLabel,
   brandingView,
@@ -20,6 +21,7 @@ import {
   fromCache,
   glyphTone,
   httpUrl,
+  insertRecord,
   isHexColor,
   isItemActive,
   isItemPhase,
@@ -240,27 +242,29 @@ test("active operations disable only their own item and route independently", ()
   assert.equal(releaseOperation(afterFirst, "op-unknown").size, 1);
 });
 
-test("a record arriving after the terminal one is dropped, not shown as current", () => {
-  // Mirrors the onOperationStatus handler: Wails can deliver an ItemCompleted
-  // after the terminal record, and appending it would leave a finished
-  // operation reading "Installing 55%" as its newest line.
+test("records are filed by seq whatever order they arrive in", () => {
+  // Mirrors the onOperationStatus handler: Wails can deliver records out of
+  // order, even after the terminal one, and a finished operation must not
+  // read "Installing 55%" as its newest line.
   const operation = { records: [], outcome: "active" };
-  const activity = [];
   const apply = (status) => {
     if (!shouldAcceptRecord(operation.outcome)) {
-      return;
+      return false;
     }
     const record = statusRecord(status);
-    operation.records.push(record);
-    activity.unshift(record);
+    if (!insertRecord(operation.records, record)) {
+      return false;
+    }
     if (isTerminalState(record.state)) {
       operation.outcome = "terminal";
     }
+    return true;
   };
 
-  const event = (state, progressPercent) => ({
+  const event = (seq, state, progressPercent) => ({
     operationId: "op-1",
-    timestampUtc: "2026-07-21T12:00:00Z",
+    seq,
+    timestampUtc: "2026-07-21T12:00:00.020Z",
     itemName: "DemoOptional",
     displayName: "Demo Optional",
     state,
@@ -268,20 +272,53 @@ test("a record arriving after the terminal one is dropped, not shown as current"
     message: state,
   });
 
-  apply(event("Installing", 55));
-  apply(event("Succeeded", 100));
-  apply(event("ItemCompleted", 55));
+  insertRecord(operation.records, localRecord("op-1", event(0, "", 0), REQUESTED_STATE, "accepted", "2026-07-21T12:00:00.000Z"));
+  apply(event(1, "Queued", 0));
+  apply(event(3, "Installing", 55));
+  apply(event(4, "Succeeded", 100));
+  apply(event(2, "Downloading", 0));
+  assert.equal(apply(event(3, "Installing", 55)), false, "a repeated seq is dropped");
 
-  assert.deepEqual(operation.records.map((r) => r.state), ["Installing", "Succeeded"]);
-  assert.equal(operation.records[operation.records.length - 1].state, "Succeeded");
-  assert.deepEqual(activity.map((r) => r.state), ["Succeeded", "Installing"]);
+  assert.deepEqual(
+    operation.records.map((r) => r.state),
+    [REQUESTED_STATE, "Queued", "Downloading", "Installing", "Succeeded"],
+  );
+  assert.equal(operation.outcome, "terminal");
   assert.equal(shouldAcceptRecord("active"), true);
-  assert.equal(shouldAcceptRecord("error"), false, "a failed operation stops accepting late records too");
+  assert.equal(shouldAcceptRecord("terminal"), true, "a late record still belongs in the finished timeline");
+  assert.equal(shouldAcceptRecord("error"), false, "after a local error its own record stays the latest");
+});
+
+test("Activity is newest first by time, then by seq within an operation", () => {
+  const record = (operationId, seq, timestampUtc, state) => ({
+    operationId,
+    itemName: "DemoOptional",
+    displayName: "Demo Optional",
+    state,
+    message: "",
+    timestampUtc,
+    ...(seq === undefined ? {} : { seq }),
+  });
+  let activity = [];
+  // Arrival order, as Wails might deliver it: a batch inverted, then a
+  // record of another operation, then a late one.
+  activity = addActivity(activity, record("op-1", undefined, "2026-07-21T12:00:00.000Z", REQUESTED_STATE), 100);
+  activity = addActivity(activity, record("op-1", 2, "2026-07-21T12:00:01.500Z", "Downloading"), 100);
+  activity = addActivity(activity, record("op-1", 1, "2026-07-21T12:00:01.500Z", "Queued"), 100);
+  activity = addActivity(activity, record("op-2", 1, "2026-07-21T12:00:02.000Z", "Queued"), 100);
+  activity = addActivity(activity, record("op-1", 3, "2026-07-21T12:00:03.000Z", "Succeeded"), 100);
+
+  assert.deepEqual(
+    activity.map((r) => `${r.operationId}:${r.state}`),
+    ["op-1:Succeeded", "op-2:Queued", "op-1:Downloading", "op-1:Queued", `op-1:${REQUESTED_STATE}`],
+  );
+  assert.equal(addActivity(activity, record("op-3", 1, "2026-07-21T12:00:04.000Z", "Queued"), 2).length, 2);
 });
 
 test("status records keep the event's own item identity and percentage", () => {
   const dependency = statusRecord({
     operationId: "op-1",
+    seq: 5,
     timestampUtc: "2026-07-21T12:00:05Z",
     itemName: "DemoUpdater",
     displayName: "Demo Updater",
@@ -296,6 +333,7 @@ test("status records keep the event's own item identity and percentage", () => {
     state: "Installing",
     message: "Installing DemoUpdater",
     timestampUtc: "2026-07-21T12:00:05Z",
+    seq: 5,
     progressPercent: 10,
   });
   assert.equal(progressLabel(dependency), "Demo Updater — Installing");
