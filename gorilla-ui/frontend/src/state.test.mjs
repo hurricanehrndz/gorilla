@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ALL_CATEGORIES,
+  REQUIRED_LABEL,
   REQUESTED_STATE,
   ERROR_STATE,
   STREAM_ENDED_STATE,
@@ -132,6 +133,23 @@ test("action derivation covers every status and managed combination", () => {
       `${status || "(blank)"} isManaged=${isManaged}`,
     );
   }
+});
+
+// The service refuses to remove an item an admin manifest requires, so the UI
+// must not offer a button that can only fail; it says who manages it instead.
+test("a required item has no action and says the organisation manages it", () => {
+  for (const status of ["Installed", "NotInstalled", "WillBeInstalled", "WillBeRemoved", "Unknown"]) {
+    for (const isManaged of [false, true]) {
+      const required = item({ status, isManaged, isRequired: true });
+      assert.equal(deriveAction(required), null, `${status} isManaged=${isManaged}`);
+      assert.equal(statusLabel(required), "Managed by your organisation");
+    }
+  }
+  assert.equal(REQUIRED_LABEL, "Managed by your organisation");
+  assert.deepEqual(deriveAction(item({ status: "Installed", isManaged: true, isRequired: false })), {
+    label: "Remove",
+    method: "RemoveItem",
+  });
 });
 
 test("monogram uses initials and falls back to a category glyph", () => {

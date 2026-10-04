@@ -4,6 +4,8 @@
 
 The Wails process runs as the interactive standard user. The SYSTEM Gorilla service remains the authorization and filesystem boundary. UI code receives no Gorilla configuration, credentials, arbitrary paths, package-server settings, or internal catalog objects.
 
+Any local user can reach the service, so it authorizes each mutation by item, not by caller. `installItem` accepts only an item offered in the admin manifests' `optional_installs`. `removeItem` accepts an item offered there or in `default_installs`, or one already in the self-serve manifest's own lists, so an item stays removable after it leaves the offer. An item an admin manifest lists in `managed_installs` is never removable, even when it is also offered: the service refuses with `item_not_removable`, and the managed run also skips a self-serve uninstall of such an item. `listOptionalInstalls` marks it `isRequired`, and the UI shows it as "Managed by your organisation" with Details but no Install or Remove.
+
 `UIService` binds exactly six calls backed by the shared `pkg/service.Client`:
 
 1. `ListOptionalInstalls`
@@ -83,6 +85,7 @@ application errors. `data.code` is the stable string clients branch on, and
 | -32002 | `operation_not_cancelable` | cancel refused: the item was acted on, the operation finished, or it is unknown |
 | -32003 | `unknown_operation` | stream of an operation the service does not track |
 | -32004 | `item_not_available` | `installItem` for an item not offered for self-service |
+| -32005 | `item_not_removable` | `removeItem` for an item that is not a self-service item, or that an admin manifest requires |
 
 The service does not support batches, and it does not act on a request without
 an `id` (a notification): it closes the connection without a reply. The

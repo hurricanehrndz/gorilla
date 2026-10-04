@@ -131,6 +131,7 @@ func TestJSONRPCErrorResponses(t *testing.T) {
 		{"missing params", `{"jsonrpc":"2.0","id":"b","method":"installItem"}`, codeInvalidParams, "invalid_params", `"b"`},
 		{"wrong params", `{"jsonrpc":"2.0","id":"c","method":"cancelOperation","params":["op"]}`, codeInvalidParams, "invalid_params", `"c"`},
 		{"not offered", `{"jsonrpc":"2.0","id":"d","method":"installItem","params":{"itemName":"NotOffered"}}`, codeItemNotAvailable, "item_not_available", `"d"`},
+		{"not removable", `{"jsonrpc":"2.0","id":"e","method":"removeItem","params":{"itemName":"NotOffered"}}`, codeItemNotRemovable, "item_not_removable", `"e"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -253,17 +253,21 @@ function card(item: OptionalInstallItem): HTMLElement {
   const actions = document.createElement("p");
   actions.className = "card-actions";
 
-  const action = document.createElement("button");
+  // An item the organisation requires has no action, only Details.
   const derived = deriveAction(item);
-  action.type = "button";
-  // Board B draws Remove outlined; the other primary actions are solid.
-  action.className = `pill ${derived.label === "Remove" ? "pill-outline" : "pill-primary"}`;
-  action.textContent = derived.label;
-  // Only the item that owns an in-flight operation is disabled; other items
-  // stay actionable and route independently by operation ID.
-  action.disabled = isItemActive(active, item.itemName);
-  action.setAttribute("aria-label", `${derived.label} ${item.displayName}`);
-  action.addEventListener("click", () => void runAction(item, derived));
+  if (derived) {
+    const action = document.createElement("button");
+    action.type = "button";
+    // Board B draws Remove outlined; the other primary actions are solid.
+    action.className = `pill ${derived.label === "Remove" ? "pill-outline" : "pill-primary"}`;
+    action.textContent = derived.label;
+    // Only the item that owns an in-flight operation is disabled; other items
+    // stay actionable and route independently by operation ID.
+    action.disabled = isItemActive(active, item.itemName);
+    action.setAttribute("aria-label", `${derived.label} ${item.displayName}`);
+    action.addEventListener("click", () => void runAction(item, derived));
+    actions.append(action);
+  }
 
   const details = document.createElement("button");
   details.type = "button";
@@ -272,7 +276,7 @@ function card(item: OptionalInstallItem): HTMLElement {
   details.setAttribute("aria-label", `Details for ${item.displayName}`);
   details.addEventListener("click", () => openDetail(item, details));
 
-  actions.append(action, details);
+  actions.append(details);
   article.append(glyph, name, meta, status, actions);
   article.dataset.item = item.itemName;
   updateCardProgress(article, item, statusLabel(item));
@@ -553,11 +557,14 @@ function renderDetail(): void {
   setText("#detail-restart", restartBadge(item), "None");
 
   const derived = deriveAction(item);
-  detailAction.className = `pill pill-large ${derived.label === "Remove" ? "pill-outline" : "pill-primary"}`;
-  detailAction.textContent = derived.label;
-  detailAction.disabled = isItemActive(active, item.itemName);
-  detailAction.setAttribute("aria-label", `${derived.label} ${item.displayName}`);
-  detailAction.onclick = () => void runAction(item, derived);
+  detailAction.hidden = derived === null;
+  if (derived) {
+    detailAction.className = `pill pill-large ${derived.label === "Remove" ? "pill-outline" : "pill-primary"}`;
+    detailAction.textContent = derived.label;
+    detailAction.disabled = isItemActive(active, item.itemName);
+    detailAction.setAttribute("aria-label", `${derived.label} ${item.displayName}`);
+    detailAction.onclick = () => void runAction(item, derived);
+  }
 
   // The Status row already says the catalog state, so the line only appears
   // for work in progress or an outcome.

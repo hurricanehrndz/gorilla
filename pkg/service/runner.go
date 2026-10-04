@@ -501,6 +501,8 @@ func commandError(err error, operationID string) *Error {
 		return newError(codeOperationNotCancelable, err.Error(), operationID)
 	case errors.Is(err, errItemNotAvailable):
 		return newError(codeItemNotAvailable, err.Error(), operationID)
+	case errors.Is(err, errItemNotRemovable):
+		return newError(codeItemNotRemovable, err.Error(), operationID)
 	default:
 		return newError(codeCommandFailed, err.Error(), operationID)
 	}

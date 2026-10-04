@@ -85,6 +85,55 @@ func TestAddServiceManagedInstallsRejectsUnauthorized(t *testing.T) {
 	}
 }
 
+// Any local user can call removeItem, and the run uninstalls as SYSTEM, so a
+// removal is accepted only for a self-service item, and never for one an admin
+// manifest requires: that would let a user strip, say, the EDR agent.
+func TestRemoveServiceManagedInstallAuthorization(t *testing.T) {
+	cases := []struct {
+		name    string
+		before  manifest.Item
+		allowed bool
+	}{
+		{name: "Offered", allowed: true},
+		{name: "Default", allowed: true},
+		{name: "Delisted", before: manifest.Item{Installs: []string{"Delisted"}}, allowed: true},
+		{name: "PendingRemoval", before: manifest.Item{Uninstalls: []string{"PendingRemoval"}}, allowed: true},
+		{name: "EDRAgent"},
+		{name: "RequiredAndOffered", before: manifest.Item{Installs: []string{"RequiredAndOffered"}}},
+		{name: "NotSelfService"},
+	}
+	origManifest := manifestGet
+	t.Cleanup(func() { manifestGet = origManifest })
+	manifestGet = func(config.Configuration) ([]manifest.Item, []string, error) {
+		return []manifest.Item{
+			{Name: "site", Installs: []string{"EDRAgent", "NotSelfService"}},
+			{Name: "base", Installs: []string{"RequiredAndOffered"}, OptionalInstalls: []string{"Offered", "RequiredAndOffered"}, DefaultInstalls: []string{"Default"}},
+		}, nil, nil
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Configuration{AppDataPath: t.TempDir()}
+			if err := manifest.SaveSelfServe(serviceLocalManifestPath(cfg), tc.before); err != nil {
+				t.Fatal(err)
+			}
+			_, err := removeServiceManagedInstall(cfg, tc.name)
+			got := loadManifest(t, cfg)
+			if tc.allowed {
+				if err != nil || !slices.Equal(got.Uninstalls, []string{tc.name}) {
+					t.Fatalf("remove = %v, uninstalls %v; want it queued", err, got.Uninstalls)
+				}
+				return
+			}
+			if !errors.Is(err, errItemNotRemovable) {
+				t.Fatalf("remove error = %v, want errItemNotRemovable", err)
+			}
+			if !slices.Equal(got.Installs, tc.before.Installs) || len(got.Uninstalls) != 0 {
+				t.Fatalf("a refused remove changed the selection: %+v", got)
+			}
+		})
+	}
+}
+
 // TestAddCancelsPendingUninstall verifies re-selecting a removed item cancels
 // its pending uninstall so the two lists stay disjoint (R3).
 func TestAddCancelsPendingUninstall(t *testing.T) {
@@ -124,6 +173,7 @@ func TestGetOptionalItems(t *testing.T) {
 		return []manifest.Item{
 			{
 				Name:             "base",
+				Installs:         []string{"Firefox"},
 				OptionalInstalls: []string{"GoogleChrome", "7zip", "Firefox"},
 			},
 			{
@@ -149,6 +199,12 @@ func TestGetOptionalItems(t *testing.T) {
 	expected := []string{"7zip", "Firefox", "GoogleChrome", "VSCode"}
 	if !reflect.DeepEqual(expected, names) {
 		t.Fatalf("unexpected optional items, expected %#v, got %#v", expected, names)
+	}
+	// Only an item an admin manifest requires is marked required.
+	for _, it := range items {
+		if it.IsRequired != (it.ItemName == "Firefox") {
+			t.Fatalf("%s isRequired = %v", it.ItemName, it.IsRequired)
+		}
 	}
 }
 

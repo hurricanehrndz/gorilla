@@ -122,8 +122,17 @@ export function restartBadge(item: OptionalInstallItem): string {
   return RESTART_LABELS[fold(raw)] ?? raw;
 }
 
-/** statusLabel is the catalog status in sentence case: "Will be installed". */
+/** REQUIRED_LABEL is the status of an item an admin manifest requires. */
+export const REQUIRED_LABEL = "Managed by your organisation";
+
+/**
+ * statusLabel is the catalog status in sentence case: "Will be installed". An
+ * item the organisation requires says so instead; it has no action to take.
+ */
 export function statusLabel(item: OptionalInstallItem): string {
+  if (item.isRequired) {
+    return REQUIRED_LABEL;
+  }
   const label = stateLabel(item.status);
   return label[0] + label.slice(1).toLowerCase();
 }
@@ -449,9 +458,13 @@ export function stripLine(strip: StripView): string {
 /**
  * deriveAction maps an item to its single primary action. Cancelling a pending
  * install or removal reuses the opposite mutation; it is not a new protocol
- * operation.
+ * operation. An item the organisation requires has no action: the service
+ * refuses to remove it, and every managed run installs it anyway.
  */
-export function deriveAction(item: OptionalInstallItem): ItemAction {
+export function deriveAction(item: OptionalInstallItem): ItemAction | null {
+  if (item.isRequired) {
+    return null;
+  }
   switch (item.status) {
     case "WillBeInstalled":
       return { label: "Cancel", method: "RemoveItem" };

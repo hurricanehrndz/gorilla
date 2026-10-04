@@ -82,3 +82,22 @@ DemoFailing:
     location: packages/scripts/demofailing-install.ps1
     hash: d7e53b61d6ec34f5dee0cea5ec0a4e1b4f22a13d2238393e63d843e1086455de
   version: "1.0"
+# DemoRequired is listed in managed_installs (and optional_installs) by the e2e
+# manifest: the service must list it as required and refuse to remove it.
+DemoRequired:
+  display_name: Demo Required
+  description: Required by the organisation; self-service cannot remove it
+  category: Smoke
+  developer: Gorilla
+  check:
+    file:
+      - path: C:\ProgramData\gorilla-c-smoke\required.txt
+  installer:
+    type: ps1
+    location: packages/scripts/demorequired-install.ps1
+    hash: ad75908f5619e804c658087b5d60a755bf96dd7143102f1b3a831aaba8f0107b
+  uninstaller:
+    type: ps1
+    location: packages/scripts/demorequired-uninstall.ps1
+    hash: 178cde3f99bc3d243e0b811e7625fe813b96ad0e7f6a2b20c6b7b5c2d00e0b71
+  version: "1.0"

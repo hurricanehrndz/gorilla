@@ -10,6 +10,8 @@ fixture set built by build-e2e-repo.sh and asserts, in order:
     policy Title under HKLM\SOFTWARE\Policies\Gorilla\Branding wins over it, and
     removing the policy brings the config title back
   - the item is offered with its catalog metadata and an honest NotInstalled status
+  - DemoRequired, an admin managed_installs item, is listed isRequired and RemoveItem
+    of it is refused with item_not_removable
   - CancelOperation withdraws an InstallItem queued behind a busy run: the operation
     ends Canceled by the user, nothing is installed, the selection is reverted, and a
     second cancel is refused with operation_not_cancelable
@@ -251,6 +253,18 @@ if ($item.category -ne "Browsers")   { Fail "category mismatch: '$($item.categor
 if (-not $item.version)              { Fail "version missing from payload" }
 $expectedVersion = "$($item.version)"
 Pass "offered: $($item.displayName) $expectedVersion by $($item.developer) [$($item.category)] status=$($item.status)"
+
+# --- Authorization: an admin-required item cannot be removed through the pipe
+Write-Step "DemoRequired (managed_installs) is listed as required and RemoveItem:DemoRequired is refused"
+Wait-For { Test-Path "C:\ProgramData\gorilla-c-smoke\required.txt" } "the managed run to install DemoRequired"
+$req = Get-OptionalItem "DemoRequired"
+if ($req -and $req.isRequired -ne $true) { Fail "DemoRequired is offered without isRequired: $($req | ConvertTo-Json -Compress)" }
+$refused = Invoke-Gorilla "RemoveItem:DemoRequired" -AllowFail
+if ($refused.Code -eq 0) { Fail "RemoveItem:DemoRequired was accepted" }
+if (($refused.Out -join ' ') -notmatch 'item_not_removable') { Fail "refusal lacks item_not_removable: $($refused.Out -join ' | ')" }
+if ((Get-YamlList $SelfServe "managed_uninstalls") -contains "DemoRequired") { Fail "the refused removal queued DemoRequired in managed_uninstalls" }
+if (-not (Test-Path "C:\ProgramData\gorilla-c-smoke\required.txt")) { Fail "DemoRequired's marker is gone" }
+Pass ("listed={0} isRequired={1}; RemoveItem refused (item_not_removable); still installed" -f [bool]$req, $req.isRequired)
 
 # --- Cancel: a queued install is withdrawn before its installer runs
 Write-Step "CancelOperation withdraws a queued InstallItem:$ItemName; a second cancel is refused"

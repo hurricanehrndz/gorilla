@@ -31,6 +31,11 @@ export class AcceptedOperation {
     }
 }
 
+/**
+ * OptionalInstallItem is one offered self-service item. IsRequired is whether
+ * an admin manifest also lists it in managed_installs: it is installed for
+ * everyone and cannot be removed through self-service.
+ */
 export class OptionalInstallItem {
     "itemName": string;
     "displayName": string;
@@ -42,6 +47,7 @@ export class OptionalInstallItem {
     "iconName"?: string;
     "restartAction"?: string;
     "isManaged": boolean;
+    "isRequired": boolean;
     "isInstalled": boolean;
     "status": string;
     "statusUpdatedAtUtc": string;
@@ -63,6 +69,9 @@ export class OptionalInstallItem {
         }
         if (!("isManaged" in $$source)) {
             this["isManaged"] = false;
+        }
+        if (!("isRequired" in $$source)) {
+            this["isRequired"] = false;
         }
         if (!("isInstalled" in $$source)) {
             this["isInstalled"] = false;

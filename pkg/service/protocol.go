@@ -57,6 +57,7 @@ const (
 	codeOperationNotCancelable = -32002
 	codeUnknownOperation       = -32003
 	codeItemNotAvailable       = -32004
+	codeItemNotRemovable       = -32005
 )
 
 // appCodes maps each JSON-RPC error code to its data.code string.
@@ -71,6 +72,7 @@ var appCodes = map[int]string{
 	codeOperationNotCancelable: "operation_not_cancelable",
 	codeUnknownOperation:       "unknown_operation",
 	codeItemNotAvailable:       "item_not_available",
+	codeItemNotRemovable:       "item_not_removable",
 }
 
 type rpcRequest struct {
@@ -141,6 +143,9 @@ type ServiceInfo struct {
 	UptimeSeconds   int64    `json:"uptimeSeconds"`
 }
 
+// OptionalInstallItem is one offered self-service item. IsRequired is whether
+// an admin manifest also lists it in managed_installs: it is installed for
+// everyone and cannot be removed through self-service.
 type OptionalInstallItem struct {
 	ItemName           string `json:"itemName"`
 	DisplayName        string `json:"displayName"`
@@ -152,6 +157,7 @@ type OptionalInstallItem struct {
 	IconName           string `json:"iconName,omitempty"`
 	RestartAction      string `json:"restartAction,omitempty"`
 	IsManaged          bool   `json:"isManaged"`
+	IsRequired         bool   `json:"isRequired"`
 	IsInstalled        bool   `json:"isInstalled"`
 	Status             string `json:"status"`
 	StatusUpdatedAtUTC string `json:"statusUpdatedAtUtc"`

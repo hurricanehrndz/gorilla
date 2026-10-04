@@ -354,9 +354,43 @@ func addServiceManagedInstall(cfg config.Configuration, name string) (string, se
 }
 
 // removeServiceManagedInstall deselects name and queues its removal, returning
-// the selection it replaced.
+// the selection it replaced. Only a self-service item may be removed: one the
+// admin manifests offer (optional_installs or default_installs) or one already
+// in the self-serve lists, so a deselected item stays removable after it
+// leaves the offer. An item an admin manifest requires (managed_installs) is
+// never removable, even when it is also offered.
 func removeServiceManagedInstall(cfg config.Configuration, name string) (selection, error) {
+	download.SetConfig(cfg)
+	manifests, _, err := manifestGet(cfg)
+	if err != nil {
+		return selection{}, err
+	}
+	if requiredItems(manifests)[name] {
+		return selection{}, fmt.Errorf("%w: %q is required by your organisation", errItemNotRemovable, name)
+	}
+	selfServe, err := loadServiceLocalManifest(cfg)
+	if err != nil {
+		return selection{}, err
+	}
+	offered := slices.ContainsFunc(manifests, func(m manifest.Item) bool {
+		return slices.Contains(m.OptionalInstalls, name) || slices.Contains(m.DefaultInstalls, name)
+	})
+	if !offered && !slices.Contains(selfServe.Installs, name) && !slices.Contains(selfServe.Uninstalls, name) {
+		return selection{}, fmt.Errorf("%w: %q is not a self-service item", errItemNotRemovable, name)
+	}
 	return setSelection(cfg, name, selectedForRemoval)
+}
+
+// requiredItems is the set of names the admin manifests list in
+// managed_installs.
+func requiredItems(manifests []manifest.Item) map[string]bool {
+	required := make(map[string]bool)
+	for _, m := range manifests {
+		for _, name := range m.Installs {
+			required[name] = true
+		}
+	}
+	return required
 }
 
 var (
@@ -365,6 +399,10 @@ var (
 	// errItemNotAvailable refuses an installItem for an item not offered for
 	// self-service, sent as item_not_available.
 	errItemNotAvailable = errors.New("item is not available for self-service")
+	// errItemNotRemovable refuses a removeItem for an item that is not a
+	// self-service item or that an admin manifest requires, sent as
+	// item_not_removable.
+	errItemNotRemovable = errors.New("item cannot be removed through self-service")
 )
 
 // withdrawItem is the item side of CancelOperation. It puts back the selection
@@ -416,6 +454,7 @@ func getOptionalItems(cfg config.Configuration) ([]OptionalInstallItem, error) {
 	}
 	selected := sliceSet(selfServe.Installs)
 	pendingRemoval := sliceSet(selfServe.Uninstalls)
+	required := requiredItems(manifests)
 
 	// Union of offered optional names, deduped and sorted for a stable payload.
 	names := make([]string, 0)
@@ -441,6 +480,7 @@ func getOptionalItems(cfg config.Configuration) ([]OptionalInstallItem, error) {
 			ItemName:           name,
 			DisplayName:        name,
 			IsManaged:          selected[name],
+			IsRequired:         required[name],
 			Status:             "Unknown",
 			StatusUpdatedAtUTC: now,
 		}
