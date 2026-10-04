@@ -42,6 +42,10 @@ type CommandResponse struct {
 	OperationID   string                `json:"operationId,omitempty"`
 	Branding      *branding.Branding    `json:"branding,omitempty"`
 
+	// displayName is the catalog display name InstallItem resolved while
+	// authorizing, for the operation's first record. Unexported like report.
+	displayName string
+
 	// report carries the managed run's per-run report from an actionRun back to
 	// the caller so scheduleRunAfterMutation can emit an honest terminal event
 	// (R10). Unexported so it is skipped by JSON and never crosses the pipe.
@@ -218,11 +222,12 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 		rep, err := managedRun(cfg, cmd.progress)
 		return CommandResponse{Status: "ok", report: rep}, err
 	case actionInstallItem:
-		if err := addServiceManagedInstalls(cfg, cmd.Items); err != nil {
+		displayName, err := addServiceManagedInstalls(cfg, cmd.Items)
+		if err != nil {
 			return CommandResponse{}, err
 		}
 		operationID := strconv.FormatInt(time.Now().UnixNano(), 10)
-		return CommandResponse{Status: "ok", OperationID: operationID}, nil
+		return CommandResponse{Status: "ok", OperationID: operationID, displayName: displayName}, nil
 	case actionRemoveItem:
 		if err := removeServiceManagedInstalls(cfg, cmd.Items); err != nil {
 			return CommandResponse{}, err
@@ -251,27 +256,29 @@ func serviceLocalManifestPath(cfg config.Configuration) string {
 	return manifest.SelfServePath(cfg.AppDataPath)
 }
 
-func addServiceManagedInstalls(cfg config.Configuration, items []string) error {
+// addServiceManagedInstalls selects items and returns the first one's catalog
+// display name, which the authorization lookup has already resolved.
+func addServiceManagedInstalls(cfg config.Configuration, items []string) (string, error) {
 	// Authorize each requested name against the currently available optional
 	// installs before writing anything (R3). An unknown name is rejected and the
 	// file is left untouched; the pipe layer maps the error to an error envelope.
 	available, err := getOptionalItems(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
-	availableNames := make(map[string]bool, len(available))
+	displayNames := make(map[string]string, len(available))
 	for _, it := range available {
-		availableNames[it.ItemName] = true
+		displayNames[it.ItemName] = it.DisplayName
 	}
 	for _, item := range items {
-		if !availableNames[item] {
-			return fmt.Errorf("item %q is not available for self-service", item)
+		if _, ok := displayNames[item]; !ok {
+			return "", fmt.Errorf("item %q is not available for self-service", item)
 		}
 	}
 
 	entry, err := loadServiceLocalManifest(cfg)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	for _, item := range items {
@@ -284,7 +291,10 @@ func addServiceManagedInstalls(cfg config.Configuration, items []string) error {
 	}
 	slices.Sort(entry.Installs)
 
-	return saveServiceLocalManifest(cfg, entry)
+	if err := saveServiceLocalManifest(cfg, entry); err != nil {
+		return "", err
+	}
+	return displayNames[items[0]], nil
 }
 
 func removeServiceManagedInstalls(cfg config.Configuration, items []string) error {

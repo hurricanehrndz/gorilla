@@ -43,10 +43,10 @@ func TestServiceLocalManifestAddRemove(t *testing.T) {
 	cfg := config.Configuration{AppDataPath: filepath.Clean(t.TempDir())}
 	stubOptional(t, "GoogleChrome", "7zip")
 
-	if err := addServiceManagedInstalls(cfg, []string{"GoogleChrome", "7zip"}); err != nil {
+	if _, err := addServiceManagedInstalls(cfg, []string{"GoogleChrome", "7zip"}); err != nil {
 		t.Fatalf("addServiceManagedInstalls failed: %v", err)
 	}
-	if err := addServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
+	if _, err := addServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
 		t.Fatalf("addServiceManagedInstalls dedupe failed: %v", err)
 	}
 
@@ -72,7 +72,7 @@ func TestAddServiceManagedInstallsRejectsUnauthorized(t *testing.T) {
 	cfg := config.Configuration{AppDataPath: filepath.Clean(t.TempDir())}
 	stubOptional(t, "GoogleChrome")
 
-	if err := addServiceManagedInstalls(cfg, []string{"NotOptional"}); err == nil {
+	if _, err := addServiceManagedInstalls(cfg, []string{"NotOptional"}); err == nil {
 		t.Fatalf("expected authorization error for unavailable item")
 	}
 	// Nothing should have been written.
@@ -87,7 +87,7 @@ func TestAddCancelsPendingUninstall(t *testing.T) {
 	cfg := config.Configuration{AppDataPath: filepath.Clean(t.TempDir())}
 	stubOptional(t, "GoogleChrome")
 
-	if err := addServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
+	if _, err := addServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
 		t.Fatalf("add failed: %v", err)
 	}
 	if err := removeServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
@@ -96,7 +96,7 @@ func TestAddCancelsPendingUninstall(t *testing.T) {
 	if got := loadManifest(t, cfg).Uninstalls; !reflect.DeepEqual(got, []string{"GoogleChrome"}) {
 		t.Fatalf("expected pending uninstall, got %#v", got)
 	}
-	if err := addServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
+	if _, err := addServiceManagedInstalls(cfg, []string{"GoogleChrome"}); err != nil {
 		t.Fatalf("re-add failed: %v", err)
 	}
 	entry := loadManifest(t, cfg)

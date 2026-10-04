@@ -171,7 +171,7 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
 	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
 	operationID := "op-canceled"
-	sr.registerTrackedOperation(operationID, "Slack")
+	sr.registerTrackedOperation(operationID, "Slack", "")
 
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -385,7 +385,7 @@ func bestEffortUnblockPipeListener(cfg config.Configuration) {
 func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
 	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
 	const operationID = "op-progress"
-	sr.registerTrackedOperation(operationID, "DemoOptional")
+	sr.registerTrackedOperation(operationID, "DemoOptional", "")
 
 	emit := sr.operationProgressCallback(operationID)
 	emit(catalog.Item{Name: "DemoDependency", DisplayName: "Demo Dependency"}, "downloading", 0, "download")
@@ -421,7 +421,9 @@ func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
 	sr.appendOperationEvent(operationID, resolveTerminalEvent("DemoOptional", nil))
 	events, done, _ = sr.snapshotTrackedOperation(operationID)
 	terminal := events[len(events)-1]
-	if !done || terminal.ItemName != "DemoOptional" || terminal.DisplayName != "DemoOptional" {
+	// The terminal record names the item as its progress records did, not by
+	// its catalog key (Activity read "GoogleChrome: Succeeded" otherwise).
+	if !done || terminal.ItemName != "DemoOptional" || terminal.DisplayName != "Demo Optional" {
 		t.Fatalf("terminal requested-item identity missing: done=%v event=%#v", done, terminal)
 	}
 	if events[0].ItemName != "DemoOptional" || events[0].DisplayName != "DemoOptional" {
@@ -496,5 +498,23 @@ func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
 	}
 	if got.Title != "Acme Software Center" || got.Accent != "#0b6e4f" {
 		t.Fatalf("GetBranding = %#v", got)
+	}
+}
+
+// An InstallItem resolves the catalog display name while authorizing, so even
+// a run that never emits progress for the item names it properly at the end.
+func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	sr.registerTrackedOperation("op-named", "GoogleChrome", "Google Chrome")
+	sr.appendOperationEvent("op-named", resolveTerminalEvent("GoogleChrome", nil))
+
+	events, done, _ := sr.snapshotTrackedOperation("op-named")
+	if !done || len(events) != 2 {
+		t.Fatalf("expected queued and terminal records, done=%v events=%#v", done, events)
+	}
+	for _, event := range events {
+		if event.ItemName != "GoogleChrome" || event.DisplayName != "Google Chrome" {
+			t.Fatalf("record identity = %q/%q, want GoogleChrome/Google Chrome", event.ItemName, event.DisplayName)
+		}
 	}
 }

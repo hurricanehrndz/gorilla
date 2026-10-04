@@ -364,7 +364,7 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 		return
 	}
 	if cmd.Action == actionInstallItem || cmd.Action == actionRemoveItem {
-		sr.registerTrackedOperation(resp.OperationID, cmd.Items[0])
+		sr.registerTrackedOperation(resp.OperationID, cmd.Items[0], resp.displayName)
 	}
 
 	if err := sr.writeSuccessEnvelope(file, req, cmd, resp); err != nil {
@@ -448,7 +448,8 @@ func (sr *serviceRunner) operationProgressCallback(operationID string) installer
 // resolveTerminalEvent reads the mutated item's real outcome from the run report
 // (keyed by catalog name, R13) and returns the honest terminal event (R10). A
 // nil report (unexpected, but a nil error means the run succeeded) resolves to
-// Succeeded.
+// Succeeded. ItemName and DisplayName stay empty: appendOperationEvent fills both
+// from the operation, which by then knows the item's catalog display name.
 func resolveTerminalEvent(itemName string, rep *report.Report) OperationStatusPayload {
 	if rep != nil {
 		for _, failed := range rep.FailedItems {
@@ -629,10 +630,14 @@ func (sr *serviceRunner) writeStreamOperationStatusSequence(file *os.File, req s
 	}
 }
 
-func (sr *serviceRunner) registerTrackedOperation(operationID, itemName string) {
+// registerTrackedOperation starts an operation's record. displayName is the
+// catalog display name when the mutation knew it; otherwise the item name stands
+// in until a progress event for the item carries the catalog name.
+func (sr *serviceRunner) registerTrackedOperation(operationID, itemName, displayName string) {
 	if strings.TrimSpace(operationID) == "" || strings.TrimSpace(itemName) == "" {
 		return
 	}
+	displayName = orDefault(strings.TrimSpace(displayName), itemName)
 	sr.operationsMu.Lock()
 	defer sr.operationsMu.Unlock()
 	sr.pruneTrackedOperationsLocked(time.Now())
@@ -640,14 +645,14 @@ func (sr *serviceRunner) registerTrackedOperation(operationID, itemName string) 
 		events: []OperationStatusPayload{
 			{
 				ItemName:        itemName,
-				DisplayName:     itemName,
+				DisplayName:     displayName,
 				State:           "Queued",
 				ProgressPercent: 0,
 				Message:         "Operation queued",
 			},
 		},
 		requestedItemName:    itemName,
-		requestedDisplayName: itemName,
+		requestedDisplayName: displayName,
 		lastUpdated:          time.Now(),
 	}
 }
@@ -664,6 +669,12 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event Operatio
 	}
 	if strings.TrimSpace(event.ItemName) == "" {
 		event.ItemName = op.requestedItemName
+	}
+	// Progress events carry the catalog display name. Remember it for the
+	// requested item so the records filled in below (the terminal one from the
+	// run report, a service cancel or failure) name the item the same way.
+	if event.ItemName == op.requestedItemName && strings.TrimSpace(event.DisplayName) != "" {
+		op.requestedDisplayName = event.DisplayName
 	}
 	if strings.TrimSpace(event.DisplayName) == "" {
 		event.DisplayName = op.requestedDisplayName
