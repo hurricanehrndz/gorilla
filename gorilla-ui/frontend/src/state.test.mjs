@@ -8,6 +8,7 @@ import {
   STREAM_ENDED_STATE,
   activityLine,
   bannerMessage,
+  connectionLabel,
   brandingView,
   canCancel,
   cancelTitle,
@@ -672,4 +673,13 @@ test("a user cancel reads plainly on the card and says who in Activity", () => {
   });
   // Other outcomes keep the warning treatment.
   assert.equal(cardProgress(chrome, [{ ...installing, state: "Failed" }], "terminal").plain, undefined);
+});
+
+test("the connection label is short in every state while the message keeps the reason", () => {
+  const stale = { items: [item({})], source: "stale", savedAtUtc: "2026-10-03T12:00:00Z" };
+  assert.equal(connectionLabel(stale), "Service unavailable");
+  assert.match(bannerMessage(stale, "pipe unavailable"), /pipe unavailable/);
+  assert.equal(connectionLabel({ items: [], source: "live", savedAtUtc: "" }), "Service connected");
+  assert.equal(connectionLabel({ items: [], source: "loading", savedAtUtc: "" }), "Connecting…");
+  assert.equal(connectionLabel({ items: [], source: "cache", savedAtUtc: "" }), "Showing cached software");
 });

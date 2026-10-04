@@ -446,6 +446,23 @@ export function bannerMessage(view: ListView, error: string): string {
   }
 }
 
+/**
+ * connectionLabel is the short app-bar text; bannerMessage is the full sentence
+ * with the reason, shown on hover and read by assistive technology.
+ */
+export function connectionLabel(view: ListView): string {
+  switch (view.source) {
+    case "loading":
+      return "Connecting…";
+    case "cache":
+      return "Showing cached software";
+    case "live":
+      return "Service connected";
+    case "stale":
+      return "Service unavailable";
+  }
+}
+
 export function showRetry(view: ListView): boolean {
   return view.source === "stale";
 }

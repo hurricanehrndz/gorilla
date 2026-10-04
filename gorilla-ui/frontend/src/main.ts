@@ -14,6 +14,7 @@ import {
   REQUESTED_STATE,
   activityLine,
   bannerMessage,
+  connectionLabel,
   brandingView,
   canCancel,
   cancelTitle,
@@ -172,7 +173,13 @@ async function refreshBranding(): Promise<void> {
 }
 
 function renderBanner(): void {
-  connectionText.textContent = bannerMessage(view, lastError);
+  const label = connectionLabel(view);
+  const detail = bannerMessage(view, lastError);
+  connectionText.textContent = label;
+  // The indicator stays a short right-aligned label; the sentence with the
+  // reason is the tooltip and the accessible name.
+  connection.title = detail === label ? "" : detail;
+  connection.setAttribute("aria-label", detail);
   connection.dataset.source = view.source;
   retryButton.hidden = !showRetry(view);
 }

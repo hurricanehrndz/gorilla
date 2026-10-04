@@ -298,11 +298,10 @@ button:disabled {
 
 .connection {
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   margin: 0 0 0 auto;
-  max-width: 40rem;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 0.8125rem;
 }
@@ -319,20 +318,9 @@ button:disabled {
   background: var(--ok);
 }
 
-/* A cache or stale notice is a sentence plus Retry: give it its own full row
-   under the nav instead of wrapping word by word at the bar's right edge. */
-.connection[data-source="cache"],
-.connection[data-source="stale"] {
-  flex: 1 0 100%;
-  flex-wrap: nowrap;
-  margin-left: 0;
-  max-width: none;
-}
-
-.connection[data-source="cache"] #connection-text,
-.connection[data-source="stale"] #connection-text {
-  flex: 1 1 auto;
-  min-width: 0;
+/* The label stays short and right-aligned; the full reason is the tooltip. */
+.connection[title]:not([title=""]) {
+  cursor: help;
 }
 
 .connection .pill {
