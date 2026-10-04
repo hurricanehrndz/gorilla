@@ -22,6 +22,8 @@ fixture set built by build-e2e-repo.sh and asserts, in order:
   - the MSI really installed: Uninstall registry entry at the catalog version, chrome.exe on disk
   - inventory.json records the item as installed with requested_by, with the documented ACL
   - the self-serve manifest records the selection
+  - the data directory, bin and the self-serve manifest carry exactly the documented
+    ACL (docs/data-directory.md), owned by Administrators
   - a running chrome.exe defers RemoveItem (blocking_apps) and the inventory says why
   - with Chrome closed, RemoveItem streams Removing/ItemCompleted, ends Succeeded, and the
     registry entry, chrome.exe and the self-serve selection are gone
@@ -378,6 +380,25 @@ if ((Get-YamlList $SelfServe "managed_installs") -notcontains $ItemName) { Fail 
 $item = Get-OptionalItem $ItemName
 if ($item.status -ne "Installed") { Fail "$ItemName status '$($item.status)', expected Installed" }
 Pass "managed_installs has $ItemName; status=Installed"
+
+# --- Step 5b: the data directory ACL (docs/data-directory.md)
+Write-Step "Data directory ACL: SYSTEM and Administrators only, plus Users read/execute on bin; nothing inherited from ProgramData"
+$dataDir = Split-Path $SelfServe
+$wantAcl = [ordered]@{
+    $dataDir               = @('NT AUTHORITY\SYSTEM:(OI)(CI)(F)', 'BUILTIN\Administrators:(OI)(CI)(F)')
+    (Join-Path $dataDir 'bin') = @('BUILTIN\Users:(OI)(CI)(RX)', 'NT AUTHORITY\SYSTEM:(I)(OI)(CI)(F)', 'BUILTIN\Administrators:(I)(OI)(CI)(F)')
+    $SelfServe             = @('NT AUTHORITY\SYSTEM:(I)(F)', 'BUILTIN\Administrators:(I)(F)')
+}
+foreach ($path in $wantAcl.Keys) {
+    # icacls prints the path, then one "PRINCIPAL:(flags)" entry per line, then a summary.
+    $lines = @(icacls $path | Where-Object { $_.Trim() -and $_ -notmatch '^Successfully processed' })
+    $entries = @($lines | ForEach-Object { $_.Replace($path, '').Trim() })
+    $want = $wantAcl[$path]
+    if (Compare-Object $entries $want) { Fail "ACL of $path is '$($entries -join ', ')', expected '$($want -join ', ')'" }
+    $owner = (Get-Acl $path).Owner
+    if ($owner -ne 'BUILTIN\Administrators') { Fail "owner of $path is '$owner', expected BUILTIN\Administrators" }
+    Pass "$path : $($entries -join ', ')"
+}
 
 # --- Step 6: a running Chrome defers removal (blocking_apps), never killed
 Write-Step "RemoveItem:$ItemName with chrome.exe running ends Deferred and the inventory says why"
