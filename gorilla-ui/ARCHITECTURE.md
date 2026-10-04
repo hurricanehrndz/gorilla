@@ -88,11 +88,11 @@ application errors. `data.code` is the stable string clients branch on, and
 | Code | `data.code` | When |
 | --- | --- | --- |
 | -32700 | `parse_error` | the line is not JSON |
-| -32600 | `invalid_request` | not a JSON-RPC 2.0 request object (batches included) |
+| -32600 | `invalid_request` | not a JSON-RPC 2.0 request object (batches included), or a request over 64 KiB (`id` null) |
 | -32601 | `method_not_found` | unknown method |
 | -32602 | `invalid_params` | a required param is missing or of the wrong type |
 | -32603 | `internal_error` | the service panicked while handling the request |
-| -32000 | `server_busy` | every handler slot is taken; sent before reading the request, so `id` is null |
+| -32000 | `server_busy` | every handler slot is taken (sent before reading the request, so `id` is null), or every stream slot |
 | -32001 | `command_failed` | the command failed (for example the manifest fetch) |
 | -32002 | `operation_not_cancelable` | cancel refused: the item was acted on, the operation finished, or it is unknown |
 | -32003 | `unknown_operation` | stream of an operation the service does not track |
@@ -103,6 +103,15 @@ The service does not support batches, and it does not act on a request without
 an `id` (a notification): it closes the connection without a reply. The
 `errorCode` inside a status record (`managed_run_failed`, `item_failed`,
 `blocked_by_running_app`) describes the operation's outcome, not the call.
+
+The service bounds what one client can hold. It handles 32 connections at a
+time, at most 16 of them streams; a client beyond either limit gets
+`server_busy`. A client has 5 seconds to send its request line, after which the
+service hangs up without an answer, and the line may be at most 64 KiB, or the
+service answers `invalid_request` and hangs up. Each response and notification
+must be taken within 30 seconds, so a client that stops reading a stream loses
+it. On Windows the pipe handles are synchronous, so these deadlines cancel the
+blocked read or write with `CancelIoEx`; on Unix they are socket deadlines.
 
 The transport is the only per-platform part of `pkg/service`:
 `transport_windows.go` and `transport_unix.go` each provide `listen` and `dial`.

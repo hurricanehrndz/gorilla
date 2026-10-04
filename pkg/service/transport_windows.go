@@ -83,8 +83,33 @@ func (l *pipeListener) Close() error {
 // once, whether the handler or a service stop gets there first.
 type pipeConn struct {
 	*os.File
-	handle windows.Handle
-	once   sync.Once
+	handle  windows.Handle
+	once    sync.Once
+	aborted atomic.Bool
+}
+
+var errAborted = errors.New("pipe I/O aborted")
+
+func (c *pipeConn) Read(p []byte) (int, error) {
+	if c.aborted.Load() {
+		return 0, errAborted
+	}
+	return c.File.Read(p)
+}
+
+func (c *pipeConn) Write(p []byte) (int, error) {
+	if c.aborted.Load() {
+		return 0, errAborted
+	}
+	return c.File.Write(p)
+}
+
+// Abort fails later I/O and cancels I/O in flight. The handle is synchronous,
+// so neither a deadline nor Close interrupts a blocked ReadFile or WriteFile;
+// CancelIoEx does, from any thread.
+func (c *pipeConn) Abort() {
+	c.aborted.Store(true)
+	_ = windows.CancelIoEx(c.handle, nil)
 }
 
 func (c *pipeConn) Close() error {
@@ -109,7 +134,7 @@ func (c *pipeConn) Peer() (peer, error) {
 	}
 	defer func() { _ = windows.CloseHandle(proc) }()
 	var token windows.Token
-	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &token); err != nil {
+	if err = windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &token); err != nil {
 		return peer{}, fmt.Errorf("open client token: %w", err)
 	}
 	defer func() { _ = token.Close() }()

@@ -80,6 +80,11 @@ type unixConn struct {
 	*net.UnixConn
 }
 
+// Abort fails blocked and later I/O on the connection.
+func (c unixConn) Abort() {
+	_ = c.SetDeadline(time.Now())
+}
+
 // Peer is the user of the connecting process, from its peer credentials.
 func (c unixConn) Peer() (peer, error) {
 	uid, err := peerUID(c.UnixConn)

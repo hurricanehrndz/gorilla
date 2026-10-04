@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/user"
 	"slices"
@@ -697,5 +698,124 @@ func TestMutationRecordsWhoAsked(t *testing.T) {
 	}
 	if got := <-runs; len(got) != 1 || got["Slack"] != accepted.RequestedBy {
 		t.Fatalf("the operation's run has requestedBy %v, want Slack: %s", got, accepted.RequestedBy)
+	}
+}
+
+// shortenTimeout sets *d for the test.
+func shortenTimeout(t *testing.T, d *time.Duration, to time.Duration) {
+	t.Helper()
+	original := *d
+	*d = to
+	t.Cleanup(func() { *d = original })
+}
+
+// A client that sends half a request and stalls must not keep its handler
+// slot: 32 such connections used to lock every UI out of the service.
+func TestHalfSentRequestReleasesItsHandlerSlot(t *testing.T) {
+	shortenTimeout(t, &requestReadTimeout, 200*time.Millisecond)
+	cfg := testServiceConfig(t)
+	sr, _ := startTestRunner(t, cfg, noopRun)
+
+	conn, err := dial(context.Background(), cfg.ServicePipeName, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial service: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := io.WriteString(conn, `{"jsonrpc":"2.0","id":"half","meth`); err != nil {
+		t.Fatalf("send half a request: %v", err)
+	}
+
+	hungUp := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(conn)
+		hungUp <- err
+	}()
+	select {
+	case <-hungUp:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the service kept the half-sent request's connection open")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(sr.handlerSem) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d handler slots still held after the hang-up", len(sr.handlerSem))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A request line over the cap is refused as invalid before it is buffered in
+// full, and the connection closes.
+func TestOversizedRequestIsRefused(t *testing.T) {
+	cfg := testServiceConfig(t)
+	startTestRunner(t, cfg, noopRun)
+
+	// Just over the cap: the rest fits the transport's buffer, so the send
+	// completes even though the service stops reading.
+	r := rawExchange(t, cfg, `{"jsonrpc":"2.0","id":"big","method":"`+strings.Repeat("x", maxRequestBytes+1024)+`"}`)
+	resp := readResponse(t, r)
+	if resp.Error == nil || resp.Error.Code != codeInvalidRequest || resp.Error.Data.Code != "invalid_request" || string(resp.ID) != "null" {
+		t.Fatalf("response = %+v (error %+v), want invalid_request with a null id", resp, resp.Error)
+	}
+	if !strings.Contains(resp.Error.Message, "exceeds") {
+		t.Fatalf("message %q does not say the request is too large", resp.Error.Message)
+	}
+}
+
+// Streams have their own, smaller limit, so watchers cannot take every
+// handler slot from mutations; the next one gets server_busy.
+func TestStreamsBeyondTheLimitGetServerBusy(t *testing.T) {
+	cfg := testServiceConfig(t)
+	stubOptional(t, "Slack")
+	sr, ctx := startTestRunner(t, cfg, noopRun)
+	accepted, err := NewClient(cfg.ServicePipeName).InstallItem(ctx, "Slack")
+	if err != nil {
+		t.Fatalf("InstallItem: %v", err)
+	}
+	for i := 0; i < cap(sr.streamSem); i++ {
+		sr.streamSem <- struct{}{}
+	}
+	defer func() {
+		for i := 0; i < cap(sr.streamSem); i++ {
+			<-sr.streamSem
+		}
+	}()
+
+	err = NewClient(cfg.ServicePipeName).StreamOperationStatus(ctx, accepted.OperationID, func(OperationStatus) error { return nil })
+	if !IsErrorCode(err, "server_busy") {
+		t.Fatalf("stream beyond the limit = %v, want server_busy", err)
+	}
+	if _, err := NewClient(cfg.ServicePipeName).GetServiceInfo(ctx); err != nil {
+		t.Fatalf("a full stream limit blocked an ordinary call: %v", err)
+	}
+}
+
+// pipeTestConn is a clientConn over net.Pipe, which never buffers: a write blocks
+// until the other end reads.
+type pipeTestConn struct{ net.Conn }
+
+func (pipeTestConn) Peer() (peer, error) { return peer{}, nil }
+func (c pipeTestConn) Abort()            { _ = c.SetDeadline(time.Now()) }
+
+// A client that stops reading a stream fails the service's next write after
+// writeTimeout instead of holding the handler for ever.
+func TestWriteToAStalledClientTimesOut(t *testing.T) {
+	shortenTimeout(t, &writeTimeout, 100*time.Millisecond)
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	conn := boundedConn{pipeTestConn{server}}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := conn.Write([]byte("{}\n"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errTimedOut) {
+			t.Fatalf("write to a stalled client = %v, want errTimedOut", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write to a stalled client never gave up")
 	}
 }

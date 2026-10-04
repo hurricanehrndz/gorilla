@@ -39,6 +39,10 @@ type clientConn interface {
 	// Peer resolves the user on the other end from the operating system, not
 	// from anything the client sent.
 	Peer() (peer, error)
+	// Abort makes a Read or Write blocked on the connection return an error,
+	// and so do later ones. Unlike Close it also works while I/O is in flight
+	// on a synchronous Windows pipe handle.
+	Abort()
 }
 
 // peer is a connected client's user: Name is DOMAIN\user on Windows and the
@@ -62,12 +66,13 @@ type serviceRunner struct {
 	managedRun   func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)
 	queue        chan queuedCommand
 	handlerSem   chan struct{}
+	streamSem    chan struct{}
 	wg           sync.WaitGroup
 	execMutex    sync.Mutex
 	startedAt    time.Time
 	ln           listener
 	activeConnMu sync.Mutex
-	activeConns  map[io.Closer]struct{}
+	activeConns  map[clientConn]struct{}
 	operationsMu sync.Mutex
 	operations   map[string]*trackedOperation
 	// busyAction is the command the queue worker is executing, "" when idle;
@@ -82,8 +87,22 @@ type serviceRunner struct {
 // switch to a per-operation notify channel if many watchers appear.
 var streamPollSleep = 20 * time.Millisecond
 
+// A client gets requestReadTimeout to send its request and writeTimeout to
+// take each message the service writes, so one that sends half a request or
+// stops reading a stream does not hold a handler slot for ever. Tests
+// shorten them.
+var (
+	requestReadTimeout = 5 * time.Second
+	writeTimeout       = 30 * time.Second
+)
+
 const (
-	maxConcurrentHandlers        = 32
+	maxConcurrentHandlers = 32
+	// maxConcurrentStreams is below maxConcurrentHandlers, so watchers can
+	// never take every slot from mutations.
+	maxConcurrentStreams = 16
+	// maxRequestBytes caps one request line; no request comes near it.
+	maxRequestBytes              = 64 << 10
 	trackedOperationsMaxCount    = 512
 	trackedCompletedOperationTTL = 24 * time.Hour
 )
@@ -112,8 +131,9 @@ func newServiceRunner(cfg config.Configuration, managedRun func(config.Configura
 		managedRun:  managedRun,
 		queue:       make(chan queuedCommand),
 		handlerSem:  make(chan struct{}, maxConcurrentHandlers),
+		streamSem:   make(chan struct{}, maxConcurrentStreams),
 		startedAt:   time.Now(),
-		activeConns: make(map[io.Closer]struct{}),
+		activeConns: make(map[clientConn]struct{}),
 		operations:  make(map[string]*trackedOperation),
 		cancels:     installer.NewCancels(),
 	}
@@ -302,6 +322,76 @@ func (sr *serviceRunner) serve(ctx context.Context) error {
 	}
 }
 
+var (
+	errTimedOut        = errors.New("client did not keep up")
+	errRequestTooLarge = fmt.Errorf("request exceeds %d bytes", maxRequestBytes)
+)
+
+// within runs fn, which does I/O on conn, and aborts that I/O if fn takes
+// longer than d. Abort can land just before a Windows read starts and miss
+// it, so it repeats until fn returns.
+func within(conn clientConn, d time.Duration, fn func() error) error {
+	stop := make(chan struct{})
+	var expired atomic.Bool
+	go func() {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+		}
+		expired.Store(true)
+		for {
+			conn.Abort()
+			select {
+			case <-stop:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}()
+	err := fn()
+	close(stop)
+	if expired.Load() {
+		return fmt.Errorf("%w after %s: %v", errTimedOut, d, err)
+	}
+	return err
+}
+
+// boundedConn gives every message the service writes writeTimeout to go out.
+// json.Encoder writes each message with one Write.
+type boundedConn struct {
+	clientConn
+}
+
+func (c boundedConn) Write(p []byte) (n int, err error) {
+	err = within(c.clientConn, writeTimeout, func() error {
+		n, err = c.clientConn.Write(p)
+		return err
+	})
+	return n, err
+}
+
+// cappedReader reads at most n bytes from r, then fails with
+// errRequestTooLarge, which tells an oversized request from a short one.
+type cappedReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.n <= 0 {
+		return 0, errRequestTooLarge
+	}
+	if int64(len(p)) > c.n {
+		p = p[:c.n]
+	}
+	n, err := c.r.Read(p)
+	c.n -= int64(n)
+	return n, err
+}
+
 func writeMessage(w io.Writer, msg any) error {
 	return json.NewEncoder(w).Encode(msg)
 }
@@ -345,6 +435,7 @@ func decodeParams[T any](raw json.RawMessage) (T, error) {
 
 // handleConn reads one request from conn and answers it.
 func (sr *serviceRunner) handleConn(ctx context.Context, conn clientConn) {
+	// Every response and notification below must go out within writeTimeout. conn = boundedConn{conn}
 	startedAt := time.Now()
 	result := "error"
 	var req rpcRequest
@@ -371,12 +462,25 @@ func (sr *serviceRunner) handleConn(ctx context.Context, conn clientConn) {
 	}()
 
 	var raw json.RawMessage
-	if err := json.NewDecoder(conn).Decode(&raw); err != nil {
-		if errors.Is(err, io.EOF) {
-			// The client hung up without a request.
-			result = "empty"
-			return
-		}
+	err := within(conn, requestReadTimeout, func() error {
+		return json.NewDecoder(&cappedReader{r: conn, n: maxRequestBytes}).Decode(&raw)
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, io.EOF):
+		// The client hung up without a request.
+		result = "empty"
+		return
+	case errors.Is(err, errTimedOut):
+		// Half a request, or none: hang up so the slot is free again.
+		slog.Debug("no complete service request in time", "err", err)
+		result = "timeout"
+		return
+	case errors.Is(err, errRequestTooLarge):
+		slog.Warn("service request too large", "limitBytes", maxRequestBytes)
+		writeError(conn, nil, newError(codeInvalidRequest, err.Error(), ""))
+		return
+	default:
 		slog.Warn("failed to decode service request", "err", err)
 		writeError(conn, nil, newError(codeParseError, "invalid JSON", ""))
 		return
@@ -503,6 +607,12 @@ func (sr *serviceRunner) dispatch(ctx context.Context, conn clientConn, req rpcR
 		}
 		if !sr.hasTrackedOperation(operationID) {
 			return nil, newError(codeUnknownOperation, "unknown operationId", operationID)
+		}
+		select {
+		case sr.streamSem <- struct{}{}:
+			defer func() { <-sr.streamSem }()
+		default:
+			return nil, newError(codeServerBusy, "too many operation streams; retry shortly", operationID)
 		}
 		if err := sr.streamOperationStatus(conn, req.ID, operationID); err != nil {
 			logger.Warn("operation stream ended early", "operationId", operationID, "err", err)
@@ -842,28 +952,30 @@ func (sr *serviceRunner) pruneTrackedOperationsLocked(now time.Time) {
 	}
 }
 
-func (sr *serviceRunner) trackActiveConnection(conn io.Closer) {
+func (sr *serviceRunner) trackActiveConnection(conn clientConn) {
 	sr.activeConnMu.Lock()
 	defer sr.activeConnMu.Unlock()
 	sr.activeConns[conn] = struct{}{}
 }
 
-func (sr *serviceRunner) untrackActiveConnection(conn io.Closer) {
+func (sr *serviceRunner) untrackActiveConnection(conn clientConn) {
 	sr.activeConnMu.Lock()
 	defer sr.activeConnMu.Unlock()
 	delete(sr.activeConns, conn)
 }
 
-// closeActiveConnections closes every connection still being handled, so a
-// handler blocked reading a request or writing a stream returns.
+// closeActiveConnections aborts and closes every connection still being
+// handled, so a handler blocked reading a request or writing a stream returns
+// (closing alone does not interrupt a synchronous Windows pipe read).
 func (sr *serviceRunner) closeActiveConnections() {
 	sr.activeConnMu.Lock()
-	conns := make([]io.Closer, 0, len(sr.activeConns))
+	conns := make([]clientConn, 0, len(sr.activeConns))
 	for conn := range sr.activeConns {
 		conns = append(conns, conn)
 	}
 	sr.activeConnMu.Unlock()
 	for _, conn := range conns {
+		conn.Abort()
 		_ = conn.Close()
 	}
 }
