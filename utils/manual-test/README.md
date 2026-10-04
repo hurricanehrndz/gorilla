@@ -138,7 +138,10 @@ gates and a visual pass:
   the config branding, a policy `Title` under
   `HKLM\SOFTWARE\Policies\Gorilla\Branding` wins over it and removing it
   restores the config; then metadata and NotInstalled
-  status, streamed install to `Succeeded`, registry entry and `chrome.exe`,
+  status, a `CancelOperation` of a Chrome install queued behind a busy run
+  (ends `Canceled` by the user, nothing installed, selection reverted, a second
+  cancel refused), `Restart-Service` within 30 s while a run is busy,
+  streamed install to `Succeeded`, registry entry and `chrome.exe`,
   `inventory.json` contents and ACL, self-serve manifest, deferred removal while
   `chrome.exe` runs, then a real uninstall with every trace gone.
 - `gorilla-ui.exe` on the desktop, driven with the keyboard, with screenshots

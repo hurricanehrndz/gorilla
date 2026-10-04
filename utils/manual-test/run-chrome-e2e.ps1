@@ -10,6 +10,10 @@ fixture set built by build-e2e-repo.sh and asserts, in order:
     policy Title under HKLM\SOFTWARE\Policies\Gorilla\Branding wins over it, and
     removing the policy brings the config title back
   - the item is offered with its catalog metadata and an honest NotInstalled status
+  - CancelOperation withdraws an InstallItem queued behind a busy run: the operation
+    ends Canceled by the user, nothing is installed, the selection is reverted, and a
+    second cancel is refused with operation_not_cancelable
+  - Restart-Service completes within 30 s while a managed run is busy
   - InstallItem streams Downloading/Installing/ItemCompleted and ends Succeeded
   - the MSI really installed: Uninstall registry entry at the catalog version, chrome.exe on disk
   - inventory.json records the item as installed, with the documented ACL
@@ -247,6 +251,52 @@ if ($item.category -ne "Browsers")   { Fail "category mismatch: '$($item.categor
 if (-not $item.version)              { Fail "version missing from payload" }
 $expectedVersion = "$($item.version)"
 Pass "offered: $($item.displayName) $expectedVersion by $($item.developer) [$($item.category)] status=$($item.status)"
+
+# --- Cancel: a queued install is withdrawn before its installer runs
+Write-Step "CancelOperation withdraws a queued InstallItem:$ItemName; a second cancel is refused"
+# DemoOptional's installer sleeps 3 s, so its run holds the command queue.
+# InstallItem:$ItemName waits behind that run, and its own run starts right
+# after it is accepted, so the cancel goes out at once, before the download
+# and the MSI.
+$demoOut = Invoke-Gorilla "InstallItem:DemoOptional"
+$demoOp = Parse-OperationId $demoOut.Out
+if (-not $demoOp) { Fail "no operationId returned for InstallItem:DemoOptional" }
+$chromeOut = Invoke-Gorilla "InstallItem:$ItemName"
+$chromeOp = Parse-OperationId $chromeOut.Out
+if (-not $chromeOp) { Fail "no operationId returned for InstallItem:$ItemName" }
+Invoke-Gorilla "CancelOperation:$chromeOp" | Out-Null
+$events = @(Stream-OperationEvents $chromeOp)
+$terminal = Get-TerminalEvent $events
+if (-not $terminal) { Fail "no terminal event for the canceled install" }
+if ($terminal.state -ne "Canceled") { Fail "canceled install ended '$($terminal.state)', expected Canceled" }
+if ($terminal.canceledBy -ne "user") { Fail "canceledBy '$($terminal.canceledBy)', expected user" }
+if ($terminal.itemName -ne $ItemName) { Fail "terminal itemName '$($terminal.itemName)', expected $ItemName" }
+$before = @($events | Where-Object { $_.state -ne 'Canceled' } | ForEach-Object { "$($_.itemName):$($_.state)" }) -join ','
+# ListOptionalInstalls waits in the queue behind the run the cancel landed in,
+# so by the time it answers that run has finished without installing Chrome.
+$item = Get-OptionalItem $ItemName
+if ($item.status -ne "NotInstalled") { Fail "$ItemName status '$($item.status)' after the cancel, expected NotInstalled" }
+if (Get-UninstallEntry $RegistryName) { Fail "'$RegistryName' was installed despite the cancel" }
+if ((Get-YamlList $SelfServe "managed_installs") -contains $ItemName) { Fail "the cancel left $ItemName in managed_installs" }
+$demoTerminal = Get-TerminalEvent @(Stream-OperationEvents $demoOp)
+if ($demoTerminal.state -ne "Succeeded") { Fail "DemoOptional, queued ahead, ended '$($demoTerminal.state)'" }
+$again = Invoke-Gorilla "CancelOperation:$chromeOp" -AllowFail
+if ($again.Code -eq 0) { Fail "a second cancel of a finished operation was accepted" }
+if (($again.Out -join ' ') -notmatch 'operation_not_cancelable') { Fail "refusal lacks operation_not_cancelable: $($again.Out -join ' | ')" }
+Pass "accepted after [$before]; Canceled by user; not installed; not selected; second cancel refused (operation_not_cancelable)"
+
+# --- Stop: the service restarts promptly while a managed run is busy
+Write-Step "Restart-Service gorilla completes within 30 s while a run is busy"
+$removeOut = Invoke-Gorilla "RemoveItem:DemoOptional"
+$removeTerminal = Get-TerminalEvent @(Stream-OperationEvents (Parse-OperationId $removeOut.Out))
+if ($removeTerminal.state -ne "Succeeded") { Fail "RemoveItem:DemoOptional ended '$($removeTerminal.state)'" }
+Invoke-Gorilla "InstallItem:DemoOptional" | Out-Null
+$sw = [Diagnostics.Stopwatch]::StartNew()
+Restart-Service gorilla
+$restartSec = $sw.Elapsed.TotalSeconds
+if ($restartSec -gt 30) { Fail ("Restart-Service took {0:n0}s while a run was busy" -f $restartSec) }
+Wait-For { (Invoke-Gorilla "GetBranding" -AllowFail).Code -eq 0 } "the restarted service to answer"
+Pass ("Restart-Service took {0:n1}s; the service answers again" -f $restartSec)
 
 # --- Step 2: install through the pipe and stream it to completion
 Write-Step "InstallItem:$ItemName streams Downloading/Installing/ItemCompleted and ends Succeeded"

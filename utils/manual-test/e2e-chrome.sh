@@ -87,8 +87,8 @@ branding:
   help_label: Get help
   accent: "#0b6e4f"
 "@
-# The service does not answer a stop while its startup run holds it (the
-# bootstrap works around the same thing), so stop it, then end the process.
+# Builds before the stop fix never finished a stop on their own (the listener
+# blocked it), so stop it and, if it is still running after 30 s, end the process.
 sc.exe stop gorilla | Out-Null
 $deadline = (Get-Date).AddSeconds(30)
 while ((Get-Service gorilla).Status -ne "Stopped" -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
@@ -132,6 +132,8 @@ ui_focus
 tab 5; "$rig" "${vm[@]}" type "Chrome"
 "$rig" "${vm[@]}" shot --settle 3 "$out/02-search-chrome.png"
 tab 2; "$rig" "${vm[@]}" key KEY_ENTER
+# Straight away, to catch the strip before the installer starts (Cancel enabled).
+"$rig" "${vm[@]}" shot --settle 1 "$out/03a-strip-cancel.png"
 "$rig" "${vm[@]}" shot --settle 4 "$out/03-installing.png"
 "$rig" "${vm[@]}" shot --settle 45 "$out/04-installed.png"
 "$rig" "${vm[@]}" key KEY_END
