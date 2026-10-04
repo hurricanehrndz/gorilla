@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -49,6 +50,9 @@ type serviceRunner struct {
 	activeConns        map[windows.Handle]struct{}
 	operationsMu       sync.Mutex
 	operations         map[string]*trackedOperation
+	// busyAction is the command the queue worker is executing, "" when idle;
+	// stop logs it when it gives up waiting.
+	busyAction atomic.Value
 }
 
 var (
@@ -101,9 +105,11 @@ func (sr *serviceRunner) start(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			case queued := <-sr.queue:
+				sr.busyAction.Store(queued.cmd.Action)
 				sr.execMutex.Lock()
 				resp, err := sr.executeCommandSafe(queued.cmd)
 				sr.execMutex.Unlock()
+				sr.busyAction.Store("")
 				queued.result <- queuedResult{resp: resp, err: err}
 			}
 		}
@@ -155,12 +161,46 @@ func (sr *serviceRunner) executeCommandSafe(cmd Command) (resp CommandResponse, 
 	return executeCommand(sr.cfg, cmd, sr.managedRun)
 }
 
+// stop closes the pipe and waits for in-flight work until ctx is done. Execute
+// has already cancelled the service context, so the queue worker starts no new
+// command and the pipe accepts no new request. A managed run already under way
+// cannot be interrupted (it may be inside msiexec), and waiting for it made
+// Stop-Service and Restart-Service hang for as long as the run took. So stop
+// gives up at ctx's deadline and lets the process exit: an installer child
+// process outlives the service and finishes on its own, and the next start's
+// run converges the state.
 func (sr *serviceRunner) stop(ctx context.Context) {
 	sr.closeListenerPipe()
 	sr.closeActiveConnections()
-	sr.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		sr.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		busy, _ := sr.busyAction.Load().(string)
+		slog.Warn(
+			"service stop deadline reached; abandoning in-progress work",
+			"busyAction", busy,
+			"openOperations", sr.openOperationCount(),
+		)
+	}
 	gorillalog.Close()
-	_ = ctx
+}
+
+// openOperationCount is how many tracked operations have no terminal record.
+func (sr *serviceRunner) openOperationCount() int {
+	sr.operationsMu.Lock()
+	defer sr.operationsMu.Unlock()
+	open := 0
+	for _, op := range sr.operations {
+		if !op.done {
+			open++
+		}
+	}
+	return open
 }
 
 func (sr *serviceRunner) submit(ctx context.Context, cmd Command) (CommandResponse, error) {

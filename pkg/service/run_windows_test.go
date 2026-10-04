@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -516,5 +517,46 @@ func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
 		if event.ItemName != "GoogleChrome" || event.DisplayName != "Google Chrome" {
 			t.Fatalf("record identity = %q/%q, want GoogleChrome/Google Chrome", event.ItemName, event.DisplayName)
 		}
+	}
+}
+
+// A managed run that is still busy must not hold a service stop past its
+// deadline: Stop-Service once sat at "Waiting for service to stop" for over
+// ten minutes behind a run.
+func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
+	cfg := config.Configuration{
+		AppDataPath:     t.TempDir(),
+		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
+		ServiceInterval: "1h",
+		ServiceMode:     true,
+		ServiceName:     "gorilla-test",
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	var once sync.Once
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sr.start(ctx); err != nil {
+		t.Fatalf("service start failed: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start-up run never began")
+	}
+
+	cancel()
+	bestEffortUnblockPipeListener(cfg)
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer stopCancel()
+	begin := time.Now()
+	sr.stop(stopCtx)
+	if took := time.Since(begin); took > 2*time.Second {
+		t.Fatalf("stop waited %v for a busy run; want it to return at its deadline", took)
 	}
 }
