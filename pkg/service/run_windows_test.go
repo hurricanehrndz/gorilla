@@ -535,7 +535,8 @@ func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
 
 // A managed run that is still busy must not hold a service stop past its
 // deadline: Stop-Service once sat at "Waiting for service to stop" for over
-// ten minutes behind a run.
+// ten minutes behind a run. Nothing connects to the pipe first, as with
+// the real Service Control Manager: the listener is blocked in ConnectNamedPipe.
 func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
 	cfg := config.Configuration{
 		AppDataPath:     t.TempDir(),
@@ -564,7 +565,6 @@ func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
 	}
 
 	cancel()
-	bestEffortUnblockPipeListener(cfg)
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer stopCancel()
 	begin := time.Now()

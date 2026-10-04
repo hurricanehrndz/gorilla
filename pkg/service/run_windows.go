@@ -38,18 +38,16 @@ type queuedResult struct {
 }
 
 type serviceRunner struct {
-	cfg                config.Configuration
-	managedRun         func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)
-	queue              chan queuedCommand
-	handlerSem         chan struct{}
-	wg                 sync.WaitGroup
-	execMutex          sync.Mutex
-	pipeListenerMu     sync.Mutex
-	pipeListenerHandle windows.Handle
-	activeConnMu       sync.Mutex
-	activeConns        map[windows.Handle]struct{}
-	operationsMu       sync.Mutex
-	operations         map[string]*trackedOperation
+	cfg          config.Configuration
+	managedRun   func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)
+	queue        chan queuedCommand
+	handlerSem   chan struct{}
+	wg           sync.WaitGroup
+	execMutex    sync.Mutex
+	activeConnMu sync.Mutex
+	activeConns  map[windows.Handle]struct{}
+	operationsMu sync.Mutex
+	operations   map[string]*trackedOperation
 	// busyAction is the command the queue worker is executing, "" when idle;
 	// stop logs it when it gives up waiting.
 	busyAction atomic.Value
@@ -169,19 +167,26 @@ func (sr *serviceRunner) executeCommandSafe(cmd Command) (resp CommandResponse, 
 	return executeCommand(sr.cfg, cmd, sr.managedRun)
 }
 
-// stop closes the pipe and waits for in-flight work until ctx is done. Execute
-// has already cancelled the service context, so the queue worker starts no new
-// command and the pipe accepts no new request. A managed run already under way
-// cannot be interrupted (it may be inside msiexec), and waiting for it made
-// Stop-Service and Restart-Service hang for as long as the run took. So stop
-// gives up at ctx's deadline and lets the process exit: an installer child
-// process outlives the service and finishes on its own, and the next start's
-// run converges the state.
+// stop wakes the pipe listener and waits for in-flight work until ctx is done.
+// Execute has already cancelled the service context, so the queue worker starts
+// no new command and the listener accepts no new request once it wakes.
+//
+// Two things used to hold Stop-Service and Restart-Service at "Waiting for
+// service to stop", for minutes or until the process was killed:
+//   - Closing the listening pipe handle does not wake a ConnectNamedPipe
+//     blocked on it; CloseHandle itself waits until a client connects. So stop
+//     connects to its own pipe instead, and the listener returns on its own.
+//   - A managed run already under way cannot be interrupted (it may be inside
+//     msiexec), and stop waited for it.
+//
+// Every step therefore runs inside the wait, and stop gives up at ctx's
+// deadline and lets the process exit. An installer child process outlives the
+// service and finishes on its own; the next start's run converges the state.
 func (sr *serviceRunner) stop(ctx context.Context) {
-	sr.closeListenerPipe()
-	sr.closeActiveConnections()
 	done := make(chan struct{})
 	go func() {
+		sr.wakeListener()
+		sr.closeActiveConnections()
 		sr.wg.Wait()
 		close(done)
 	}()
@@ -196,6 +201,18 @@ func (sr *serviceRunner) stop(ctx context.Context) {
 		)
 	}
 	gorillalog.Close()
+}
+
+// wakeListener connects to the service's own pipe and hangs up, so a listener
+// waiting in ConnectNamedPipe returns and sees the cancelled context. A failed
+// connection only means nobody is waiting, or stop's deadline covers it.
+func (sr *serviceRunner) wakeListener() {
+	conn, err := openPipe(servicePipePath(sr.cfg.ServicePipeName), time.Second)
+	if err != nil {
+		slog.Debug("could not wake the pipe listener", "err", err)
+		return
+	}
+	_ = conn.Close()
 }
 
 // openOperationCount is how many tracked operations have no terminal record.
@@ -265,14 +282,9 @@ func (sr *serviceRunner) serveNamedPipe(ctx context.Context) error {
 			return fmt.Errorf("create pipe: %w", err)
 		}
 
-		sr.pipeListenerMu.Lock()
-		sr.pipeListenerHandle = handle
-		sr.pipeListenerMu.Unlock()
-
 		err = windows.ConnectNamedPipe(handle, nil)
 		if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
 			windows.CloseHandle(handle)
-			sr.clearListenerPipe(handle)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -282,7 +294,6 @@ func (sr *serviceRunner) serveNamedPipe(ctx context.Context) error {
 			return fmt.Errorf("connect pipe: %w", err)
 		}
 
-		sr.clearListenerPipe(handle)
 		select {
 		case sr.handlerSem <- struct{}{}:
 			sr.trackActiveConnection(handle)
@@ -885,15 +896,6 @@ func createNamedPipe(pipePath string) (windows.Handle, error) {
 	)
 }
 
-func (sr *serviceRunner) closeListenerPipe() {
-	sr.pipeListenerMu.Lock()
-	defer sr.pipeListenerMu.Unlock()
-	if sr.pipeListenerHandle != 0 && sr.pipeListenerHandle != windows.InvalidHandle {
-		_ = windows.CloseHandle(sr.pipeListenerHandle)
-		sr.pipeListenerHandle = 0
-	}
-}
-
 func (sr *serviceRunner) trackActiveConnection(handle windows.Handle) {
 	sr.activeConnMu.Lock()
 	defer sr.activeConnMu.Unlock()
@@ -911,14 +913,6 @@ func (sr *serviceRunner) closeActiveConnections() {
 	defer sr.activeConnMu.Unlock()
 	for handle := range sr.activeConns {
 		_ = windows.CloseHandle(handle)
-	}
-}
-
-func (sr *serviceRunner) clearListenerPipe(handle windows.Handle) {
-	sr.pipeListenerMu.Lock()
-	defer sr.pipeListenerMu.Unlock()
-	if sr.pipeListenerHandle == handle {
-		sr.pipeListenerHandle = 0
 	}
 }
 
