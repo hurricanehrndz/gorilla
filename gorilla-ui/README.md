@@ -71,10 +71,10 @@ comes from the first source that sets it:
 |---|---|---|
 | `Title` | `title` | Plain text, up to 120 characters. Also the window title and the app-bar name. |
 | `Tagline` | `tagline` | Plain text, up to 240 characters. |
-| `LogoPath` | `logo` | Local path to a PNG, JPEG or SVG of at most 512 KiB, checked by content. |
+| `LogoPath` | `logo` | Local path to a PNG, JPEG or SVG of at most 512 KiB, checked by content. A PNG also becomes the window, taskbar and Alt+Tab icon. |
 | `HelpUrl` | `help_url` | Absolute `http` or `https` URL, opened in the system browser. |
 | `HelpLabel` | `help_label` | Plain text, up to 60 characters. Defaults to "Get help". |
-| `Accent` | `accent` | `#rrggbb`. Recolours buttons, links and the banner. |
+| `Accent` | `accent` | `#rrggbb`. Recolours buttons, links and the banner, and on Windows 11 the native title bar (Windows 10 keeps its default caption). |
 
 Set the policy values with Intune (a custom OMA-URI or a registry script), Group
 Policy Preferences, or `reg add`:

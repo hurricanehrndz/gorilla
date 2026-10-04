@@ -92,9 +92,12 @@ bytes sniff as PNG, JPEG or SVG. A dropped field is logged at debug level and
 never fails the call.
 
 `GetBranding` skips the service command queue, because the UI calls it once
-before creating its window to pick the window title and must not wait behind a
-managed run. That startup call gives up after two seconds and falls back to
-"Gorilla UI". The frontend then applies the cached payload from
+before creating its window to pick the window title, icon and caption colour
+and must not wait behind a managed run. That startup call gives up after two
+seconds and falls back to "Gorilla UI", the embedded gorilla icon and the system
+caption. The caption colour goes through the Windows 11 DWM caption attributes
+(`CustomTheme`), so the native title bar stays and only its colours follow the
+accent; the window is not frameless. The frontend then applies the cached payload from
 `gorilla.branding.v1`, fetches a fresh one and reapplies it. The banner shows
 when a title, tagline, logo or help URL is set. The logo is an `<img>` from a
 `data:` URL, so an SVG cannot run script. The help button opens its URL in the

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -297,9 +298,9 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// The window opens with the branded title, and falls back to the default when
-// the service is down or nothing is configured.
-func TestWindowTitle(t *testing.T) {
+// The window chrome comes from the branding fetched before the window opens,
+// and falls back to the defaults when the service is down or nothing is set.
+func TestStartupBrandingAndWindowTitle(t *testing.T) {
 	get := func(b branding.Branding, err error) func(context.Context) (branding.Branding, error) {
 		return func(context.Context) (branding.Branding, error) { return b, err }
 	}
@@ -311,8 +312,52 @@ func TestWindowTitle(t *testing.T) {
 		{get(branding.Branding{}, nil), defaultWindowTitle},
 		{get(branding.Branding{Title: "ignored"}, errors.New("pipe down")), defaultWindowTitle},
 	} {
-		if got := windowTitle(tt.get, discardLogger()); got != tt.want {
+		if got := windowTitle(startupBranding(tt.get, discardLogger())); got != tt.want {
 			t.Errorf("windowTitle = %q, want %q", got, tt.want)
+		}
+	}
+}
+
+// The window icon is the PNG logo when there is one, else the embedded gorilla.
+func TestWindowIcon(t *testing.T) {
+	if len(defaultIcon) == 0 || string(defaultIcon[1:4]) != "PNG" {
+		t.Fatalf("embedded default icon is not a PNG")
+	}
+	logo := []byte("\x89PNG\r\n\x1a\nfake")
+	encoded := base64.StdEncoding.EncodeToString(logo)
+	if got := windowIcon(branding.Branding{LogoMime: "image/png", LogoBase64: encoded}); string(got) != string(logo) {
+		t.Errorf("PNG logo was not used as the window icon")
+	}
+	for _, b := range []branding.Branding{
+		{},
+		{LogoMime: "image/svg+xml", LogoBase64: encoded},
+		{LogoMime: "image/png", LogoBase64: "not base64!"},
+	} {
+		if got := windowIcon(b); string(got) != string(defaultIcon) {
+			t.Errorf("windowIcon(%+v) did not fall back to the default", b)
+		}
+	}
+}
+
+// The caption takes the accent as a COLORREF with contrasting text, in every
+// mode, and an unset or invalid accent leaves the system theme alone.
+func TestCaptionTheme(t *testing.T) {
+	green := captionTheme("#0b6e4f")
+	if green.LightModeActive == nil || green.DarkModeInactive == nil {
+		t.Fatalf("accent did not set every mode")
+	}
+	if got := *green.LightModeActive.TitleBarColour; got != 0x4f6e0b {
+		t.Errorf("caption COLORREF = %#x, want 0x4f6e0b (BGR)", got)
+	}
+	if got := *green.LightModeActive.TitleTextColour; got != 0xffffff {
+		t.Errorf("dark accent should get white text, got %#x", got)
+	}
+	if got := *captionTheme("#f6f6f7").LightModeActive.TitleTextColour; got != 0x000000 {
+		t.Errorf("light accent should get black text, got %#x", got)
+	}
+	for _, accent := range []string{"", "#0b6e4", "0b6e4f", "#gggggg"} {
+		if got := captionTheme(accent); got != (application.ThemeSettings{}) {
+			t.Errorf("captionTheme(%q) should be the zero theme", accent)
 		}
 	}
 }
