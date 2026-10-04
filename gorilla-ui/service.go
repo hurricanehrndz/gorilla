@@ -20,6 +20,7 @@ type serviceClient interface {
 	InstallItem(context.Context, string) (gorillaservice.AcceptedOperation, error)
 	RemoveItem(context.Context, string) (gorillaservice.AcceptedOperation, error)
 	StreamOperationStatus(context.Context, string, func(gorillaservice.OperationStatus) error) error
+	CancelOperation(context.Context, string) error
 }
 
 // UIService is the complete Wails-bound backend surface.
@@ -127,6 +128,25 @@ func (s *UIService) WatchOperation(operationID string) error {
 		return nil
 	})
 	s.logResult("WatchOperation", operationID, err, started)
+	return err
+}
+
+// CancelOperation asks the service to cancel an operation whose item has not
+// been acted on yet. A refusal comes back as an error carrying the service's
+// operation_not_cancelable message.
+func (s *UIService) CancelOperation(operationID string) error {
+	started := time.Now()
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		err := errors.New("operationId is required")
+		s.logResult("CancelOperation", "", err, started)
+		return err
+	}
+	ctx, err := s.callContext()
+	if err == nil {
+		err = s.client.CancelOperation(ctx, operationID)
+	}
+	s.logResult("CancelOperation", operationID, err, started)
 	return err
 }
 

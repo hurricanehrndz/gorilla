@@ -15,6 +15,8 @@ import {
   activityLine,
   bannerMessage,
   brandingView,
+  canCancel,
+  cancelTitle,
   cardProgress,
   categories,
   deriveAction,
@@ -28,6 +30,7 @@ import {
   monogram,
   myItems,
   progressText,
+  refusalText,
   releaseOperation,
   restartBadge,
   shouldAcceptRecord,
@@ -93,6 +96,7 @@ const detailAction = need<HTMLButtonElement>("#detail-action");
 const strip = need<HTMLElement>("#operation-strip");
 const stripGlyph = need<HTMLSpanElement>("#strip-glyph");
 const stripBar = need<HTMLProgressElement>("#strip-progress");
+const stripCancel = need<HTMLButtonElement>("#strip-cancel");
 const spinnerTemplate = need<HTMLTemplateElement>("#spinner");
 
 /** View is a page the nav can show; the detail page is drilled into from a list. */
@@ -292,7 +296,7 @@ function updateCardProgress(container: HTMLElement, item: OptionalInstallItem, i
   }
   const operation = latestOperation(item.itemName);
   const progress = operation
-    ? cardProgress(item, operation.records, operation.outcome, operation.action.method)
+    ? cardProgress(item, operation.records, operation.outcome, operation.action.method, operation.notice)
     : null;
   if (!progress) {
     text.textContent = idleText;
@@ -303,7 +307,8 @@ function updateCardProgress(container: HTMLElement, item: OptionalInstallItem, i
   }
   text.textContent = progressText(progress);
   status.hidden = false;
-  status.dataset.outcome = progress.outcome;
+  // "plain" opts out of the warning box the stylesheet gives finished outcomes.
+  status.dataset.outcome = progress.plain ? "plain" : progress.outcome;
   spinner.toggleAttribute("hidden", progress.outcome !== "active");
 }
 
@@ -362,6 +367,15 @@ function renderStrip(): void {
     stripBar.removeAttribute("value");
   }
   stripBar.setAttribute("aria-label", `${shown.progress.label} ${item.displayName}`);
+  // Cancel stays visible, but is a real disabled button once the installer has
+  // started; its title says why.
+  const latest = shown.operation.records.at(-1)?.state ?? "";
+  const pending = Boolean(shown.operation.cancelPending);
+  stripCancel.disabled = pending || !canCancel(latest);
+  stripCancel.title = cancelTitle(latest, pending);
+  const what = shown.operation.action.method === "RemoveItem" ? "removal" : "install";
+  stripCancel.setAttribute("aria-label", `Cancel ${what} of ${item.displayName}`);
+  stripCancel.dataset.operationId = shown.operation.operationId;
 }
 
 function renderActivity(): void {
@@ -438,6 +452,24 @@ async function runAction(item: OptionalInstallItem, action: ItemAction): Promise
   // Watching must not block the UI: status arrives on the shared event channel
   // and only failures come back through this promise.
   void api.watchOperation(operationId).catch((error) => failOperation(operationId, reason(error)));
+}
+
+/**
+ * cancelOperation asks the service to cancel. An accepted cancel ends the
+ * operation through its Canceled record on the status channel; a refusal
+ * leaves the item's state alone and shows the service's reason on its card.
+ */
+async function cancelOperation(operation: OperationView): Promise<void> {
+  operation.cancelPending = true;
+  renderStrip();
+  try {
+    await api.cancelOperation(operation.operationId);
+  } catch (error) {
+    operation.cancelPending = false;
+    operation.notice = refusalText(reason(error));
+    renderCardFor(operation.item.itemName);
+    renderStrip();
+  }
 }
 
 /** failOperation marks only the local display record; it never touches item state. */
@@ -577,6 +609,12 @@ function showView(next: View): void {
   }
 }
 
+stripCancel.addEventListener("click", () => {
+  const operation = operations.get(stripCancel.dataset.operationId ?? "");
+  if (operation && operation.outcome === "active") {
+    void cancelOperation(operation);
+  }
+});
 bannerHelp.addEventListener("click", () => {
   // The service validated the URL; check again so nothing but http(s) ever
   // leaves the WebView, and open it in the system browser, never in here.

@@ -4,13 +4,14 @@
 
 The Wails process runs as the interactive standard user. The SYSTEM Gorilla service remains the authorization and filesystem boundary. UI code receives no Gorilla configuration, credentials, arbitrary paths, package-server settings, or internal catalog objects.
 
-`UIService` binds exactly five calls backed by the shared `pkg/service.Client`:
+`UIService` binds exactly six calls backed by the shared `pkg/service.Client`:
 
 1. `ListOptionalInstalls`
 2. `InstallItem`
 3. `RemoveItem`
 4. `WatchOperation`
 5. `GetBranding`
+6. `CancelOperation`
 
 `WatchOperation` uses Wails' application-lifetime context and emits typed records only on `gorilla:operation-status`. The frontend imports generated calls through `frontend/src/wails-api.ts`.
 
@@ -20,8 +21,8 @@ The Wails process runs as the interactive standard user. The SYSTEM Gorilla serv
 `installer.Runner.Emit`, so every record names a real item. Runner states map to
 pipe states `Downloading`, `Installing`, `Removing`, `ItemCompleted`, and
 `ItemFailed`; all five are non-terminal. Only `Succeeded`, `Failed`, `Deferred`,
-and `Canceled` — from the requested item's real run report or service
-cancellation/error — end an operation.
+and `Canceled` — from the requested item's real run report, a service
+cancellation or error, or a user cancel — end an operation.
 
 `progressPercent` is scoped to the record's `itemName` and may reset at an item
 boundary. Each item's card (and its detail page) shows one status line with a
@@ -39,6 +40,30 @@ The app bar carries the connection state (a dot and the cached/stale message
 with Retry). Above it, the `#banner` section stays hidden until branding
 fills it (see Branding). "My items" is the same list filtered on the client to installed or
 managed items; it is not a separate service call.
+
+## Cancel
+
+The strip has a Cancel button for the operation it shows. It is enabled only
+while that operation's latest record is `Requested`, `Queued` or `Downloading`,
+and otherwise is a real disabled button whose title says why. `CancelOperation`
+skips the command queue, since the run it would stop holds that queue. The
+service accepts it only while the operation is open and no run has started the
+item's install or uninstall command; a running installer is never interrupted.
+Anything else (item acted on, operation finished, unknown ID) is refused with
+`operation_not_cancelable`, and the card shows the service's message without
+changing the item.
+
+An accepted cancel does three things. It puts back the self-serve selection the
+`InstallItem` or `RemoveItem` replaced, so a later scheduled run does not
+perform the request anyway. It withdraws the item from the run under way
+(`installer.Cancels`): the run skips it before its download and again before
+its command, and an in-flight download is aborted; other items carry on. And it
+ends the operation with `Canceled` and `canceledBy: "user"`. The card then
+reads "Canceled" as plain text until the next action, and Activity reads
+"Canceled by you".
+
+Self-serve manifest writes go through `manifest.UpdateSelfServe`, an in-process
+lock with a fresh load, because a cancel can now write while a run is under way.
 
 Installed and managed state come only from an authoritative `ListOptionalInstalls`
 refresh performed after a terminal record, never from progress records. A failed

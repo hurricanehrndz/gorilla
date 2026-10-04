@@ -89,10 +89,11 @@ pure-Go, windows-GUI `build/gorilla-ui.exe`
   `make ui-lint` fails when the committed tree and a fresh generation differ.
 - Keep `cmd/gorilla` service-message commands updated in lockstep with Gorilla UI protocol changes for testing/debugging.
 - `ListOptionalInstalls` should return JSON-safe subset DTOs, not full internal item objects.
-- The bound Wails surface is exactly `ListOptionalInstalls`, `InstallItem`,
-  `RemoveItem`, `WatchOperation`, and `GetBranding`, and one `gorilla:operation-status` event.
-  Progress percentages are per item, not aggregate; only `Succeeded`, `Failed`,
-  `Deferred`, and `Canceled` end an operation.
+- The bound Wails surface is exactly six methods, `ListOptionalInstalls`, `InstallItem`,
+  `RemoveItem`, `WatchOperation`, `GetBranding`, and `CancelOperation`, and one
+  `gorilla:operation-status` event. Progress percentages are per item, not aggregate;
+  only `Succeeded`, `Failed`, `Deferred`, and `Canceled` end an operation, and
+  `Canceled` comes from the service (`canceledBy: "service"`) or the user (`"user"`).
 
 ## Real Windows Validation Loop
 

@@ -514,6 +514,12 @@ h2 {
   accent-color: var(--accent);
 }
 
+/* Cancel, as the board draws it: outlined, muted, at the end of the strip. */
+.strip .pill {
+  flex: none;
+  color: var(--muted);
+}
+
 .view-head {
   display: flex;
   align-items: baseline;

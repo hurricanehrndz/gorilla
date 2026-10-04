@@ -11,7 +11,7 @@ objects.
 - `main.go`: Wails application, `--pipe-name` flag (default `gorilla-service`),
   bundled WebView window titled with the branding title, or `Gorilla UI`
 - `service.go`: the bound service — `ListOptionalInstalls`, `InstallItem`,
-  `RemoveItem`, `WatchOperation`, `GetBranding`
+  `RemoveItem`, `WatchOperation`, `GetBranding`, `CancelOperation`
 - `log.go`: opt-in diagnostics
 - `assets_production.go` / `assets_development.go`: embedded `frontend/dist` under
   the `production` tag, compile-safe source filesystem otherwise
@@ -23,7 +23,7 @@ objects.
 
 ## Backend surface
 
-Five bound methods and exactly one event channel, `gorilla:operation-status`.
+Six bound methods and exactly one event channel, `gorilla:operation-status`.
 Each status record carries `operationId`, `itemName`, `displayName`, `state`,
 item-scoped `progressPercent`, `message`, timestamp, and terminal
 error/cancellation fields. The frontend subscribes once and routes records by
@@ -44,6 +44,13 @@ error/cancellation fields. The frontend subscribes once and routes records by
   record the UI calls `ListOptionalInstalls` and replaces the list and cache from
   that authoritative response. If that refresh fails, the previous data is kept
   and marked stale.
+- Cancel, in the bottom strip, works only until the service starts the item's
+  installer or uninstaller (`Requested`, `Queued`, `Downloading`); after that it
+  is disabled, and the service refuses a late request with
+  `operation_not_cancelable`. A running installer is never interrupted. An
+  accepted cancel reverts the request's self-service selection, skips the item in
+  the run under way (aborting its download), and ends the operation with
+  `Canceled` from the user. Test it with `gorilla.exe -S CancelOperation:<id>`.
 - `Failed`, `Deferred`, `Canceled`, pipe unavailability, request timeout, and
   premature stream end (`stream_ended`) are shown as-is and never converted into
   success.

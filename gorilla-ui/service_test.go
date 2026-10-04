@@ -23,6 +23,7 @@ type fakeServiceClient struct {
 	installName string
 	removeName  string
 	streamID    string
+	cancelID    string
 	stream      func(context.Context, func(gorillaservice.OperationStatus) error) error
 }
 
@@ -48,6 +49,11 @@ func (f *fakeServiceClient) RemoveItem(_ context.Context, itemName string) (gori
 func (f *fakeServiceClient) StreamOperationStatus(ctx context.Context, operationID string, callback func(gorillaservice.OperationStatus) error) error {
 	f.streamID = operationID
 	return f.stream(ctx, callback)
+}
+
+func (f *fakeServiceClient) CancelOperation(_ context.Context, operationID string) error {
+	f.cancelID = operationID
+	return nil
 }
 
 func TestUIServiceValidationAndForwarding(t *testing.T) {
@@ -84,6 +90,13 @@ func TestUIServiceValidationAndForwarding(t *testing.T) {
 	if err := service.WatchOperation(" "); err == nil || client.streamID != "" {
 		t.Fatal("blank operation ID was forwarded")
 	}
+	if err := service.CancelOperation(" op-1 "); err != nil || client.cancelID != "op-1" {
+		t.Fatalf("cancel forwarding failed: id=%q err=%v", client.cancelID, err)
+	}
+	client.cancelID = ""
+	if err := service.CancelOperation(""); err == nil || client.cancelID != "" {
+		t.Fatal("blank cancel operation ID was forwarded")
+	}
 }
 
 // A bound call before ServiceStartup must error rather than pass a nil context
@@ -109,6 +122,9 @@ func TestUIServiceWithoutStartupRejectsCalls(t *testing.T) {
 	}
 	if _, err := service.GetBranding(); err == nil {
 		t.Fatal("branding forwarded without startup")
+	}
+	if err := service.CancelOperation("op-1"); err == nil || client.cancelID != "" {
+		t.Fatalf("cancel forwarded without startup: id=%q err=%v", client.cancelID, err)
 	}
 }
 

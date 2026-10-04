@@ -203,6 +203,22 @@ function mutate(itemName: string, removing: boolean): Promise<AcceptedOperation>
   return Promise.resolve(accepted);
 }
 
+// Watched operations, for cancelOperation: pending timers, the state last sent,
+// and how to settle the watch call.
+type Watched = {
+  item: OptionalInstallItem;
+  state: string;
+  timers: ReturnType<typeof setTimeout>[];
+  settle: () => void;
+};
+const watched = new Map<string, Watched>();
+
+function emit(status: OperationStatus): void {
+  for (const handler of handlers) {
+    handler(status);
+  }
+}
+
 /**
  * watch replays a sequence through the same callback production uses, so the
  * mock exercises the real routing: nothing is delivered until the UI watches,
@@ -219,36 +235,71 @@ function watch(operationId: string): Promise<void> {
   const [lastDelay, lastPartial] = events[events.length - 1];
 
   return new Promise((resolve, reject) => {
+    const entry: Watched = { item, state: "", timers: [], settle: resolve };
+    watched.set(operationId, entry);
     for (const [delay, partial] of events) {
-      setTimeout(() => {
-        const status: OperationStatus = {
-          operationId,
-          timestampUtc: new Date().toISOString(),
-          itemName: item.itemName,
-          displayName: item.displayName,
-          state: "",
-          progressPercent: 0,
-          message: "",
-          ...partial,
-        };
-        if (status.state === "Succeeded") {
-          item.isInstalled = !removing;
-          item.isManaged = !removing;
-          item.status = removing ? "NotInstalled" : "Installed";
-        }
-        for (const handler of handlers) {
-          handler(status);
-        }
-      }, delay);
+      entry.timers.push(
+        setTimeout(() => {
+          const status: OperationStatus = {
+            operationId,
+            timestampUtc: new Date().toISOString(),
+            itemName: item.itemName,
+            displayName: item.displayName,
+            state: "",
+            progressPercent: 0,
+            message: "",
+            ...partial,
+          };
+          if (status.state === "Succeeded") {
+            item.isInstalled = !removing;
+            item.isManaged = !removing;
+            item.status = removing ? "NotInstalled" : "Installed";
+          }
+          entry.state = status.state;
+          emit(status);
+        }, delay),
+      );
     }
-    setTimeout(() => {
-      if (isTerminalState(lastPartial.state ?? "")) {
-        resolve();
-      } else {
-        reject(new Error("operation stream ended before a terminal event"));
-      }
-    }, lastDelay + 1);
+    entry.timers.push(
+      setTimeout(() => {
+        watched.delete(operationId);
+        if (isTerminalState(lastPartial.state ?? "")) {
+          resolve();
+        } else {
+          reject(new Error("operation stream ended before a terminal event"));
+        }
+      }, lastDelay + 1),
+    );
   });
+}
+
+/** cancel mirrors the service: accepted until the installer starts, refused after. */
+function cancel(operationId: string): Promise<void> {
+  const entry = watched.get(operationId);
+  if (!entry) {
+    return Promise.reject(new Error("operation_not_cancelable: operation can no longer be canceled: it has already finished"));
+  }
+  if (!["", "Queued", "Downloading"].includes(entry.state)) {
+    return Promise.reject(
+      new Error(
+        `operation_not_cancelable: operation can no longer be canceled: work on ${entry.item.displayName} has already started`,
+      ),
+    );
+  }
+  entry.timers.forEach(clearTimeout);
+  watched.delete(operationId);
+  emit({
+    operationId,
+    timestampUtc: new Date().toISOString(),
+    itemName: entry.item.itemName,
+    displayName: entry.item.displayName,
+    state: "Canceled",
+    progressPercent: 0,
+    message: "Canceled by user",
+    canceledBy: "user",
+  });
+  entry.settle();
+  return Promise.resolve();
 }
 
 export const api: GorillaApi = {
@@ -259,6 +310,7 @@ export const api: GorillaApi = {
   installItem: (itemName) => mutate(itemName, false),
   removeItem: (itemName) => mutate(itemName, true),
   watchOperation: (operationId) => watch(operationId),
+  cancelOperation: (operationId) => cancel(operationId),
   // `?branded` shows the Branding board's organisation banner.
   getBranding: () =>
     Promise.resolve({
