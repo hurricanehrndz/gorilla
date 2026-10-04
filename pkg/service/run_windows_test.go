@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,7 +63,9 @@ func TestNamedPipeStreamStatusReliability(t *testing.T) {
 	}
 
 	stubOptional(t, "Slack")
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		return nil, nil
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -91,7 +94,9 @@ func TestStreamOperationStatusUnknownOperationIDReturnsError(t *testing.T) {
 		ServiceName:     "gorilla-test",
 	}
 
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		return nil, nil
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if err := sr.start(ctx); err != nil {
@@ -145,7 +150,7 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 	}
 
 	stubOptional(t, "Slack")
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) {
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		return nil, errors.New("forced managed run failure")
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -170,9 +175,11 @@ func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
 }
 
 func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		return nil, nil
+	})
 	operationID := "op-canceled"
-	sr.registerTrackedOperation(operationID, "Slack", "")
+	sr.registerTrackedOperation("Slack", CommandResponse{OperationID: operationID})
 
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -384,9 +391,11 @@ func bestEffortUnblockPipeListener(cfg config.Configuration) {
 }
 
 func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		return nil, nil
+	})
 	const operationID = "op-progress"
-	sr.registerTrackedOperation(operationID, "DemoOptional", "")
+	sr.registerTrackedOperation("DemoOptional", CommandResponse{OperationID: operationID})
 
 	emit := sr.operationProgressCallback(operationID)
 	emit(catalog.Item{Name: "DemoDependency", DisplayName: "Demo Dependency"}, "downloading", 0, "download")
@@ -433,7 +442,9 @@ func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
 }
 
 func TestTrackedOperationPruningDropsOldCompletedEntries(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		return nil, nil
+	})
 	now := time.Now()
 
 	sr.operationsMu.Lock()
@@ -476,7 +487,7 @@ func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
 		Branding:        config.Branding{Title: "Acme Software Center", Accent: "#0B6E4F"},
 	}
 	release := make(chan struct{})
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) {
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		<-release
 		return nil, nil
 	})
@@ -505,8 +516,10 @@ func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
 // An InstallItem resolves the catalog display name while authorizing, so even
 // a run that never emits progress for the item names it properly at the end.
 func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn) (*report.Report, error) { return nil, nil })
-	sr.registerTrackedOperation("op-named", "GoogleChrome", "Google Chrome")
+	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		return nil, nil
+	})
+	sr.registerTrackedOperation("GoogleChrome", CommandResponse{OperationID: "op-named", displayName: "Google Chrome"})
 	sr.appendOperationEvent("op-named", resolveTerminalEvent("GoogleChrome", nil))
 
 	events, done, _ := sr.snapshotTrackedOperation("op-named")
@@ -535,7 +548,7 @@ func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	var once sync.Once
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn) (*report.Report, error) {
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		once.Do(func() { close(started) })
 		<-release
 		return nil, nil
@@ -558,5 +571,86 @@ func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
 	sr.stop(stopCtx)
 	if took := time.Since(begin); took > 2*time.Second {
 		t.Fatalf("stop waited %v for a busy run; want it to return at its deadline", took)
+	}
+}
+
+// CancelOperation is accepted while the operation's run has not reached its
+// item, even though that run holds the command queue; it ends the operation
+// with a user Canceled record and reverts the selection. A second cancel of
+// the now finished operation, or one of an unknown id, is refused.
+func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
+	cfg := config.Configuration{
+		AppDataPath:     t.TempDir(),
+		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
+		ServiceInterval: "1h",
+		ServiceMode:     true,
+		ServiceName:     "gorilla-test",
+	}
+	stubOptional(t, "Slack")
+	var runs atomic.Int32
+	runStarted := make(chan struct{})
+	release := make(chan struct{})
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		// The start-up run returns at once; the run InstallItem schedules
+		// stays busy, before its item, until the test releases it.
+		if runs.Add(1) == 2 {
+			close(runStarted)
+			<-release
+		}
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sr.start(ctx); err != nil {
+		t.Fatalf("service start failed: %v", err)
+	}
+	defer func() {
+		cancel()
+		bestEffortUnblockPipeListener(cfg)
+		sr.stop(context.Background())
+	}()
+
+	client := NewClient(cfg.ServicePipeName)
+	accepted, err := client.InstallItem(ctx, "Slack")
+	if err != nil {
+		t.Fatalf("InstallItem failed: %v", err)
+	}
+	select {
+	case <-runStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scheduled run never started")
+	}
+
+	if err := client.CancelOperation(ctx, accepted.OperationID); err != nil {
+		t.Fatalf("CancelOperation while queued failed: %v", err)
+	}
+	terminal := mustStreamAndReceiveTerminalState(t, cfg, accepted.OperationID, 0)
+	if terminal.State != "Canceled" || terminal.CanceledBy != "user" || terminal.ItemName != "Slack" || terminal.DisplayName == "" {
+		t.Fatalf("terminal record = %#v, want Canceled by user for Slack", terminal)
+	}
+	if got := loadManifest(t, cfg).Installs; len(got) != 0 {
+		t.Fatalf("the cancel left the selection in place: %v", got)
+	}
+
+	// The run finishing afterwards must not add a second terminal record.
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for busy, _ := sr.busyAction.Load().(string); busy != ""; busy, _ = sr.busyAction.Load().(string) {
+		if time.Now().After(deadline) {
+			t.Fatal("the released run never finished")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The scheduled goroutine appends its outcome just after the queue frees.
+	time.Sleep(200 * time.Millisecond)
+	events, _, _ := sr.snapshotTrackedOperation(accepted.OperationID)
+	if last := events[len(events)-1]; last.State != "Canceled" {
+		t.Fatalf("a record followed the user cancel: %#v", last)
+	}
+
+	for _, id := range []string{accepted.OperationID, "does-not-exist"} {
+		err := client.CancelOperation(ctx, id)
+		if err == nil || !strings.HasPrefix(err.Error(), "operation_not_cancelable:") {
+			t.Fatalf("CancelOperation(%s) error = %v, want operation_not_cancelable", id, err)
+		}
 	}
 }

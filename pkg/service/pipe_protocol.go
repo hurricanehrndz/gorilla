@@ -37,6 +37,8 @@ type removeItemRequest struct {
 
 type streamOperationStatusRequest struct{}
 
+type cancelOperationRequest struct{}
+
 type OptionalInstallItem struct {
 	ItemName           string `json:"itemName"`
 	DisplayName        string `json:"displayName"`
@@ -66,6 +68,10 @@ type AcceptedOperation struct {
 
 type streamOperationStatusAckResponse struct {
 	StreamAccepted bool `json:"streamAccepted"`
+}
+
+type cancelOperationResponse struct {
+	Canceled bool `json:"canceled"`
 }
 
 // OperationStatusPayload is one wire status event. ProgressPercent is scoped to

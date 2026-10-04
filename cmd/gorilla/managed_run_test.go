@@ -77,7 +77,7 @@ DemoOptional:
 	adminCheckFunc = func() (bool, error) { return true, nil }
 	mkdirAllFunc = func(string, os.FileMode) error { return nil }
 
-	if _, err := managedRun(cfg, nil); err != nil {
+	if _, err := managedRun(cfg, nil, nil); err != nil {
 		t.Fatalf("managedRun failed: %v", err)
 	}
 
@@ -98,7 +98,7 @@ DemoOptional:
 	// which is enough to prove the run-scoped seam without changing sequencing.
 	cfg.CheckOnly = false
 	var states []string
-	if _, err := managedRun(cfg, func(_ catalog.Item, state string, _ int, _ string) { states = append(states, state) }); err != nil {
+	if _, err := managedRun(cfg, func(_ catalog.Item, state string, _ int, _ string) { states = append(states, state) }, nil); err != nil {
 		t.Fatalf("managedRun with progress callback failed: %v", err)
 	}
 	if len(states) == 0 || states[0] != "downloading" {
