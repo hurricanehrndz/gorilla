@@ -32,6 +32,9 @@ type Command struct {
 	Items  []string `json:"items,omitempty"`
 
 	progress installer.ProgressFn
+	// cancels is the service's withdrawal bookkeeping, set by the service for
+	// every command it executes; nil from the command line.
+	cancels *installer.Cancels
 }
 
 type CommandResponse struct {
@@ -41,6 +44,14 @@ type CommandResponse struct {
 	OptionalItems []OptionalInstallItem `json:"optionalItems,omitempty"`
 	OperationID   string                `json:"operationId,omitempty"`
 	Branding      *branding.Branding    `json:"branding,omitempty"`
+
+	// displayName is the catalog display name InstallItem resolved while
+	// authorizing, for the operation's first record. Unexported like report.
+	displayName string
+
+	// prior is the self-serve selection an InstallItem or RemoveItem replaced and
+	// requested the one it set; CancelOperation reverts from one to the other.
+	prior, requested selection
 
 	// report carries the managed run's per-run report from an actionRun back to
 	// the caller so scheduleRunAfterMutation can emit an honest terminal event
@@ -55,6 +66,7 @@ const (
 	actionInstallItem           = "InstallItem"
 	actionRemoveItem            = "RemoveItem"
 	actionStreamOperationStatus = "StreamOperationStatus"
+	actionCancelOperation       = "CancelOperation"
 )
 
 func canonicalizeAction(action string) (string, bool) {
@@ -71,6 +83,8 @@ func canonicalizeAction(action string) (string, bool) {
 		return actionRemoveItem, true
 	case strings.ToLower(actionStreamOperationStatus):
 		return actionStreamOperationStatus, true
+	case strings.ToLower(actionCancelOperation):
+		return actionCancelOperation, true
 	default:
 		return "", false
 	}
@@ -117,7 +131,7 @@ func validateCommand(cmd Command) error {
 		if len(cmd.Items) != 0 {
 			return fmt.Errorf("%s action does not support items", cmd.Action)
 		}
-	case actionInstallItem, actionRemoveItem, actionStreamOperationStatus:
+	case actionInstallItem, actionRemoveItem, actionStreamOperationStatus, actionCancelOperation:
 		if len(cmd.Items) != 1 {
 			return fmt.Errorf("%s action requires exactly one argument", cmd.Action)
 		}
@@ -184,6 +198,11 @@ func SendCommand(cfg config.Configuration, spec string) (CommandResponse, error)
 			return nil
 		})
 		return resp, err
+	case actionCancelOperation:
+		if err := client.CancelOperation(ctx, cmd.Items[0]); err != nil {
+			return CommandResponse{}, err
+		}
+		return CommandResponse{Status: "ok", OperationID: cmd.Items[0], Message: "operation canceled"}, nil
 	default:
 		return CommandResponse{}, fmt.Errorf("unsupported service action %q", cmd.Action)
 	}
@@ -212,23 +231,29 @@ func serviceInstallArgs(configPath string) []string {
 	return []string{"-c", configPath, "-service"}
 }
 
-func executeCommand(cfg config.Configuration, cmd Command, managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)) (CommandResponse, error) {
+func executeCommand(cfg config.Configuration, cmd Command, managedRun func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)) (CommandResponse, error) {
 	switch cmd.Action {
 	case actionRun:
-		rep, err := managedRun(cfg, cmd.progress)
+		defer cmd.cancels.EndRun()
+		rep, err := managedRun(cfg, cmd.progress, cmd.cancels)
 		return CommandResponse{Status: "ok", report: rep}, err
 	case actionInstallItem:
-		if err := addServiceManagedInstalls(cfg, cmd.Items); err != nil {
+		displayName, prior, err := addServiceManagedInstall(cfg, cmd.Items[0])
+		if err != nil {
 			return CommandResponse{}, err
 		}
+		// A new request starts the item's cancel bookkeeping afresh.
+		cmd.cancels.Reset(cmd.Items[0])
 		operationID := strconv.FormatInt(time.Now().UnixNano(), 10)
-		return CommandResponse{Status: "ok", OperationID: operationID}, nil
+		return CommandResponse{Status: "ok", OperationID: operationID, displayName: displayName, prior: prior, requested: selectedForInstall}, nil
 	case actionRemoveItem:
-		if err := removeServiceManagedInstalls(cfg, cmd.Items); err != nil {
+		prior, err := removeServiceManagedInstall(cfg, cmd.Items[0])
+		if err != nil {
 			return CommandResponse{}, err
 		}
+		cmd.cancels.Reset(cmd.Items[0])
 		operationID := strconv.FormatInt(time.Now().UnixNano(), 10)
-		return CommandResponse{Status: "ok", OperationID: operationID}, nil
+		return CommandResponse{Status: "ok", OperationID: operationID, prior: prior, requested: selectedForRemoval}, nil
 	case actionListOptionalInstalls:
 		items, err := getOptionalItems(cfg)
 		if err != nil {
@@ -251,74 +276,99 @@ func serviceLocalManifestPath(cfg config.Configuration) string {
 	return manifest.SelfServePath(cfg.AppDataPath)
 }
 
-func addServiceManagedInstalls(cfg config.Configuration, items []string) error {
-	// Authorize each requested name against the currently available optional
+// selection is where one item sits in the self-serve manifest. InstallItem and
+// RemoveItem each set an item's selection outright, so the exact inverse of
+// either is to set back the selection it replaced.
+type selection struct {
+	install   bool // listed in managed_installs
+	uninstall bool // listed in managed_uninstalls
+}
+
+var (
+	// Selecting an item also drops a pending removal; Munki keeps
+	// managed_installs and managed_uninstalls disjoint.
+	selectedForInstall = selection{install: true}
+	// Deselecting drives a real removal: the item is queued in
+	// managed_uninstalls so the next run uninstalls it (R3).
+	selectedForRemoval = selection{uninstall: true}
+)
+
+// setSelection sets name's selection in the self-serve manifest and returns
+// the selection it replaced. Both lists stay deduplicated and sorted.
+func setSelection(cfg config.Configuration, name string, want selection) (selection, error) {
+	var prior selection
+	err := manifest.UpdateSelfServe(serviceLocalManifestPath(cfg), func(entry *manifest.Item) bool {
+		prior = selection{
+			install:   slices.Contains(entry.Installs, name),
+			uninstall: slices.Contains(entry.Uninstalls, name),
+		}
+		entry.Installs = setMember(entry.Installs, name, want.install)
+		entry.Uninstalls = setMember(entry.Uninstalls, name, want.uninstall)
+		return prior != want
+	})
+	return prior, err
+}
+
+func setMember(list []string, name string, member bool) []string {
+	if !member {
+		return slices.DeleteFunc(list, func(existing string) bool { return existing == name })
+	}
+	if slices.Contains(list, name) {
+		return list
+	}
+	list = append(list, name)
+	slices.Sort(list)
+	return list
+}
+
+// addServiceManagedInstall selects name for install. It returns name's catalog
+// display name, which the authorization lookup has already resolved, and the
+// selection it replaced.
+func addServiceManagedInstall(cfg config.Configuration, name string) (string, selection, error) {
+	// Authorize the requested name against the currently available optional
 	// installs before writing anything (R3). An unknown name is rejected and the
 	// file is left untouched; the pipe layer maps the error to an error envelope.
 	available, err := getOptionalItems(cfg)
 	if err != nil {
-		return err
+		return "", selection{}, err
 	}
-	availableNames := make(map[string]bool, len(available))
-	for _, it := range available {
-		availableNames[it.ItemName] = true
+	i := slices.IndexFunc(available, func(it OptionalInstallItem) bool { return it.ItemName == name })
+	if i < 0 {
+		return "", selection{}, fmt.Errorf("item %q is not available for self-service", name)
 	}
-	for _, item := range items {
-		if !availableNames[item] {
-			return fmt.Errorf("item %q is not available for self-service", item)
-		}
-	}
-
-	entry, err := loadServiceLocalManifest(cfg)
-	if err != nil {
-		return err
-	}
-
-	for _, item := range items {
-		if !slices.Contains(entry.Installs, item) {
-			entry.Installs = append(entry.Installs, item)
-		}
-		// Re-selecting an item pending removal cancels the removal; Munki keeps
-		// managed_installs and managed_uninstalls disjoint.
-		entry.Uninstalls = slices.DeleteFunc(entry.Uninstalls, func(u string) bool { return u == item })
-	}
-	slices.Sort(entry.Installs)
-
-	return saveServiceLocalManifest(cfg, entry)
+	prior, err := setSelection(cfg, name, selectedForInstall)
+	return available[i].DisplayName, prior, err
 }
 
-func removeServiceManagedInstalls(cfg config.Configuration, items []string) error {
-	entry, err := loadServiceLocalManifest(cfg)
-	if err != nil {
+// removeServiceManagedInstall deselects name and queues its removal, returning
+// the selection it replaced.
+func removeServiceManagedInstall(cfg config.Configuration, name string) (selection, error) {
+	return setSelection(cfg, name, selectedForRemoval)
+}
+
+// errNotCancelable is CancelOperation's refusal, sent as operation_not_cancelable.
+var errNotCancelable = errors.New("operation can no longer be canceled")
+
+// withdrawItem is the item side of CancelOperation. It puts back the selection
+// the operation's request replaced (prior), so no later run performs it, then
+// withdraws the item from any run under way. If a run started acting on the
+// item first, it restores the request's own selection and returns
+// errNotCancelable.
+func withdrawItem(cfg config.Configuration, cancels *installer.Cancels, name string, prior, requested selection) error {
+	if _, err := setSelection(cfg, name, prior); err != nil {
 		return err
 	}
-
-	filtered := make([]string, 0, len(entry.Installs))
-	for _, existing := range entry.Installs {
-		if !slices.Contains(items, existing) {
-			filtered = append(filtered, existing)
-		}
+	if cancels.Cancel(name) {
+		return nil
 	}
-	entry.Installs = filtered
-
-	// Deselecting drives a real removal: queue the item in managed_uninstalls
-	// (dedup, sorted) so the next run uninstalls it (R3).
-	for _, item := range items {
-		if !slices.Contains(entry.Uninstalls, item) {
-			entry.Uninstalls = append(entry.Uninstalls, item)
-		}
+	if _, err := setSelection(cfg, name, requested); err != nil {
+		slog.Warn("unable to restore the self-service selection after a refused cancel", "item", name, "err", err)
 	}
-	slices.Sort(entry.Uninstalls)
-
-	return saveServiceLocalManifest(cfg, entry)
+	return errNotCancelable
 }
 
 func loadServiceLocalManifest(cfg config.Configuration) (manifest.Item, error) {
 	return manifest.LoadSelfServe(serviceLocalManifestPath(cfg))
-}
-
-func saveServiceLocalManifest(cfg config.Configuration, entry manifest.Item) error {
-	return manifest.SaveSelfServe(serviceLocalManifestPath(cfg), entry)
 }
 
 // getOptionalItems builds the honest ListOptionalInstalls payload (R9): it

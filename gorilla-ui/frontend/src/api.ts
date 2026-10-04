@@ -28,6 +28,8 @@ export type GorillaApi = {
   installItem(itemName: string): Promise<AcceptedOperation>;
   removeItem(itemName: string): Promise<AcceptedOperation>;
   watchOperation(operationId: string): Promise<void>;
+  /** cancelOperation rejects with the service's operation_not_cancelable message when refused. */
+  cancelOperation(operationId: string): Promise<void>;
   onOperationStatus(handler: (status: OperationStatus) => void): void;
   getBranding(): Promise<Branding>;
   /** openExternal opens an http(s) URL in the system browser, never in the WebView. */

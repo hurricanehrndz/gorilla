@@ -9,6 +9,8 @@ import {
   activityLine,
   bannerMessage,
   brandingView,
+  canCancel,
+  cancelTitle,
   cardProgress,
   categories,
   categoryGlyph,
@@ -28,6 +30,7 @@ import {
   onAccent,
   progressLabel,
   progressText,
+  refusalText,
   releaseOperation,
   restartBadge,
   shouldAcceptRecord,
@@ -462,7 +465,7 @@ test("outcome lines say what failed and quote the service's reason", () => {
   );
   assert.equal(
     cardProgress(item, [{ ...failed, state: "Canceled", detail: undefined, message: "Operation canceled" }], "terminal").label,
-    "Canceled · Operation canceled",
+    "Canceled",
   );
 });
 
@@ -613,4 +616,60 @@ test("onAccent picks readable text", () => {
   assert.equal(onAccent("#1a5fb4"), "#ffffff");
   assert.equal(onAccent("#ffd400"), "#1b1b1f");
   assert.equal(onAccent("#ffffff"), "#1b1b1f");
+});
+
+test("Cancel is offered only before the installer starts", () => {
+  for (const state of [REQUESTED_STATE, "Queued", "Downloading"]) {
+    assert.equal(canCancel(state), true, state);
+    assert.equal(cancelTitle(state), "Cancel before the installer starts");
+  }
+  // A running installer is never interrupted, and finished work has nothing to cancel.
+  for (const state of ["Installing", "Removing", "ItemCompleted", "ItemFailed", "Succeeded", "Canceled", ""]) {
+    assert.equal(canCancel(state), false, state);
+    assert.match(cancelTitle(state), /^Can't cancel now/);
+  }
+  assert.equal(cancelTitle("Queued", true), "Canceling…");
+});
+
+test("a refused cancel shows the service's reason without its error code", () => {
+  assert.equal(
+    refusalText("operation_not_cancelable: operation can no longer be canceled: work on Google Chrome has already started"),
+    "Operation can no longer be canceled: work on Google Chrome has already started",
+  );
+  assert.equal(refusalText("pipe unavailable"), "Pipe unavailable");
+  assert.equal(refusalText(""), "The operation can no longer be canceled");
+});
+
+test("a user cancel reads plainly on the card and says who in Activity", () => {
+  const chrome = { itemName: "GoogleChrome" };
+  const canceled = statusRecord({
+    operationId: "op-1",
+    timestampUtc: "not-a-date",
+    itemName: "GoogleChrome",
+    displayName: "Google Chrome",
+    state: "Canceled",
+    progressPercent: 0,
+    message: "Canceled by user",
+    canceledBy: "user",
+  });
+  assert.equal(canceled.canceledBy, "user");
+  assert.deepEqual(cardProgress(chrome, [canceled], "terminal"), {
+    label: "Canceled",
+    outcome: "terminal",
+    plain: true,
+  });
+  assert.equal(activityLine(canceled), "not-a-date — Google Chrome: Canceled by you");
+  assert.equal(
+    activityLine({ ...canceled, canceledBy: "service", message: "Operation canceled" }),
+    "not-a-date — Google Chrome: Canceled by the service",
+  );
+
+  // A refused cancel replaces the running line, not the item's state.
+  const installing = { ...canceled, state: "Installing", canceledBy: undefined };
+  assert.deepEqual(cardProgress(chrome, [installing], "active", "InstallItem", "Work has already started"), {
+    label: "Work has already started",
+    outcome: "active",
+  });
+  // Other outcomes keep the warning treatment.
+  assert.equal(cardProgress(chrome, [{ ...installing, state: "Failed" }], "terminal").plain, undefined);
 });

@@ -108,15 +108,16 @@
     </main>
 
     <!-- The one operation being worked on right now; each item's own state is on its card. -->
-    <footer id="operation-strip" class="strip" role="status" aria-label="Current operation" hidden>
+    <footer id="operation-strip" class="strip" aria-label="Current operation" hidden>
       <span id="strip-glyph" class="glyph glyph-small" aria-hidden="true"></span>
       <div class="strip-body">
         <p class="strip-line">
           <span id="strip-name" class="strip-name"></span>
-          <span id="strip-text" class="strip-text"></span>
+          <span id="strip-text" class="strip-text" role="status" aria-live="polite"></span>
         </p>
         <progress id="strip-progress" max="100"></progress>
       </div>
+      <button id="strip-cancel" type="button" class="pill pill-outline">Cancel</button>
     </footer>
 
     <template id="spinner">

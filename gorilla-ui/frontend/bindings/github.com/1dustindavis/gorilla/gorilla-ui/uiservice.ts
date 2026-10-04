@@ -18,6 +18,15 @@ import * as branding$0 from "../pkg/branding/models.js";
 import * as service$0 from "../pkg/service/models.js";
 
 /**
+ * CancelOperation asks the service to cancel an operation whose item has not
+ * been acted on yet. A refusal comes back as an error carrying the service's
+ * operation_not_cancelable message.
+ */
+export function CancelOperation(operationID: string): $CancellablePromise<void> {
+    return $Call.ByID(2215829006, operationID);
+}
+
+/**
  * GetBranding returns the organisation branding the service resolved from policy
  * and config. The UI never reads either source itself.
  */

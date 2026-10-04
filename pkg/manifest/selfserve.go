@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"go.yaml.in/yaml/v4"
 )
@@ -63,4 +64,27 @@ func SaveSelfServe(path string, entry Item) error {
 		return fmt.Errorf("unable to write service local manifest %s: %w", path, err)
 	}
 	return nil
+}
+
+// selfServeMu serialises UpdateSelfServe. The service writes the self-serve
+// manifest from its command queue and, for a cancel, while a managed run in the
+// same process is under way, so a plain load and save could lose a write.
+var selfServeMu sync.Mutex
+
+// UpdateSelfServe loads the self-serve manifest at path, lets fn change it, and
+// saves it when fn reports a change, all under one in-process lock.
+// CEILING: the lock is per process. The service owns the file and runs every
+// managed run in-process; a separate `gorilla` CLI run racing the service could
+// still lose a write. Upgrade to a file lock if both ever write concurrently.
+func UpdateSelfServe(path string, fn func(*Item) bool) error {
+	selfServeMu.Lock()
+	defer selfServeMu.Unlock()
+	entry, err := LoadSelfServe(path)
+	if err != nil {
+		return err
+	}
+	if !fn(&entry) {
+		return nil
+	}
+	return SaveSelfServe(path, entry)
 }

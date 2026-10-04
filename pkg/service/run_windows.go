@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -37,18 +38,21 @@ type queuedResult struct {
 }
 
 type serviceRunner struct {
-	cfg                config.Configuration
-	managedRun         func(config.Configuration, installer.ProgressFn) (*report.Report, error)
-	queue              chan queuedCommand
-	handlerSem         chan struct{}
-	wg                 sync.WaitGroup
-	execMutex          sync.Mutex
-	pipeListenerMu     sync.Mutex
-	pipeListenerHandle windows.Handle
-	activeConnMu       sync.Mutex
-	activeConns        map[windows.Handle]struct{}
-	operationsMu       sync.Mutex
-	operations         map[string]*trackedOperation
+	cfg          config.Configuration
+	managedRun   func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)
+	queue        chan queuedCommand
+	handlerSem   chan struct{}
+	wg           sync.WaitGroup
+	execMutex    sync.Mutex
+	activeConnMu sync.Mutex
+	activeConns  map[windows.Handle]struct{}
+	operationsMu sync.Mutex
+	operations   map[string]*trackedOperation
+	// busyAction is the command the queue worker is executing, "" when idle;
+	// stop logs it when it gives up waiting.
+	busyAction atomic.Value
+	// cancels lets CancelOperation withdraw an item from the run under way.
+	cancels *installer.Cancels
 }
 
 var (
@@ -70,9 +74,13 @@ type trackedOperation struct {
 	done                 bool
 	lastUpdated          time.Time
 	completedAt          time.Time
+
+	// prior and requested are the self-serve selections before and after the
+	// request, for CancelOperation to revert.
+	prior, requested selection
 }
 
-func newServiceRunner(cfg config.Configuration, managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)) *serviceRunner {
+func newServiceRunner(cfg config.Configuration, managedRun func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)) *serviceRunner {
 	return &serviceRunner{
 		cfg:         cfg,
 		managedRun:  managedRun,
@@ -80,6 +88,7 @@ func newServiceRunner(cfg config.Configuration, managedRun func(config.Configura
 		handlerSem:  make(chan struct{}, maxConcurrentPipeHandlers),
 		activeConns: make(map[windows.Handle]struct{}),
 		operations:  make(map[string]*trackedOperation),
+		cancels:     installer.NewCancels(),
 	}
 }
 
@@ -101,9 +110,11 @@ func (sr *serviceRunner) start(ctx context.Context) error {
 			case <-ctx.Done():
 				return
 			case queued := <-sr.queue:
+				sr.busyAction.Store(queued.cmd.Action)
 				sr.execMutex.Lock()
 				resp, err := sr.executeCommandSafe(queued.cmd)
 				sr.execMutex.Unlock()
+				sr.busyAction.Store("")
 				queued.result <- queuedResult{resp: resp, err: err}
 			}
 		}
@@ -152,15 +163,69 @@ func (sr *serviceRunner) executeCommandSafe(cmd Command) (resp CommandResponse, 
 		}
 	}()
 
+	cmd.cancels = sr.cancels
 	return executeCommand(sr.cfg, cmd, sr.managedRun)
 }
 
+// stop wakes the pipe listener and waits for in-flight work until ctx is done.
+// Execute has already cancelled the service context, so the queue worker starts
+// no new command and the listener accepts no new request once it wakes.
+//
+// Two things used to hold Stop-Service and Restart-Service at "Waiting for
+// service to stop", for minutes or until the process was killed:
+//   - Closing the listening pipe handle does not wake a ConnectNamedPipe
+//     blocked on it; CloseHandle itself waits until a client connects. So stop
+//     connects to its own pipe instead, and the listener returns on its own.
+//   - A managed run already under way cannot be interrupted (it may be inside
+//     msiexec), and stop waited for it.
+//
+// Every step therefore runs inside the wait, and stop gives up at ctx's
+// deadline and lets the process exit. An installer child process outlives the
+// service and finishes on its own; the next start's run converges the state.
 func (sr *serviceRunner) stop(ctx context.Context) {
-	sr.closeListenerPipe()
-	sr.closeActiveConnections()
-	sr.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		sr.wakeListener()
+		sr.closeActiveConnections()
+		sr.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		busy, _ := sr.busyAction.Load().(string)
+		slog.Warn(
+			"service stop deadline reached; abandoning in-progress work",
+			"busyAction", busy,
+			"openOperations", sr.openOperationCount(),
+		)
+	}
 	gorillalog.Close()
-	_ = ctx
+}
+
+// wakeListener connects to the service's own pipe and hangs up, so a listener
+// waiting in ConnectNamedPipe returns and sees the cancelled context. A failed
+// connection only means nobody is waiting, or stop's deadline covers it.
+func (sr *serviceRunner) wakeListener() {
+	conn, err := openPipe(servicePipePath(sr.cfg.ServicePipeName), time.Second)
+	if err != nil {
+		slog.Debug("could not wake the pipe listener", "err", err)
+		return
+	}
+	_ = conn.Close()
+}
+
+// openOperationCount is how many tracked operations have no terminal record.
+func (sr *serviceRunner) openOperationCount() int {
+	sr.operationsMu.Lock()
+	defer sr.operationsMu.Unlock()
+	open := 0
+	for _, op := range sr.operations {
+		if !op.done {
+			open++
+		}
+	}
+	return open
 }
 
 func (sr *serviceRunner) submit(ctx context.Context, cmd Command) (CommandResponse, error) {
@@ -217,14 +282,9 @@ func (sr *serviceRunner) serveNamedPipe(ctx context.Context) error {
 			return fmt.Errorf("create pipe: %w", err)
 		}
 
-		sr.pipeListenerMu.Lock()
-		sr.pipeListenerHandle = handle
-		sr.pipeListenerMu.Unlock()
-
 		err = windows.ConnectNamedPipe(handle, nil)
 		if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
 			windows.CloseHandle(handle)
-			sr.clearListenerPipe(handle)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -234,7 +294,6 @@ func (sr *serviceRunner) serveNamedPipe(ctx context.Context) error {
 			return fmt.Errorf("connect pipe: %w", err)
 		}
 
-		sr.clearListenerPipe(handle)
 		select {
 		case sr.handlerSem <- struct{}{}:
 			sr.trackActiveConnection(handle)
@@ -346,25 +405,42 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 	}
 
 	var resp CommandResponse
-	if cmd.Action == actionGetBranding {
+	switch cmd.Action {
+	case actionGetBranding:
 		// Branding is a read-only lookup the UI makes before opening its window,
 		// so it skips the command queue rather than wait behind a managed run.
 		resp, err = sr.executeCommandSafe(cmd)
-	} else {
+	case actionInstallItem, actionRemoveItem:
+		// A mutation only writes the self-serve selection, under
+		// manifest.UpdateSelfServe's lock, so it answers at once instead of
+		// waiting behind a busy run; only the run it schedules below goes
+		// through the queue. A mutation that lands mid-run does not change that
+		// run: it keeps the plan it loaded, and the queued run reconciles the
+		// newer selection afterwards. The run's own self-serve writes reload
+		// under the same lock, so neither side loses the other's change.
+		resp, err = sr.executeCommandSafe(cmd)
+	case actionCancelOperation:
+		// A cancel must not wait in the queue behind the run it is meant to stop.
+		resp, err = CommandResponse{Status: "ok", OperationID: cmd.Items[0]}, sr.cancelOperation(cmd.Items[0])
+	default:
 		resp, err = sr.submit(ctx, cmd)
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
+		code := "command_failed"
+		switch {
+		case errors.Is(err, context.Canceled):
 			result = "canceled"
-		} else {
+		case errors.Is(err, errNotCancelable):
+			result, code = "refused", "operation_not_cancelable"
+		default:
 			result = "error"
 		}
 		logger.Warn("command execution failed", "err", err)
-		writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, "command_failed", err.Error())
+		writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, code, err.Error())
 		return
 	}
 	if cmd.Action == actionInstallItem || cmd.Action == actionRemoveItem {
-		sr.registerTrackedOperation(resp.OperationID, cmd.Items[0])
+		sr.registerTrackedOperation(cmd.Items[0], resp)
 	}
 
 	if err := sr.writeSuccessEnvelope(file, req, cmd, resp); err != nil {
@@ -448,7 +524,8 @@ func (sr *serviceRunner) operationProgressCallback(operationID string) installer
 // resolveTerminalEvent reads the mutated item's real outcome from the run report
 // (keyed by catalog name, R13) and returns the honest terminal event (R10). A
 // nil report (unexpected, but a nil error means the run succeeded) resolves to
-// Succeeded.
+// Succeeded. ItemName and DisplayName stay empty: appendOperationEvent fills both
+// from the operation, which by then knows the item's catalog display name.
 func resolveTerminalEvent(itemName string, rep *report.Report) OperationStatusPayload {
 	if rep != nil {
 		for _, failed := range rep.FailedItems {
@@ -513,10 +590,10 @@ func commandFromRequestEnvelope(req serviceEnvelope[json.RawMessage]) (Command, 
 		}
 		cmd.Items = []string{itemName}
 		return cmd, nil
-	case actionStreamOperationStatus:
+	case actionStreamOperationStatus, actionCancelOperation:
 		operationID := strings.TrimSpace(req.OperationID)
 		if operationID == "" {
-			return Command{}, errors.New("StreamOperationStatus requires operationId")
+			return Command{}, fmt.Errorf("%s requires operationId", canonicalAction)
 		}
 		cmd.Items = []string{operationID}
 		return cmd, nil
@@ -569,6 +646,16 @@ func (sr *serviceRunner) writeSuccessEnvelope(file *os.File, req serviceEnvelope
 			return err
 		}
 		return nil
+	case actionCancelOperation:
+		return json.NewEncoder(file).Encode(serviceEnvelope[cancelOperationResponse]{
+			Version:      pipeProtocolVersion,
+			MessageType:  messageTypeResponse,
+			Operation:    actionCancelOperation,
+			RequestID:    req.RequestID,
+			OperationID:  resp.OperationID,
+			TimestampUTC: nowRFC3339UTC(),
+			Payload:      cancelOperationResponse{Canceled: true},
+		})
 	default:
 		writeErrorEnvelope(file, req.RequestID, req.Operation, req.OperationID, "unsupported_action", "unsupported service action")
 		return nil
@@ -629,10 +716,16 @@ func (sr *serviceRunner) writeStreamOperationStatusSequence(file *os.File, req s
 	}
 }
 
-func (sr *serviceRunner) registerTrackedOperation(operationID, itemName string) {
+// registerTrackedOperation starts the record of the InstallItem or RemoveItem
+// operation resp accepted for itemName. resp.displayName is the catalog display
+// name when the mutation knew it; otherwise the item name stands in until a
+// progress event for the item carries the catalog name.
+func (sr *serviceRunner) registerTrackedOperation(itemName string, resp CommandResponse) {
+	operationID := resp.OperationID
 	if strings.TrimSpace(operationID) == "" || strings.TrimSpace(itemName) == "" {
 		return
 	}
+	displayName := orDefault(strings.TrimSpace(resp.displayName), itemName)
 	sr.operationsMu.Lock()
 	defer sr.operationsMu.Unlock()
 	sr.pruneTrackedOperationsLocked(time.Now())
@@ -640,14 +733,16 @@ func (sr *serviceRunner) registerTrackedOperation(operationID, itemName string) 
 		events: []OperationStatusPayload{
 			{
 				ItemName:        itemName,
-				DisplayName:     itemName,
+				DisplayName:     displayName,
 				State:           "Queued",
 				ProgressPercent: 0,
 				Message:         "Operation queued",
 			},
 		},
 		requestedItemName:    itemName,
-		requestedDisplayName: itemName,
+		requestedDisplayName: displayName,
+		prior:                resp.prior,
+		requested:            resp.requested,
 		lastUpdated:          time.Now(),
 	}
 }
@@ -658,12 +753,25 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event Operatio
 	}
 	sr.operationsMu.Lock()
 	defer sr.operationsMu.Unlock()
+	sr.appendOperationEventLocked(operationID, event)
+}
+
+// appendOperationEventLocked is appendOperationEvent with operationsMu held. An
+// operation that already has its terminal record takes no more: a user cancel
+// ends it while the run it was waiting for still reports.
+func (sr *serviceRunner) appendOperationEventLocked(operationID string, event OperationStatusPayload) {
 	op, ok := sr.operations[operationID]
-	if !ok {
+	if !ok || op.done {
 		return
 	}
 	if strings.TrimSpace(event.ItemName) == "" {
 		event.ItemName = op.requestedItemName
+	}
+	// Progress events carry the catalog display name. Remember it for the
+	// requested item so the records filled in below (the terminal one from the
+	// run report, a service cancel or failure) name the item the same way.
+	if event.ItemName == op.requestedItemName && strings.TrimSpace(event.DisplayName) != "" {
+		op.requestedDisplayName = event.DisplayName
 	}
 	if strings.TrimSpace(event.DisplayName) == "" {
 		event.DisplayName = op.requestedDisplayName
@@ -684,6 +792,36 @@ func (sr *serviceRunner) appendOperationEvent(operationID string, event Operatio
 		op.completedAt = now
 	}
 	sr.pruneTrackedOperationsLocked(now)
+}
+
+// cancelOperation is CancelOperation. It accepts only while the operation is
+// open and no run has started its item's install or uninstall command; it then
+// reverts the request's self-serve selection, withdraws the item from the run
+// under way (aborting its download), and ends the operation with a Canceled
+// record from the user. Every refusal wraps errNotCancelable.
+func (sr *serviceRunner) cancelOperation(operationID string) error {
+	sr.operationsMu.Lock()
+	defer sr.operationsMu.Unlock()
+	op, ok := sr.operations[operationID]
+	switch {
+	case !ok:
+		return fmt.Errorf("%w: unknown operationId", errNotCancelable)
+	case op.done:
+		return fmt.Errorf("%w: it has already finished", errNotCancelable)
+	}
+	err := withdrawItem(sr.cfg, sr.cancels, op.requestedItemName, op.prior, op.requested)
+	if errors.Is(err, errNotCancelable) {
+		return fmt.Errorf("%w: work on %s has already started", errNotCancelable, op.requestedDisplayName)
+	}
+	if err != nil {
+		return err
+	}
+	sr.appendOperationEventLocked(operationID, OperationStatusPayload{
+		State:      "Canceled",
+		Message:    "Canceled by user",
+		CanceledBy: "user",
+	})
+	return nil
 }
 
 func (sr *serviceRunner) hasTrackedOperation(operationID string) bool {
@@ -767,15 +905,6 @@ func createNamedPipe(pipePath string) (windows.Handle, error) {
 	)
 }
 
-func (sr *serviceRunner) closeListenerPipe() {
-	sr.pipeListenerMu.Lock()
-	defer sr.pipeListenerMu.Unlock()
-	if sr.pipeListenerHandle != 0 && sr.pipeListenerHandle != windows.InvalidHandle {
-		_ = windows.CloseHandle(sr.pipeListenerHandle)
-		sr.pipeListenerHandle = 0
-	}
-}
-
 func (sr *serviceRunner) trackActiveConnection(handle windows.Handle) {
 	sr.activeConnMu.Lock()
 	defer sr.activeConnMu.Unlock()
@@ -796,17 +925,9 @@ func (sr *serviceRunner) closeActiveConnections() {
 	}
 }
 
-func (sr *serviceRunner) clearListenerPipe(handle windows.Handle) {
-	sr.pipeListenerMu.Lock()
-	defer sr.pipeListenerMu.Unlock()
-	if sr.pipeListenerHandle == handle {
-		sr.pipeListenerHandle = 0
-	}
-}
-
 type gorillaWindowsService struct {
 	cfg        config.Configuration
-	managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)
+	managedRun func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)
 }
 
 func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
@@ -846,6 +967,6 @@ func (g *gorillaWindowsService) Execute(_ []string, requests <-chan svc.ChangeRe
 	return false, 0
 }
 
-func Run(cfg config.Configuration, managedRun func(config.Configuration, installer.ProgressFn) (*report.Report, error)) error {
+func Run(cfg config.Configuration, managedRun func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)) error {
 	return svc.Run(cfg.ServiceName, &gorillaWindowsService{cfg: cfg, managedRun: managedRun})
 }

@@ -224,6 +224,7 @@ export function statusRecord(status: OperationStatus): ActivityRecord {
     timestampUtc: status.timestampUtc,
     progressPercent: status.progressPercent,
     ...(detail ? { detail } : {}),
+    ...(status.state === "Canceled" && status.canceledBy ? { canceledBy: status.canceledBy } : {}),
   };
 }
 
@@ -245,11 +246,17 @@ export function localRecord(
   };
 }
 
+// How Activity names who ended an operation; the service sends "user" or "service".
+const CANCELED_BY: Record<string, string> = { user: "by you", service: "by the service" };
+
 export function activityLine(record: ActivityRecord): string {
   const when = new Date(record.timestampUtc);
   const stamp = Number.isNaN(when.getTime()) ? record.timestampUtc : when.toLocaleString();
   const name = record.displayName || record.itemName;
-  return [`${stamp} — ${name}: ${stateLabel(record.state)}`, record.message.trim()]
+  // A cancel says who did it, and that replaces the service's message.
+  const who = record.canceledBy ? (CANCELED_BY[record.canceledBy] ?? `by ${record.canceledBy}`) : "";
+  const label = who ? `${stateLabel(record.state)} ${who}` : stateLabel(record.state);
+  return [`${stamp} — ${name}: ${label}`, who ? "" : record.message.trim()]
     .filter(Boolean)
     .join(" — ");
 }
@@ -271,6 +278,8 @@ export type CardProgress = {
   /** The record's own-item percentage, when the engine measured this phase. */
   percent?: number;
   outcome: OperationOutcome;
+  /** A finished outcome that needs no attention, shown as plain text. */
+  plain?: boolean;
 };
 
 // Records that arrive before the service has started work on anything.
@@ -287,6 +296,8 @@ function outcomeLabel(record: ActivityRecord, method: ActionMethod): string {
       const apps = BLOCKING_APPS.exec(message)?.[1];
       return apps ? `Waiting: close ${apps} to continue` : message || "Deferred";
     }
+    case "Canceled":
+      return "Canceled";
     case "Failed": {
       const verb = method === "RemoveItem" ? "Removal" : "Install";
       const why = record.detail || message;
@@ -302,10 +313,15 @@ export function cardProgress(
   records: ActivityRecord[],
   outcome: OperationOutcome,
   method: ActionMethod = "InstallItem",
+  notice = "",
 ): CardProgress | null {
   const latest = records[records.length - 1];
   if (!latest) {
     return null;
+  }
+  if (outcome === "active" && notice) {
+    // A refused cancel: the service's reason, while the work carries on.
+    return { label: notice, outcome };
   }
   if (outcome === "active") {
     const own = latest.itemName === item.itemName;
@@ -328,7 +344,8 @@ export function cardProgress(
   if (outcome === "terminal" && latest.state === "Succeeded") {
     return null;
   }
-  return { label: outcomeLabel(latest, method), outcome };
+  // The user asked for a cancel, so it is not a problem to flag.
+  return { label: outcomeLabel(latest, method), outcome, ...(latest.state === "Canceled" ? { plain: true } : {}) };
 }
 
 /** progressText is a progress line as it reads: the label, then any percentage. */
@@ -507,4 +524,32 @@ export function brandingView(payload: unknown): BrandingView {
     productMark: (Array.from(title)[0] ?? DEFAULT_PRODUCT[0]).toUpperCase(),
     showBanner: Boolean(title || tagline || logoSrc || helpUrl),
   };
+}
+
+// Cancel is offered only before the service starts the item's installer or
+// uninstaller; the service refuses later and never interrupts a running one.
+const CANCELABLE_STATES = new Set([REQUESTED_STATE, "Queued", "Downloading"]);
+
+/** canCancel is whether an operation whose latest record has this state can still be canceled. */
+export function canCancel(state: string): boolean {
+  return CANCELABLE_STATES.has(state.trim());
+}
+
+/** cancelTitle explains the strip's Cancel button: what it does, or why it is off. */
+export function cancelTitle(state: string, pending = false): string {
+  if (pending) {
+    return "Canceling…";
+  }
+  return canCancel(state)
+    ? "Cancel before the installer starts"
+    : "Can't cancel now: work on this item has started, and a running installer is never interrupted";
+}
+
+/**
+ * refusalText turns a refused CancelOperation into the line the card shows: the
+ * service's message without its error code, as a sentence.
+ */
+export function refusalText(error: string): string {
+  const message = error.replace(/^\s*operation_not_cancelable:\s*/i, "").trim();
+  return message ? message[0].toUpperCase() + message.slice(1) : "The operation can no longer be canceled";
 }

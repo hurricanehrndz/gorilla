@@ -116,6 +116,28 @@ func (c *Client) StreamOperationStatus(ctx context.Context, operationID string, 
 	return err
 }
 
+// CancelOperation asks the service to cancel operationID. The service refuses
+// with operation_not_cancelable once the item's install or removal has started,
+// the operation has finished, or the operation is unknown.
+func (c *Client) CancelOperation(ctx context.Context, operationID string) error {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return errors.New("CancelOperation requires operationId")
+	}
+	resp, err := c.doRequest(ctx, newClientRequest(actionCancelOperation, "", operationID), nil)
+	if err != nil {
+		return err
+	}
+	payload, err := decodeEnvelopePayload[cancelOperationResponse](resp.Payload)
+	if err != nil {
+		return fmt.Errorf("failed to decode CancelOperation payload: %w", err)
+	}
+	if !payload.Canceled {
+		return errors.New("service did not cancel the operation")
+	}
+	return nil
+}
+
 func newClientRequest(action, itemName, operationID string) serviceEnvelope[any] {
 	req := serviceEnvelope[any]{
 		Version:      pipeProtocolVersion,
@@ -133,6 +155,8 @@ func newClientRequest(action, itemName, operationID string) serviceEnvelope[any]
 		req.Payload = removeItemRequest{ItemName: itemName}
 	case actionStreamOperationStatus:
 		req.Payload = streamOperationStatusRequest{}
+	case actionCancelOperation:
+		req.Payload = cancelOperationRequest{}
 	}
 	return req
 }
@@ -178,7 +202,7 @@ func decodeClientResponse(dec *json.Decoder, req serviceEnvelope[any], resp *ser
 		if strings.TrimSpace(resp.OperationID) == "" {
 			return errors.New("response is missing operationId")
 		}
-	case actionStreamOperationStatus:
+	case actionStreamOperationStatus, actionCancelOperation:
 		if resp.OperationID != req.OperationID {
 			return fmt.Errorf("unexpected response operationId %q", resp.OperationID)
 		}

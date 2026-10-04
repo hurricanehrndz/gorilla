@@ -118,19 +118,21 @@ Optional args:
 A real-package loop that installs and removes Google Chrome through the
 service, with the repository on the VM's own disk instead of an HTTP server.
 
-```bash
-utils/manual-test/e2e-chrome.sh -v win11-test      # needs devenv shell + windows-test-rig
-```
+The pieces are rig-agnostic; a host-side script that chains them for a
+particular VM rig is machine-local (see `AGENTS.local.md`). The loop:
 
-It runs `build-e2e-repo.sh` (downloads the Chrome enterprise MSI once into
+1. `utils/manual-test/build-e2e-repo.sh` (downloads the Chrome enterprise MSI once into
 `build/cache/`, renders `fixtures/e2e/packages-info/GoogleChrome.yaml.in` with
 the MSI's version and SHA-256, compiles the catalog with `makecatalogs`, and
-copies the selfserve fixtures and both binaries into `build/e2e-repo/`), ships
-the tar to `C:\gorilla-repo`, bootstraps the service with
-`-BaseUrl file://C:/gorilla-repo/ -Manifest e2e_manifest`, brands the UI by
-appending a `branding:` block (title, tagline, `fixtures/e2e/branding/logo.png`,
-help link, accent) to `config.yaml` and restarting the service, then runs two
-gates and a visual pass:
+copies the selfserve fixtures and both binaries into `build/e2e-repo/`).
+2. Copy `build/e2e-repo.tar` to the VM and extract it to `C:\gorilla-repo`
+   (`tar.exe -xf ... --strip-components=1`).
+3. `bootstrap-vm.ps1 -BaseUrl file://C:/gorilla-repo/ -Manifest e2e_manifest -Catalogs e2e_catalog -InstallService -StartService -NoPause`.
+4. Optionally brand the UI: copy `fixtures/e2e/branding/logo.png` to
+   `C:\ProgramData\gorilla\branding\`, append a `branding:` block (title,
+   tagline, logo path, help link, accent) to `config.yaml`, restart the service.
+5. Run the two gates, then launch `launch-wails-ui.ps1` on the desktop for the
+   visual check:
 
 - `run-selfserve-smoke.ps1` (prints `SELF-SERVE SMOKE PASSED`), reached here
   through `included_manifests`.
@@ -138,11 +140,15 @@ gates and a visual pass:
   the config branding, a policy `Title` under
   `HKLM\SOFTWARE\Policies\Gorilla\Branding` wins over it and removing it
   restores the config; then metadata and NotInstalled
-  status, streamed install to `Succeeded`, registry entry and `chrome.exe`,
+  status, a `CancelOperation` of a Chrome install queued behind a busy run
+  (ends `Canceled` by the user, nothing installed, selection reverted, a second
+  cancel refused), `Restart-Service` within 30 s while a run is busy,
+  streamed install to `Succeeded`, registry entry and `chrome.exe`,
   `inventory.json` contents and ACL, self-serve manifest, deferred removal while
   `chrome.exe` runs, then a real uninstall with every trace gone.
-- `gorilla-ui.exe` on the desktop, driven with the keyboard, with screenshots
-  under `build/e2e-shots/`, showing the branded banner and window title.
+- `gorilla-ui.exe` on the desktop (`launch-wails-ui.ps1`): judge Home, the
+  branded banner and window title, an install with the bottom strip, Cancel
+  while queued, the detail page and Activity by screenshot.
 
 Repository URL spellings (verified on Windows): `file://C:/gorilla-repo/`
 works; `file:///C:/gorilla-repo/` returns 404 from the file transport, and a

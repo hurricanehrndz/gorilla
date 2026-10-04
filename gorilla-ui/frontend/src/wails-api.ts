@@ -8,6 +8,7 @@ export const api: GorillaApi = {
   installItem: (itemName) => UIService.InstallItem(itemName),
   removeItem: (itemName) => UIService.RemoveItem(itemName),
   watchOperation: (operationId) => UIService.WatchOperation(operationId),
+  cancelOperation: (operationId) => UIService.CancelOperation(operationId),
   getBranding: () => UIService.GetBranding(),
   openExternal: (url) => Browser.OpenURL(url),
   onOperationStatus(handler) {

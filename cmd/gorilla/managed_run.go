@@ -24,7 +24,9 @@ var (
 	newReportFunc  = report.New
 )
 
-func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *report.Report, runErr error) {
+// managedRun runs one full pass. progress receives per-item events and cancels
+// lets the service withdraw items while the run is under way; both may be nil.
+func managedRun(cfg config.Configuration, progress installer.ProgressFn, cancels *installer.Cancels) (_ *report.Report, runErr error) {
 	// If not check-only, we need to run adminCheck().
 	if !cfg.CheckOnly {
 		admin, err := adminCheckFunc()
@@ -89,17 +91,18 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *rep
 	// user selections against the admin optional_installs, and queue deselected
 	// items for removal (R2, R4, R5).
 	selfServePath := manifest.SelfServePath(cfg.AppDataPath)
-	selfServe, err := manifest.LoadSelfServe(selfServePath)
+	var selfServe manifest.Item
+	var ssInstalls, ssUninstalls []string
+	// Defaults are asserted on every run, including check-only (Munki asserts
+	// during updatecheck), so save regardless of CheckOnly.
+	err = manifest.UpdateSelfServe(selfServePath, func(entry *manifest.Item) bool {
+		var changed bool
+		ssInstalls, ssUninstalls, changed = process.ReconcileSelfServe(entry, manifests)
+		selfServe = *entry
+		return changed
+	})
 	if err != nil {
-		return nil, fmt.Errorf("unable to load self-serve manifest: %w", err)
-	}
-	ssInstalls, ssUninstalls, changed := process.ReconcileSelfServe(&selfServe, manifests)
-	if changed {
-		// Defaults are asserted on every run, including check-only (Munki asserts
-		// during updatecheck), so save regardless of CheckOnly.
-		if err := manifest.SaveSelfServe(selfServePath, selfServe); err != nil {
-			return nil, fmt.Errorf("unable to save self-serve manifest: %w", err)
-		}
+		return nil, fmt.Errorf("unable to reconcile self-serve manifest: %w", err)
 	}
 	installs = append(installs, ssInstalls...)
 	uninstalls = append(uninstalls, ssUninstalls...)
@@ -111,6 +114,7 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *rep
 		Report:      run,
 		Checker:     &status.Checker{},
 		Emit:        progress,
+		Cancels:     cancels,
 		URLPackages: cfg.URLPackages,
 		CachePath:   cfg.CachePath,
 		CheckOnly:   cfg.CheckOnly,
@@ -143,10 +147,13 @@ func managedRun(cfg config.Configuration, progress installer.ProgressFn) (_ *rep
 	// Prune self-serve uninstalls that are confirmed gone so the user can
 	// reinstall later (R5). Only after a real run, never in check-only.
 	if !cfg.CheckOnly {
-		if process.PruneSelfServeUninstalls(&selfServe, catalogs, runner.Checker, cfg.CachePath) {
-			if err := manifest.SaveSelfServe(selfServePath, selfServe); err != nil {
-				return nil, fmt.Errorf("unable to save self-serve manifest after prune: %w", err)
-			}
+		// Prune a fresh copy, not selfServe: a user cancel may have changed the
+		// file since the run began, and saving the old copy would undo it.
+		err := manifest.UpdateSelfServe(selfServePath, func(entry *manifest.Item) bool {
+			return process.PruneSelfServeUninstalls(entry, catalogs, runner.Checker, cfg.CachePath)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("unable to save self-serve manifest after prune: %w", err)
 		}
 	}
 

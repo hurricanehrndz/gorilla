@@ -186,7 +186,7 @@ func TestValidateCommandInstallItemRequiresOneArgument(t *testing.T) {
 func TestExecuteCommandRunPassesProgressCallback(t *testing.T) {
 	called := false
 	progress := func(catalog.Item, string, int, string) { called = true }
-	_, err := executeCommand(config.Configuration{}, Command{Action: actionRun, progress: progress}, func(_ config.Configuration, got installer.ProgressFn) (*report.Report, error) {
+	_, err := executeCommand(config.Configuration{}, Command{Action: actionRun, progress: progress}, func(_ config.Configuration, got installer.ProgressFn, _ *installer.Cancels) (*report.Report, error) {
 		got(catalog.Item{}, "installing", 50, "")
 		return nil, nil
 	})
@@ -245,5 +245,15 @@ func TestBrandingSummaryReplacesLogoWithSize(t *testing.T) {
 	}
 	if strings.Contains(line, "logoBase64") || !strings.Contains(line, `"logoBytes":4`) || !strings.Contains(line, `"title":"Acme"`) {
 		t.Fatalf("summary %s", line)
+	}
+}
+
+func TestParseCommandSpecCancelOperation(t *testing.T) {
+	cmd, err := parseCommandSpec("canceloperation:12345")
+	if err != nil || cmd.Action != actionCancelOperation || len(cmd.Items) != 1 || cmd.Items[0] != "12345" {
+		t.Fatalf("parseCommandSpec = %#v, %v", cmd, err)
+	}
+	if _, err := parseCommandSpec("CancelOperation"); err == nil {
+		t.Fatal("CancelOperation without an operationId must be rejected")
 	}
 }

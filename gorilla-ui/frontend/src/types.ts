@@ -32,6 +32,8 @@ export type ActivityRecord = {
   progressPercent?: number;
   /** The wire errorMessage on its own, so an outcome line can quote just it. */
   detail?: string;
+  /** Who ended a Canceled operation: "user" or "service". */
+  canceledBy?: string;
 };
 
 /** OperationOutcome is where a locally initiated operation has got to. */
@@ -44,6 +46,10 @@ export type OperationView = {
   action: ItemAction;
   records: ActivityRecord[];
   outcome: OperationOutcome;
+  /** Set while a CancelOperation request for this operation is in flight. */
+  cancelPending?: boolean;
+  /** The service's reason for refusing a cancel, shown on the card until the end. */
+  notice?: string;
 };
 
 /** ActiveOperations maps an accepted, non-terminal operationId to its item. */

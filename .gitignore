@@ -46,3 +46,6 @@ devenv.local.nix
 
 # Machine-local agent instructions (test rig details); see AGENTS.md
 AGENTS.local.md
+
+# Machine-local agent/test-rig helpers (rig orchestrators); see AGENTS.local.md
+.claude/
