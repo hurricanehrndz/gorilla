@@ -23,10 +23,11 @@ func resetMainHooks() {
 	mkdirAllFunc = os.MkdirAll
 	newReportFunc = report.New
 	managedRunFunc = managedRun
-	runServiceFunc = func(cfg config.Configuration) error { return service.Run(cfg, managedRunFunc) }
+	runServiceFunc = runService
 	sendServiceCommandFunc = service.SendCommand
 	runServiceActionFunc = service.RunAction
 	serviceStatusFunc = service.ServiceStatus
+	protectAppDataFunc = func(string) error { return nil }
 }
 
 func TestRunAdminCheckError(t *testing.T) {
@@ -607,4 +608,33 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 
 	return fmt.Sprint(buf.String())
+}
+
+// TestRouteServiceInstallProtectsAppData: -serviceinstall must protect the
+// data directory, and a failure to do so must not stop the install.
+func TestRouteServiceInstallProtectsAppData(t *testing.T) {
+	resetMainHooks()
+	defer resetMainHooks()
+
+	protected := ""
+	installed := false
+	protectAppDataFunc = func(path string) error {
+		protected = path
+		return errors.New("access denied")
+	}
+	runServiceActionFunc = func(cfg config.Configuration, action string) error {
+		installed = action == "install"
+		return nil
+	}
+
+	cfg := config.Configuration{ServiceInstall: true, AppDataPath: `C:\ProgramData\gorilla`}
+	if err := route(cfg); err != nil {
+		t.Fatalf("route: %v", err)
+	}
+	if protected != cfg.AppDataPath {
+		t.Errorf("protected %q, want %q", protected, cfg.AppDataPath)
+	}
+	if !installed {
+		t.Error("install did not run after the protect failure")
+	}
 }

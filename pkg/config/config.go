@@ -56,7 +56,7 @@ Options:
 -V, -version        display the version number
 -s, -service        run Gorilla as a Windows service
 -S, -servicecmd     send a command to a running Gorilla service (GetServiceInfo|ListOptionalInstalls|GetBranding|InstallItem:itemName|RemoveItem:itemName|StreamOperationStatus:operationId|CancelOperation:operationId)
--serviceinstall     install Gorilla as a Windows service
+-serviceinstall     install Gorilla as a Windows service and restrict its data directory to SYSTEM and Administrators
 -serviceremove      remove Gorilla Windows service
 -servicestart       start Gorilla Windows service
 -servicestop        stop Gorilla Windows service
