@@ -10,9 +10,13 @@ import (
 
 // testPipeName points the socket directory at a fresh temporary directory for
 // the test. os.MkdirTemp keeps the path short: a socket path is limited to
-// about 104 bytes.
+// about 104 bytes. The test serves the socket as itself, not as root, so its
+// clients trust its own uid.
 func testPipeName(t *testing.T) string {
 	t.Helper()
+	originalUID := trustedServerUID
+	trustedServerUID = uint32(os.Getuid())
+	t.Cleanup(func() { trustedServerUID = originalUID })
 	dir, err := os.MkdirTemp("", "gorilla")
 	if err != nil {
 		t.Fatal(err)
@@ -24,6 +28,14 @@ func testPipeName(t *testing.T) string {
 		_ = os.RemoveAll(dir)
 	})
 	return "gorilla-test"
+}
+
+// distrustTestServer makes clients expect a uid the test's server is not.
+func distrustTestServer(t *testing.T) {
+	t.Helper()
+	original := trustedServerUID
+	trustedServerUID = uint32(os.Getuid()) + 1
+	t.Cleanup(func() { trustedServerUID = original })
 }
 
 // The socket is the Unix stand-in for the pipe's DACL: any local user may

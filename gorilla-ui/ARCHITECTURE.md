@@ -26,10 +26,21 @@ and `gorilla -S`, both through `pkg/service.Client`).
 
 The service speaks [JSON-RPC 2.0](https://www.jsonrpc.org/specification): one
 JSON object per line, one request per connection. On Windows the transport is
-the named pipe `\\.\pipe\gorilla-service` (DACL: SYSTEM and Administrators full,
-Authenticated Users read/write). Elsewhere it is the Unix socket
+the named pipe `\\.\pipe\gorilla-service`, owned by the service's user
+(LocalSystem), with a protected DACL: SYSTEM and Administrators full,
+Authenticated Users read and write but not `FILE_CREATE_PIPE_INSTANCE`, so no
+user can add a server instance. Remote clients are rejected. The service
+creates the first instance with `FILE_FLAG_FIRST_PIPE_INSTANCE` and always
+keeps one listening, so if another process holds the name the service fails to
+start ("pipe ... already exists") rather than serve beside it. Before sending
+anything a client checks that the pipe's owner is LocalSystem, which only a
+SYSTEM process can set, and refuses the pipe otherwise; it also connects at
+identification level, so the server can tell who it is but never act as it.
+(The owner stands in for the server process's token, which a standard user
+cannot open.) Elsewhere it is the Unix socket
 `/run/gorilla/gorilla-service.sock` (Linux) or `/var/run/gorilla/...` (macOS),
-mode 0666 in a 0755 directory; only tests run the service there today.
+mode 0666 in a 0755 directory, and a client refuses a socket whose peer
+credentials are not root's; only tests run the service there today.
 
 A request has a string `id`, a camelCase `method` and an object `params`. The
 answer echoes the `id` with a `result` or an `error`:

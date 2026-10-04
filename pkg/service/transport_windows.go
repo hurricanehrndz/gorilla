@@ -19,8 +19,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// The Windows transport is a named pipe, \\.\pipe\<name>, readable and
-// writable by Authenticated Users. It uses synchronous handles, so nothing
+// The Windows transport is a named pipe, \\.\pipe\<name>, that Authenticated
+// Users can connect to but not serve. It uses synchronous handles, so nothing
 // interrupts a blocked ConnectNamedPipe except a client connecting: Close
 // connects to the pipe itself to wake Accept.
 
@@ -32,27 +32,46 @@ var (
 type pipeListener struct {
 	path   string
 	closed atomic.Bool
+	// next is the instance Accept waits on. Accept creates the following
+	// instance before it hands this one over, so while the listener is open
+	// the name always has an instance and no other process can take it.
+	next windows.Handle
 }
 
+// listen creates the pipe's first instance. If any process already has an
+// instance of the name, that fails: a squatter cannot sit on the name and
+// have the service quietly become a second server beside it.
 func listen(name string) (listener, error) {
-	return &pipeListener{path: servicePipePath(name)}, nil
+	path := servicePipePath(name)
+	first, err := createNamedPipe(path, true)
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return nil, fmt.Errorf("pipe %s already exists: another process holds the name (a second Gorilla service, or one impersonating it): %w", path, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create pipe %s: %w", path, err)
+	}
+	return &pipeListener{path: path, next: first}, nil
 }
 
-// Accept creates a pipe instance and waits for a client to connect to it.
+// Accept waits for a client on the current instance and returns it.
 func (l *pipeListener) Accept() (clientConn, error) {
 	for {
 		if l.closed.Load() {
 			return nil, net.ErrClosed
 		}
-		handle, err := createNamedPipe(l.path)
-		if err != nil {
-			return nil, fmt.Errorf("create pipe: %w", err)
-		}
-		err = windows.ConnectNamedPipe(handle, nil)
+		handle := l.next
+		err := windows.ConnectNamedPipe(handle, nil)
 		if l.closed.Load() {
 			_ = windows.CloseHandle(handle)
 			return nil, net.ErrClosed
 		}
+		next, createErr := createNamedPipe(l.path, false)
+		if createErr != nil {
+			_ = windows.CloseHandle(handle)
+			l.closed.Store(true) // l.next is gone; a later Accept must not wait on it
+			return nil, fmt.Errorf("create pipe: %w", createErr)
+		}
+		l.next = next
 		if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
 			_ = windows.CloseHandle(handle)
 			if errors.Is(err, windows.ERROR_NO_DATA) || errors.Is(err, windows.ERROR_OPERATION_ABORTED) {
@@ -165,12 +184,27 @@ func flushAndDisconnectNamedPipe(handle windows.Handle) {
 	}
 }
 
-// pipeSecurityDescriptor grants SYSTEM and Administrators full access and
-// Authenticated Users read/write, with inheritance blocked.
-const pipeSecurityDescriptor = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)"
+// pipeDACL grants SYSTEM and Administrators full access and Authenticated
+// Users read and write (0x12019b: FILE_GENERIC_READ|FILE_GENERIC_WRITE less
+// FILE_CREATE_PIPE_INSTANCE), with inheritance blocked. Without that one
+// right a user cannot add a server instance that clients would connect to.
+const pipeDACL = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019b;;;AU)"
 
-func createNamedPipe(pipePath string) (windows.Handle, error) {
-	sd, err := windows.SecurityDescriptorFromString(pipeSecurityDescriptor)
+// pipeSecurityDescriptor is pipeDACL with the service's own user as owner.
+// As SYSTEM that is LocalSystem, an owner no ordinary user can give a pipe,
+// which is what clients check before they send anything.
+func pipeSecurityDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, fmt.Errorf("read the service user: %w", err)
+	}
+	return windows.SecurityDescriptorFromString("O:" + user.User.Sid.String() + pipeDACL)
+}
+
+// createNamedPipe creates an instance of the pipe; first fails if the name
+// already has one. Remote clients are rejected: the service is local only.
+func createNamedPipe(pipePath string, first bool) (windows.Handle, error) {
+	sd, err := pipeSecurityDescriptor()
 	if err != nil {
 		return windows.InvalidHandle, fmt.Errorf("security descriptor: %w", err)
 	}
@@ -186,10 +220,14 @@ func createNamedPipe(pipePath string) (windows.Handle, error) {
 		return windows.InvalidHandle, err
 	}
 
+	openMode := uint32(windows.PIPE_ACCESS_DUPLEX)
+	if first {
+		openMode |= windows.FILE_FLAG_FIRST_PIPE_INSTANCE
+	}
 	return windows.CreateNamedPipe(
 		name,
-		windows.PIPE_ACCESS_DUPLEX,
-		windows.PIPE_TYPE_MESSAGE|windows.PIPE_READMODE_MESSAGE|windows.PIPE_WAIT,
+		openMode,
+		windows.PIPE_TYPE_MESSAGE|windows.PIPE_READMODE_MESSAGE|windows.PIPE_WAIT|windows.PIPE_REJECT_REMOTE_CLIENTS,
 		windows.PIPE_UNLIMITED_INSTANCES,
 		64*1024,
 		64*1024,
@@ -198,8 +236,60 @@ func createNamedPipe(pipePath string) (windows.Handle, error) {
 	)
 }
 
+// trustedPipeOwner is the owner the service's pipe must have: LocalSystem.
+// Tests, which serve the pipe as themselves, trust their own user instead.
+var trustedPipeOwner = func() (*windows.SID, error) {
+	return windows.CreateWellKnownSid(windows.WinLocalSystemSid)
+}
+
+// dial connects to the service and checks that the pipe is the service's
+// before anything is sent: a process that took the name while the service was
+// down would otherwise receive requests and show the user what it likes.
 func dial(ctx context.Context, name string, timeout time.Duration) (io.ReadWriteCloser, error) {
-	return openPipeContext(ctx, servicePipePath(name), timeout)
+	path := servicePipePath(name)
+	conn, err := openPipeContext(ctx, path, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyPipeOwner(windows.Handle(conn.Fd()), path); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// verifyPipeOwner checks that the pipe behind a client handle is owned by
+// trustedPipeOwner. Only a process running as that user can create a pipe
+// with that owner, and the DACL keeps everyone else from adding an instance.
+//
+// The owner stands in for the server process's token: GetNamedPipeServerProcessId
+// names the process, but a standard user cannot open a SYSTEM process's token.
+func verifyPipeOwner(handle windows.Handle, path string) error {
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("read the owner of %s: %w", path, err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return fmt.Errorf("read the owner of %s: %w", path, err)
+	}
+	want, err := trustedPipeOwner()
+	if err != nil {
+		return err
+	}
+	if !owner.Equals(want) {
+		return fmt.Errorf("refusing %s: it is owned by %s, not %s, so it is not the Gorilla service", path, accountName(owner), accountName(want))
+	}
+	return nil
+}
+
+// accountName is DOMAIN\user for sid, or the SID string.
+func accountName(sid *windows.SID) string {
+	account, domain, _, err := sid.LookupAccount("")
+	if err != nil {
+		return sid.String()
+	}
+	return domain + `\` + account
 }
 
 func servicePipePath(pipeName string) string {
@@ -225,11 +315,14 @@ func openPipeContext(ctx context.Context, pipePath string, timeout time.Duration
 		}
 		handle, err := windows.CreateFile(
 			pathPtr,
-			windows.GENERIC_READ|windows.GENERIC_WRITE,
+			// Read and write without FILE_APPEND_DATA, which on a pipe is
+			// FILE_CREATE_PIPE_INSTANCE and is not granted to users.
+			windows.GENERIC_READ|windows.FILE_WRITE_DATA,
 			0,
 			nil,
 			windows.OPEN_EXISTING,
-			windows.FILE_ATTRIBUTE_NORMAL,
+			// The server may identify the client, never act as it.
+			windows.FILE_ATTRIBUTE_NORMAL|windows.SECURITY_SQOS_PRESENT|windows.SECURITY_IDENTIFICATION,
 			0,
 		)
 		if err == nil {

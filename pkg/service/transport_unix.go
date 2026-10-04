@@ -99,11 +99,30 @@ func (c unixConn) Peer() (peer, error) {
 	return peer{Name: u.Username, ID: id}, nil
 }
 
+// trustedServerUID is the user the service runs as: root. Tests, which serve
+// the socket as themselves, trust their own uid instead.
+var trustedServerUID uint32
+
+// dial connects to the service and checks, from the socket's peer
+// credentials, that it runs as trustedServerUID before anything is sent.
 func dial(ctx context.Context, name string, timeout time.Duration) (io.ReadWriteCloser, error) {
+	path := socketPath(name)
 	dialer := net.Dialer{Timeout: timeout}
-	conn, err := dialer.DialContext(ctx, "unix", socketPath(name))
-	if err != nil && errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("service is not running: %w", err)
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("service is not running: %w", err)
+		}
+		return nil, err
 	}
-	return conn, err
+	uid, err := peerUID(conn.(*net.UnixConn))
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("read the server's credentials on %s: %w", path, err)
+	}
+	if uid != trustedServerUID {
+		_ = conn.Close()
+		return nil, fmt.Errorf("refusing %s: it is served by uid %d, not %d, so it is not the Gorilla service", path, uid, trustedServerUID)
+	}
+	return conn, nil
 }
