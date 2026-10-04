@@ -311,7 +311,9 @@ func (sr *serviceRunner) serve(ctx context.Context) error {
 					<-sr.handlerSem
 				}()
 				sr.handleConn(ctx, conn)
-				_ = conn.Close()
+				// On Windows Close flushes, which waits until the client has read
+				// everything; one that never reads must not keep the slot.
+				_ = within(conn, writeTimeout, conn.Close)
 			}()
 		default:
 			// The request is not read, so its id is unknown: JSON-RPC answers

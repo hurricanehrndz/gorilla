@@ -227,7 +227,9 @@ func createNamedPipe(pipePath string, first bool) (windows.Handle, error) {
 	return windows.CreateNamedPipe(
 		name,
 		openMode,
-		windows.PIPE_TYPE_MESSAGE|windows.PIPE_READMODE_MESSAGE|windows.PIPE_WAIT|windows.PIPE_REJECT_REMOTE_CLIENTS,
+		// Byte mode: the protocol is newline-delimited, and in message mode a
+		// request longer than one read failed with ERROR_MORE_DATA.
+		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT|windows.PIPE_REJECT_REMOTE_CLIENTS,
 		windows.PIPE_UNLIMITED_INSTANCES,
 		64*1024,
 		64*1024,

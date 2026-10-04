@@ -839,3 +839,31 @@ func TestCommandFailureDoesNotEchoTheError(t *testing.T) {
 		t.Fatalf("command_failed message leaks the error: %q", resp.Error.Message)
 	}
 }
+
+// A client that sends a request and never reads the answer must not keep its
+// handler slot either: on Windows closing the connection flushes, which waits
+// until the client has read everything.
+func TestClientThatNeverReadsReleasesItsHandlerSlot(t *testing.T) {
+	shortenTimeout(t, &writeTimeout, 200*time.Millisecond)
+	cfg := testServiceConfig(t)
+	sr, _ := startTestRunner(t, cfg, noopRun)
+
+	conn, err := dial(context.Background(), cfg.ServicePipeName, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial service: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := io.WriteString(conn, `{"jsonrpc":"2.0","id":"x","method":"getServiceInfo"}`+"\n"); err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		time.Sleep(50 * time.Millisecond)
+		if len(sr.handlerSem) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d handler slots still held by a client that never reads", len(sr.handlerSem))
+		}
+	}
+}
