@@ -24,10 +24,15 @@ objects.
 ## Backend surface
 
 Six bound methods and exactly one event channel, `gorilla:operation-status`.
-Each status record carries `operationId`, `itemName`, `displayName`, `state`,
-item-scoped `progressPercent`, `message`, timestamp, and terminal
-error/cancellation fields. The frontend subscribes once and routes records by
-`operationId`.
+Each status record carries `operationId`, `seq`, `itemName`, `displayName`,
+`state`, item-scoped `progressPercent`, `message`, a millisecond `timestampUtc`,
+and terminal error/cancellation fields. The frontend subscribes once, routes
+records by `operationId` and orders each operation's records by `seq`.
+
+Behind the bindings, `pkg/service.Client` talks JSON-RPC 2.0 to the service over
+the named pipe; the "Protocol" section of `ARCHITECTURE.md` is the contract.
+Service errors reach the frontend as `<data.code>: <message>`, for example
+`operation_not_cancelable: ...` or `server_busy: ...`.
 
 ## Progress semantics
 

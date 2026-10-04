@@ -15,11 +15,92 @@ The Wails process runs as the interactive standard user. The SYSTEM Gorilla serv
 
 `WatchOperation` uses Wails' application-lifetime context and emits typed records only on `gorilla:operation-status`. The frontend imports generated calls through `frontend/src/wails-api.ts`.
 
+## Protocol
+
+This section is the contract between the service and its clients (`gorilla-ui`
+and `gorilla -S`, both through `pkg/service.Client`).
+
+The service speaks [JSON-RPC 2.0](https://www.jsonrpc.org/specification): one
+JSON object per line, one request per connection. On Windows the transport is
+the named pipe `\\.\pipe\gorilla-service` (DACL: SYSTEM and Administrators full,
+Authenticated Users read/write). Elsewhere it is the Unix socket
+`/run/gorilla/gorilla-service.sock` (Linux) or `/var/run/gorilla/...` (macOS),
+mode 0666 in a 0755 directory; only tests run the service there today.
+
+A request has a string `id`, a camelCase `method` and an object `params`. The
+answer echoes the `id` with a `result` or an `error`:
+
+```json
+{"jsonrpc":"2.0","id":"1759580000000000000","method":"installItem","params":{"itemName":"GoogleChrome"}}
+{"jsonrpc":"2.0","id":"1759580000000000000","result":{"operationId":"1759580000123456789","accepted":true,"queuedAtUtc":"2026-10-04T12:00:00.123Z"}}
+```
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `getServiceInfo` | none | `{version, protocolVersion: "2.0", apiVersion: 1, capabilities: [methods], busy, uptimeSeconds}` |
+| `listOptionalInstalls` | none | `{items: [OptionalInstallItem]}` |
+| `getBranding` | none | `Branding` |
+| `installItem` | `{itemName}` | `AcceptedOperation` |
+| `removeItem` | `{itemName}` | `AcceptedOperation` |
+| `cancelOperation` | `{operationId}` | `{canceled: true}` |
+| `streamOperationStatus` | `{operationId}` | `{streamAccepted: true}`, then notifications |
+
+`getServiceInfo`, `getBranding`, the two mutations and `cancelOperation` skip the
+command queue and answer while a managed run is under way;
+`listOptionalInstalls` waits behind it. `apiVersion` changes only for a breaking
+change to these methods; additions show up in `capabilities`.
+
+`streamOperationStatus` answers with its result and then sends every record of
+the operation, from the first, as `operationStatus` notifications on the same
+connection, until a terminal record, and closes:
+
+```json
+{"jsonrpc":"2.0","method":"operationStatus","params":{"operationId":"1759580000123456789","seq":2,"timestampUtc":"2026-10-04T12:00:01.480Z","itemName":"GoogleChrome","displayName":"Google Chrome","state":"Downloading","progressPercent":40,"message":"Downloading"}}
+```
+
+`seq` numbers an operation's records from 1 in the order the service recorded
+them, and `timestampUtc` is RFC 3339 UTC with milliseconds. Records can reach
+the frontend out of order (Wails emits each event on its own goroutine), so the
+frontend files them by `seq`, and Activity by time and then `seq`.
+
+Errors use the standard codes for malformed requests and the server range for
+application errors. `data.code` is the stable string clients branch on, and
+`data.operationId` names the operation when there is one:
+
+```json
+{"jsonrpc":"2.0","id":"1759580000000000001","error":{"code":-32002,"message":"operation can no longer be canceled: work on Google Chrome has already started","data":{"code":"operation_not_cancelable","operationId":"1759580000123456789"}}}
+```
+
+| Code | `data.code` | When |
+| --- | --- | --- |
+| -32700 | `parse_error` | the line is not JSON |
+| -32600 | `invalid_request` | not a JSON-RPC 2.0 request object (batches included) |
+| -32601 | `method_not_found` | unknown method |
+| -32602 | `invalid_params` | a required param is missing or of the wrong type |
+| -32603 | `internal_error` | the service panicked while handling the request |
+| -32000 | `server_busy` | every handler slot is taken; sent before reading the request, so `id` is null |
+| -32001 | `command_failed` | the command failed (for example the manifest fetch) |
+| -32002 | `operation_not_cancelable` | cancel refused: the item was acted on, the operation finished, or it is unknown |
+| -32003 | `unknown_operation` | stream of an operation the service does not track |
+| -32004 | `item_not_available` | `installItem` for an item not offered for self-service |
+
+The service does not support batches, and it does not act on a request without
+an `id` (a notification): it closes the connection without a reply. The
+`errorCode` inside a status record (`managed_run_failed`, `item_failed`,
+`blocked_by_running_app`) describes the operation's outcome, not the call.
+
+The transport is the only per-platform part of `pkg/service`:
+`transport_windows.go` and `transport_unix.go` each provide `listen` and `dial`.
+The protocol, dispatch, command queue, operation tracking, streaming and cancel
+live in portable files, so `go test ./pkg/service` runs the service over a real
+Unix socket on Linux and macOS. Installing and controlling the service stays
+Windows-only.
+
 ## Progress state machine
 
 `pkg/service` attaches an operation-scoped `installer.ProgressFn` to the run's
 `installer.Runner.Emit`, so every record names a real item. Runner states map to
-pipe states `Downloading`, `Installing`, `Removing`, `ItemCompleted`, and
+record states `Downloading`, `Installing`, `Removing`, `ItemCompleted`, and
 `ItemFailed`; all five are non-terminal. Only `Succeeded`, `Failed`, `Deferred`,
 and `Canceled` — from the requested item's real run report, a service
 cancellation or error, or a user cancel — end an operation.
