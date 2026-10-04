@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -652,5 +653,59 @@ func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
 		if err == nil || !strings.HasPrefix(err.Error(), "operation_not_cancelable:") {
 			t.Fatalf("CancelOperation(%s) error = %v, want operation_not_cancelable", id, err)
 		}
+	}
+}
+
+// InstallItem and RemoveItem answer while a run holds the command queue: they
+// only write the selection. Waiting behind the run used to hit the client's
+// 30 s timeout on long installs while the request still went through later.
+func TestMutationReturnsWhileRunIsBusy(t *testing.T) {
+	cfg := config.Configuration{
+		AppDataPath:     t.TempDir(),
+		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
+		ServiceInterval: "1h",
+		ServiceMode:     true,
+		ServiceName:     "gorilla-test",
+	}
+	stubOptional(t, "Slack")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return nil, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sr.start(ctx); err != nil {
+		t.Fatalf("service start failed: %v", err)
+	}
+	defer func() {
+		cancel()
+		sr.stop(context.Background())
+	}()
+	defer close(release)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the start-up run never began")
+	}
+
+	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer callCancel()
+	client := NewClient(cfg.ServicePipeName)
+	accepted, err := client.InstallItem(callCtx, "Slack")
+	if err != nil {
+		t.Fatalf("InstallItem behind a busy run failed: %v", err)
+	}
+	if got := loadManifest(t, cfg).Installs; !slices.Equal(got, []string{"Slack"}) {
+		t.Fatalf("the selection was not written at once: %v", got)
+	}
+	events, done, ok := sr.snapshotTrackedOperation(accepted.OperationID)
+	if !ok || done || events[len(events)-1].State != "Queued" {
+		t.Fatalf("operation should be open and Queued: ok=%v done=%v events=%#v", ok, done, events)
+	}
+	if _, err := client.RemoveItem(callCtx, "Slack"); err != nil {
+		t.Fatalf("RemoveItem behind a busy run failed: %v", err)
 	}
 }

@@ -410,6 +410,15 @@ func (sr *serviceRunner) handlePipeCommand(ctx context.Context, file *os.File) {
 		// Branding is a read-only lookup the UI makes before opening its window,
 		// so it skips the command queue rather than wait behind a managed run.
 		resp, err = sr.executeCommandSafe(cmd)
+	case actionInstallItem, actionRemoveItem:
+		// A mutation only writes the self-serve selection, under
+		// manifest.UpdateSelfServe's lock, so it answers at once instead of
+		// waiting behind a busy run; only the run it schedules below goes
+		// through the queue. A mutation that lands mid-run does not change that
+		// run: it keeps the plan it loaded, and the queued run reconciles the
+		// newer selection afterwards. The run's own self-serve writes reload
+		// under the same lock, so neither side loses the other's change.
+		resp, err = sr.executeCommandSafe(cmd)
 	case actionCancelOperation:
 		// A cancel must not wait in the queue behind the run it is meant to stop.
 		resp, err = CommandResponse{Status: "ok", OperationID: cmd.Items[0]}, sr.cancelOperation(cmd.Items[0])

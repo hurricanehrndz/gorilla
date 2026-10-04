@@ -50,8 +50,10 @@ func (c *Cancels) Cancel(name string) bool {
 	return true
 }
 
-// Reset forgets everything about name; the service calls it when a new
-// install or removal of name is requested.
+// Reset drops a withdrawal of name; the service calls it when a new install or
+// removal of name is requested, which can happen while a run is under way. It
+// leaves alone whether that run is acting on name: a cancel must still refuse
+// while an installer for name runs.
 func (c *Cancels) Reset(name string) {
 	if c == nil {
 		return
@@ -59,14 +61,12 @@ func (c *Cancels) Reset(name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.canceled, name)
-	delete(c.acting, name)
 }
 
-// EndRun drops the withdrawals once a run has finished. The cancel also
-// reverted the self-serve selection, so later runs do not pick the item up
-// again, and an item an admin manifest also requires must not stay skipped.
-// Which items were acted on is kept, so a cancel still refuses them until a new
-// request Resets the name.
+// EndRun forgets the finished run: its withdrawals and the items it acted on.
+// A cancel also reverted the self-serve selection, so later runs do not pick
+// the item up again, and an item an admin manifest also requires must not stay
+// skipped. An operation whose run has finished is refused as finished instead.
 func (c *Cancels) EndRun() {
 	if c == nil {
 		return
@@ -74,6 +74,7 @@ func (c *Cancels) EndRun() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	clear(c.canceled)
+	clear(c.acting)
 }
 
 func (c *Cancels) withdrawn(name string) bool {

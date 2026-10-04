@@ -62,8 +62,12 @@ ends the operation with `Canceled` and `canceledBy: "user"`. The card then
 reads "Canceled" as plain text until the next action, and Activity reads
 "Canceled by you".
 
-Self-serve manifest writes go through `manifest.UpdateSelfServe`, an in-process
-lock with a fresh load, because a cancel can now write while a run is under way.
+`InstallItem` and `RemoveItem` do not wait for the command queue either: they
+write the selection, register the operation as `Queued` and answer at once, and
+only the run they schedule is queued. A mutation that lands mid-run leaves that
+run on the plan it loaded; the queued run picks up the newer selection. All
+self-serve manifest writes, the run's included, go through
+`manifest.UpdateSelfServe`, an in-process lock with a fresh load.
 
 Installed and managed state come only from an authoritative `ListOptionalInstalls`
 refresh performed after a terminal record, never from progress records. A failed
