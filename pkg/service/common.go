@@ -2,15 +2,15 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/1dustindavis/gorilla/pkg/branding"
 	"github.com/1dustindavis/gorilla/pkg/catalog"
@@ -257,7 +257,7 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 		}
 		// A new request starts the item's cancel bookkeeping afresh.
 		cmd.cancels.Reset(cmd.Items[0])
-		operationID := strconv.FormatInt(time.Now().UnixNano(), 10)
+		operationID := newOperationID()
 		return CommandResponse{Status: "ok", OperationID: operationID, displayName: displayName, prior: prior, requested: selectedForInstall}, nil
 	case actionRemoveItem:
 		prior, err := removeServiceManagedInstall(cfg, cmd.Items[0])
@@ -265,7 +265,7 @@ func executeCommand(cfg config.Configuration, cmd Command, managedRun func(confi
 			return CommandResponse{}, err
 		}
 		cmd.cancels.Reset(cmd.Items[0])
-		operationID := strconv.FormatInt(time.Now().UnixNano(), 10)
+		operationID := newOperationID()
 		return CommandResponse{Status: "ok", OperationID: operationID, prior: prior, requested: selectedForRemoval}, nil
 	case actionListOptionalInstalls:
 		items, err := getOptionalItems(cfg)
@@ -569,4 +569,13 @@ func orDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// newOperationID returns 128 random bits, hex encoded. Any local user can
+// stream or cancel an operation by its ID, so an ID must not be guessable,
+// and two requests in the same clock tick must not share one.
+func newOperationID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:]) // crypto/rand.Read never returns an error
+	return hex.EncodeToString(b[:])
 }

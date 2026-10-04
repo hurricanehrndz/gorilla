@@ -34,6 +34,12 @@ the named pipe; the "Protocol" section of `ARCHITECTURE.md` is the contract.
 Service errors reach the frontend as `<data.code>: <message>`, for example
 `operation_not_cancelable: ...` or `server_busy: ...`.
 
+Gorilla assumes one interactive user per machine. Self-service selections
+belong to the machine, not to a user: on a shared machine (fast user
+switching, Remote Desktop Services) every user sees, and can change, the one
+self-service selection. Operation IDs are 128 random bits, so a user cannot
+guess another user's operation to watch or cancel it.
+
 ## Progress semantics
 
 - `progressPercent` is **per item**. It may reset when the event's item changes

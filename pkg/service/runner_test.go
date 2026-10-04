@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -608,8 +609,20 @@ func TestMutationReturnsWhileRunIsBusy(t *testing.T) {
 	if !ok || done || events[len(events)-1].State != "Queued" {
 		t.Fatalf("operation should be open and Queued: ok=%v done=%v events=%#v", ok, done, events)
 	}
-	if _, err := client.RemoveItem(callCtx, "Slack"); err != nil {
+	removed, err := client.RemoveItem(callCtx, "Slack")
+	if err != nil {
 		t.Fatalf("RemoveItem behind a busy run failed: %v", err)
+	}
+	// Any local user can stream or cancel an operation by its ID, so IDs are
+	// 128 random bits rather than a timestamp, which also could repeat when
+	// two mutations land in one clock tick.
+	for _, id := range []string{accepted.OperationID, removed.OperationID} {
+		if _, err := hex.DecodeString(id); err != nil || len(id) != 32 {
+			t.Fatalf("operation ID %q is not 32 hex characters", id)
+		}
+	}
+	if accepted.OperationID == removed.OperationID {
+		t.Fatalf("two operations share the ID %s", accepted.OperationID)
 	}
 }
 
