@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -349,7 +350,7 @@ func TestIfNeededValid(t *testing.T) {
 	defer ts.Close()
 
 	// Run the function with our test data and a validHash
-	valid := IfNeeded(tempFile, ts.URL+"/hashtest.txt", validHash)
+	valid := IfNeeded(context.Background(), tempFile, ts.URL+"/hashtest.txt", validHash)
 	if !valid {
 		t.Error("Unable to download valid file: ", ts.URL+"/hashtest.txt")
 	}
@@ -394,7 +395,7 @@ func TestIfNeededInvalid(t *testing.T) {
 	defer ts.Close()
 
 	// Run the function with our test data and a validHash
-	valid := IfNeeded(tempFile, ts.URL+"/hashtest.txt", validHash)
+	valid := IfNeeded(context.Background(), tempFile, ts.URL+"/hashtest.txt", validHash)
 	if !valid {
 		t.Error("Unable to download valid file: ", ts.URL+"/hashtest.txt")
 	}
@@ -424,5 +425,26 @@ func TestGetBadURL(t *testing.T) {
 	}
 	if body != nil {
 		t.Errorf("expected nil body, got %q", body)
+	}
+}
+
+// A user cancel must stop a download part way rather than let it run to the
+// end, so IfNeeded gives up as soon as its context is cancelled.
+func TestIfNeededStopsWhenContextIsCancelled(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	begin := time.Now()
+	if IfNeeded(ctx, filepath.Join(t.TempDir(), "slow.msi"), ts.URL+"/slow.msi", validHash) {
+		t.Fatal("IfNeeded reported a valid file for a cancelled download")
+	}
+	if took := time.Since(begin); took > 5*time.Second {
+		t.Fatalf("IfNeeded took %v after its context was cancelled", took)
 	}
 }

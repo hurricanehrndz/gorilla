@@ -23,9 +23,9 @@ const inventorySDDL = "D:P(A;;FA;;;SY)(A;;FR;;;BA)"
 // could open a handle that outlives the change. The file is opened without
 // sharing, so nobody else can open it while it is being written.
 // CEILING: single-purpose and unexported because the inventory is the only
-// file Gorilla protects. Upgrade: when a second file or the ProgramData\gorilla
-// directory needs explicit ACLs, move this to a shared package and take the
-// SDDL as an argument.
+// file Gorilla protects from creation; the directory ACL is set afterwards, in
+// cmd/gorilla/appdata_acl_windows.go. Upgrade: when a second file needs an ACL
+// from creation, move this to a shared package and take the SDDL as an argument.
 func createProtectedTemp(dir, prefix string) (*os.File, error) {
 	sd, err := windows.SecurityDescriptorFromString(inventorySDDL)
 	if err != nil {

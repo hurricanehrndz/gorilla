@@ -2,19 +2,22 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/1dustindavis/gorilla/pkg/config"
+	"github.com/1dustindavis/gorilla/pkg/gorillalog"
 	"github.com/1dustindavis/gorilla/pkg/service"
 )
 
 var (
 	managedRunFunc         = managedRun
-	runServiceFunc         = func(cfg config.Configuration) error { return service.Run(cfg, managedRunFunc) }
+	runServiceFunc         = runService
 	sendServiceCommandFunc = service.SendCommand
 	runServiceActionFunc   = service.RunAction
 	serviceStatusFunc      = service.ServiceStatus
+	protectAppDataFunc     = protectAppData
 )
 
 func main() {
@@ -27,6 +30,11 @@ func main() {
 
 func route(cfg config.Configuration) error {
 	if cfg.ServiceInstall {
+		// Before the install, so a reinstall over an existing service still
+		// fixes the tree. The service applies it again at every start.
+		if err := protectAppDataFunc(cfg.AppDataPath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: unable to protect %s: %v\n", cfg.AppDataPath, err)
+		}
 		if err := runServiceActionFunc(cfg, "install"); err != nil {
 			return err
 		}
@@ -91,6 +99,9 @@ func route(cfg config.Configuration) error {
 		if resp.OperationID != "" {
 			fmt.Printf("operationId: %s\n", resp.OperationID)
 		}
+		if resp.RequestedBy != "" {
+			fmt.Printf("requestedBy: %s\n", resp.RequestedBy)
+		}
 		if resp.Message != "" {
 			fmt.Println(resp.Message)
 			return nil
@@ -114,6 +125,20 @@ func route(cfg config.Configuration) error {
 		return runServiceFunc(cfg)
 	}
 
-	_, err := managedRunFunc(cfg, nil)
+	_, err := managedRunFunc(cfg, nil, nil)
 	return err
+}
+
+// runService protects the data directory, then hands over to the service
+// manager. Protecting it at every start fixes a tree deployed by hand or by an
+// older version. A failure is only logged: the run-time guard on admin-managed
+// items still holds.
+func runService(cfg config.Configuration) error {
+	if err := gorillalog.NewLog(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	if err := protectAppDataFunc(cfg.AppDataPath); err != nil {
+		slog.Warn("unable to protect the data directory", "path", cfg.AppDataPath, "err", err)
+	}
+	return service.Run(cfg, managedRunFunc)
 }

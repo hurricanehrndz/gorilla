@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -29,6 +30,10 @@ func SetConfig(cfg config.Configuration) {
 
 // File downloads a provided url to the file path specified.
 func File(file string, url string) error {
+	return fileContext(context.Background(), file, url)
+}
+
+func fileContext(ctx context.Context, file string, url string) error {
 	// Get the absolute file path
 	_, fileName := path.Split(url)
 	absPath := filepath.Join(file, fileName)
@@ -47,7 +52,7 @@ func File(file string, url string) error {
 	defer f.Close()
 
 	// get the content at the provided url
-	responseBody, err := Get(url)
+	responseBody, err := getContext(ctx, url)
 	if err != nil {
 		return err
 	}
@@ -65,6 +70,10 @@ func File(file string, url string) error {
 // Timeout is 10 seconds
 // Will only write to disk if http status code is 2XX
 func Get(url string) ([]byte, error) {
+	return getContext(context.Background(), url)
+}
+
+func getContext(ctx context.Context, url string) ([]byte, error) {
 	// Declare the http client
 	var client *http.Client
 
@@ -126,7 +135,7 @@ func Get(url string) ([]byte, error) {
 	}
 
 	// Build the request
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +192,8 @@ func Verify(file string, sha string) bool {
 // It will check if the file already exists, by comparing the hash
 // If the hash does not match, it will attempt to download the file
 // Once downloaded it will attempt to verify the hash again
-func IfNeeded(absFile string, url string, hash string) bool {
+// Cancelling ctx aborts a download in progress, and IfNeeded returns false.
+func IfNeeded(ctx context.Context, absFile string, url string, hash string) bool {
 	// If the file exists, check the hash
 	verified := false
 	if _, err := os.Stat(absFile); err == nil {
@@ -195,7 +205,7 @@ func IfNeeded(absFile string, url string, hash string) bool {
 		absPath, _ := filepath.Split(absFile)
 		slog.Info("Downloading", "url", url, "path", absPath)
 		// Download the installer
-		err := File(absPath, url)
+		err := fileContext(ctx, absPath, url)
 		if err != nil {
 			slog.Warn("Unable to retrieve package", "url", url, "err", err)
 			return verified

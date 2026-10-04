@@ -87,12 +87,18 @@ pure-Go, windows-GUI `build/gorilla-ui.exe`
       go run github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117 generate bindings -clean -ts -noevents -d frontend/bindings .
 
   `make ui-lint` fails when the committed tree and a fresh generation differ.
+- The service speaks JSON-RPC 2.0 (newline-delimited, one request per connection, plus
+  the `streamOperationStatus` notification stream); the contract is the "Protocol"
+  section of `gorilla-ui/ARCHITECTURE.md`. Only `pkg/service/transport_*.go` is per
+  platform, so keep protocol and runner code portable and its tests running on Linux.
 - Keep `cmd/gorilla` service-message commands updated in lockstep with Gorilla UI protocol changes for testing/debugging.
 - `ListOptionalInstalls` should return JSON-safe subset DTOs, not full internal item objects.
-- The bound Wails surface is exactly `ListOptionalInstalls`, `InstallItem`,
-  `RemoveItem`, and `WatchOperation`, and one `gorilla:operation-status` event.
+- The bound Wails surface is exactly six methods, `ListOptionalInstalls`, `InstallItem`,
+  `RemoveItem`, `WatchOperation`, `GetBranding`, and `CancelOperation`, and one
+  `gorilla:operation-status` event; the service's `getServiceInfo` is not bound.
   Progress percentages are per item, not aggregate; only `Succeeded`, `Failed`,
-  `Deferred`, and `Canceled` end an operation.
+  `Deferred`, and `Canceled` end an operation, and
+  `Canceled` comes from the service (`canceledBy: "service"`) or the user (`"user"`).
 
 ## Real Windows Validation Loop
 

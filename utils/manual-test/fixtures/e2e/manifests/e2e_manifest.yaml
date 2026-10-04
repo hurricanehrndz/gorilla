@@ -1,11 +1,16 @@
 # Chrome end-to-end manifest. Pulls the self-serve smoke fixtures in through
 # included_manifests so run-selfserve-smoke.ps1 still passes against this
 # manifest, and offers a real MSI (Google Chrome) as an optional install.
+# DemoRequired is required (managed_installs) and also offered, so the service
+# lists it as isRequired and refuses RemoveItem with item_not_removable.
 name: e2e_manifest
 included_manifests:
   - selfserve_manifest
 catalogs:
   - e2e_catalog
   - selfserve_catalog
+managed_installs:
+  - DemoRequired
 optional_installs:
   - GoogleChrome
+  - DemoRequired

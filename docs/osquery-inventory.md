@@ -73,6 +73,7 @@ The first five keys are Munki's. The rest are Gorilla extras.
 | `kind` | string | Where the item came from; see below. |
 | `status` | string | What the run did with it; see below. |
 | `self_service` | bool | Chosen by the user (or a default) through self-service. |
+| `requested_by` | string | The user whose self-service request this run carried out, as the service resolved it from the pipe connection (`DOMAIN\user`). Set only on that request's item, in the inventory of the run the request triggered; omitted otherwise (scheduled runs, defaults, admin items, or an unresolved caller). Additive, so `schema_version` stays 1. |
 | `deferred_reason` | string | Set when `status` is `deferred`. Omitted otherwise. |
 | `error` | string | Set when `status` is `failed`. Omitted otherwise. |
 
@@ -154,7 +155,7 @@ macadmins.
 | `installed_version`, `version_to_install` | same keys |
 | `end_time` | top-level `EndTime` |
 | `kind`, `status`, `self_service` | same keys (extras) |
-| `deferred_reason`, `error` | same keys (extras) |
+| `requested_by`, `deferred_reason`, `error` | same keys (extras) |
 
 To keep `munki_installs` semantics, which cover only items meant to be
 installed, a query can filter with `WHERE kind != 'managed_uninstall' AND status

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
@@ -10,23 +11,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	gorillaservice "github.com/1dustindavis/gorilla/pkg/service"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 type fakeServiceClient struct {
 	items       []gorillaservice.OptionalInstallItem
+	branding    branding.Branding
 	accepted    gorillaservice.AcceptedOperation
 	listCalls   int
 	installName string
 	removeName  string
 	streamID    string
+	cancelID    string
 	stream      func(context.Context, func(gorillaservice.OperationStatus) error) error
 }
 
 func (f *fakeServiceClient) ListOptionalInstalls(context.Context) ([]gorillaservice.OptionalInstallItem, error) {
 	f.listCalls++
 	return f.items, nil
+}
+
+func (f *fakeServiceClient) GetBranding(context.Context) (branding.Branding, error) {
+	return f.branding, nil
 }
 
 func (f *fakeServiceClient) InstallItem(_ context.Context, itemName string) (gorillaservice.AcceptedOperation, error) {
@@ -44,12 +52,22 @@ func (f *fakeServiceClient) StreamOperationStatus(ctx context.Context, operation
 	return f.stream(ctx, callback)
 }
 
+func (f *fakeServiceClient) CancelOperation(_ context.Context, operationID string) error {
+	f.cancelID = operationID
+	return nil
+}
+
 func TestUIServiceValidationAndForwarding(t *testing.T) {
 	client := &fakeServiceClient{
 		items:    []gorillaservice.OptionalInstallItem{{ItemName: "demo", DisplayName: "Demo"}},
 		accepted: gorillaservice.AcceptedOperation{OperationID: "op-1", Accepted: true},
+		branding: branding.Branding{Title: "Acme"},
 	}
 	service := &UIService{client: client, logger: discardLogger(), ctx: context.Background()}
+
+	if b, err := service.GetBranding(); err != nil || b.Title != "Acme" {
+		t.Fatalf("branding forwarding failed: %#v %v", b, err)
+	}
 
 	items, err := service.ListOptionalInstalls()
 	if err != nil || len(items) != 1 || client.listCalls != 1 {
@@ -73,6 +91,13 @@ func TestUIServiceValidationAndForwarding(t *testing.T) {
 	if err := service.WatchOperation(" "); err == nil || client.streamID != "" {
 		t.Fatal("blank operation ID was forwarded")
 	}
+	if err := service.CancelOperation(" op-1 "); err != nil || client.cancelID != "op-1" {
+		t.Fatalf("cancel forwarding failed: id=%q err=%v", client.cancelID, err)
+	}
+	client.cancelID = ""
+	if err := service.CancelOperation(""); err == nil || client.cancelID != "" {
+		t.Fatal("blank cancel operation ID was forwarded")
+	}
 }
 
 // A bound call before ServiceStartup must error rather than pass a nil context
@@ -95,6 +120,12 @@ func TestUIServiceWithoutStartupRejectsCalls(t *testing.T) {
 	}
 	if err := service.WatchOperation("op-1"); err == nil || client.streamID != "" {
 		t.Fatalf("watch forwarded without startup: id=%q err=%v", client.streamID, err)
+	}
+	if _, err := service.GetBranding(); err == nil {
+		t.Fatal("branding forwarded without startup")
+	}
+	if err := service.CancelOperation("op-1"); err == nil || client.cancelID != "" {
+		t.Fatalf("cancel forwarded without startup: id=%q err=%v", client.cancelID, err)
 	}
 }
 
@@ -265,4 +296,68 @@ func testApplication() *application.App {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// The window chrome comes from the branding fetched before the window opens,
+// and falls back to the defaults when the service is down or nothing is set.
+func TestStartupBrandingAndWindowTitle(t *testing.T) {
+	get := func(b branding.Branding, err error) func(context.Context) (branding.Branding, error) {
+		return func(context.Context) (branding.Branding, error) { return b, err }
+	}
+	for _, tt := range []struct {
+		get  func(context.Context) (branding.Branding, error)
+		want string
+	}{
+		{get(branding.Branding{Title: "Acme Software Center"}, nil), "Acme Software Center"},
+		{get(branding.Branding{}, nil), defaultWindowTitle},
+		{get(branding.Branding{Title: "ignored"}, errors.New("pipe down")), defaultWindowTitle},
+	} {
+		if got := windowTitle(startupBranding(tt.get, discardLogger())); got != tt.want {
+			t.Errorf("windowTitle = %q, want %q", got, tt.want)
+		}
+	}
+}
+
+// The window icon is the PNG logo when there is one, else the embedded gorilla.
+func TestWindowIcon(t *testing.T) {
+	if len(defaultIcon) == 0 || string(defaultIcon[1:4]) != "PNG" {
+		t.Fatalf("embedded default icon is not a PNG")
+	}
+	logo := []byte("\x89PNG\r\n\x1a\nfake")
+	encoded := base64.StdEncoding.EncodeToString(logo)
+	if got := windowIcon(branding.Branding{LogoMime: "image/png", LogoBase64: encoded}); string(got) != string(logo) {
+		t.Errorf("PNG logo was not used as the window icon")
+	}
+	for _, b := range []branding.Branding{
+		{},
+		{LogoMime: "image/svg+xml", LogoBase64: encoded},
+		{LogoMime: "image/png", LogoBase64: "not base64!"},
+	} {
+		if got := windowIcon(b); string(got) != string(defaultIcon) {
+			t.Errorf("windowIcon(%+v) did not fall back to the default", b)
+		}
+	}
+}
+
+// The caption takes the accent as a COLORREF with contrasting text, in every
+// mode, and an unset or invalid accent leaves the system theme alone.
+func TestCaptionTheme(t *testing.T) {
+	green := captionTheme("#0b6e4f")
+	if green.LightModeActive == nil || green.DarkModeInactive == nil {
+		t.Fatalf("accent did not set every mode")
+	}
+	if got := *green.LightModeActive.TitleBarColour; got != 0x4f6e0b {
+		t.Errorf("caption COLORREF = %#x, want 0x4f6e0b (BGR)", got)
+	}
+	if got := *green.LightModeActive.TitleTextColour; got != 0xffffff {
+		t.Errorf("dark accent should get white text, got %#x", got)
+	}
+	if got := *captionTheme("#f6f6f7").LightModeActive.TitleTextColour; got != 0x000000 {
+		t.Errorf("light accent should get black text, got %#x", got)
+	}
+	for _, accent := range []string{"", "#0b6e4", "0b6e4f", "#gggggg"} {
+		if got := captionTheme(accent); got != (application.ThemeSettings{}) {
+			t.Errorf("captionTheme(%q) should be the zero theme", accent)
+		}
+	}
 }

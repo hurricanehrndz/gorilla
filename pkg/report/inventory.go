@@ -67,6 +67,7 @@ type InventoryItem struct {
 	Kind             string `json:"kind"`
 	Status           string `json:"status"`
 	SelfService      bool   `json:"self_service"`
+	RequestedBy      string `json:"requested_by,omitempty"`
 	DeferredReason   string `json:"deferred_reason,omitempty"`
 	Error            string `json:"error,omitempty"`
 }
@@ -79,6 +80,9 @@ type PlanItem struct {
 	Version     string
 	Kind        string
 	SelfService bool
+	// RequestedBy is the user whose self-service request this run carries out,
+	// "" for any other item.
+	RequestedBy string
 	// Installed is the caller's own status check. It is used only where the
 	// run's results can't tell: unselected optional installs, and
 	// managed_update items the run found nothing to do for (current or absent).
@@ -164,6 +168,7 @@ func (r *Report) inventoryItem(pi PlanItem, checkOnly bool) (InventoryItem, bool
 		VersionToInstall: pi.Version,
 		Kind:             pi.Kind,
 		SelfService:      pi.SelfService,
+		RequestedBy:      pi.RequestedBy,
 	}
 	if it.DisplayName == "" {
 		it.DisplayName = pi.Name

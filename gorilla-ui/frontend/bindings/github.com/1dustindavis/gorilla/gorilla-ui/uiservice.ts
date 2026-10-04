@@ -12,23 +12,45 @@ import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Cr
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as branding$0 from "../pkg/branding/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as service$0 from "../pkg/service/models.js";
+
+/**
+ * CancelOperation asks the service to cancel an operation whose item has not
+ * been acted on yet. A refusal comes back as an error carrying the service's
+ * operation_not_cancelable message.
+ */
+export function CancelOperation(operationID: string): $CancellablePromise<void> {
+    return $Call.ByID(2215829006, operationID);
+}
+
+/**
+ * GetBranding returns the organisation branding the service resolved from policy
+ * and config. The UI never reads either source itself.
+ */
+export function GetBranding(): $CancellablePromise<branding$0.Branding> {
+    return $Call.ByID(3076577194).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
 
 export function InstallItem(itemName: string): $CancellablePromise<service$0.AcceptedOperation> {
     return $Call.ByID(1746250097, itemName).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType1($result);
     });
 }
 
 export function ListOptionalInstalls(): $CancellablePromise<service$0.OptionalInstallItem[]> {
     return $Call.ByID(2869388195).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
 export function RemoveItem(itemName: string): $CancellablePromise<service$0.AcceptedOperation> {
     return $Call.ByID(153207584, itemName).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType1($result);
     });
 }
 
@@ -37,6 +59,7 @@ export function WatchOperation(operationID: string): $CancellablePromise<void> {
 }
 
 // Private type creation functions
-const $$createType0 = service$0.AcceptedOperation.createFrom;
-const $$createType1 = service$0.OptionalInstallItem.createFrom;
-const $$createType2 = $Create.Array($$createType1);
+const $$createType0 = branding$0.Branding.createFrom;
+const $$createType1 = service$0.AcceptedOperation.createFrom;
+const $$createType2 = service$0.OptionalInstallItem.createFrom;
+const $$createType3 = $Create.Array($$createType2);

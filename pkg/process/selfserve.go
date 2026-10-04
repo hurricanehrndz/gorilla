@@ -66,9 +66,24 @@ func ReconcileSelfServe(selfServe *manifest.Item, manifests []manifest.Item) (in
 		slog.Warn("self-serve item not in optional_installs, skipping", "item", name)
 	}
 
-	// 3. Uninstalls pass through verbatim (R2): a deselected item must be
-	// removable even after it leaves the optional list.
-	uninstalls = append(uninstalls, selfServe.Uninstalls...)
+	// 3. Uninstalls pass through (R2): a deselected item must be removable even
+	// after it leaves the optional list. An item an admin manifest requires
+	// (managed_installs) is never removed on a self-service request; the
+	// service refuses such a request, and this catches one written to the file
+	// some other way. It is left in the file, like an unauthorized install.
+	required := make(map[string]bool)
+	for _, m := range manifests {
+		for _, name := range m.Installs {
+			required[name] = true
+		}
+	}
+	for _, name := range selfServe.Uninstalls {
+		if required[name] {
+			slog.Warn("self-serve uninstall of an item in managed_installs, skipping", "item", name)
+			continue
+		}
+		uninstalls = append(uninstalls, name)
+	}
 	return installs, uninstalls, changed
 }
 

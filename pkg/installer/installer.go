@@ -38,6 +38,7 @@ type Runner struct {
 	Report      *report.Report
 	Checker     *status.Checker
 	Emit        ProgressFn // nil = no progress events
+	Cancels     *Cancels   // nil = nothing can be withdrawn
 	URLPackages string
 	CachePath   string
 	CheckOnly   bool
@@ -266,6 +267,13 @@ func (nupkgInstaller) uninstallCommand(item catalog.Item, absFile string) (strin
 
 func (nupkgInstaller) uninstallNeedsFile() bool { return true }
 
+// canceled logs that the user withdrew the item and returns ErrCanceled. The
+// service already ended the operation, so no progress event is sent.
+func (r *Runner) canceled(item catalog.Item) error {
+	slog.Info("Skipping item: canceled by user", "item", item.DisplayName)
+	return ErrCanceled
+}
+
 // recordFailure appends the item to the run report's FailedItems and returns the error.
 func (r *Runner) recordFailure(item catalog.Item, action string, err error) error {
 	r.Report.FailedItems = append(r.Report.FailedItems, report.FailedItem{
@@ -335,10 +343,23 @@ func (r *Runner) actionItem(item catalog.Item, itemURL, action string) (string, 
 	if action == "install" || impl.uninstallNeedsFile() {
 		relPath, fileName := path.Split(installerItem.Location)
 		absFile = filepath.Join(r.CachePath, relPath, fileName)
-		r.emit(item, "downloading", percent, itemURL)
-		if valid := download.IfNeeded(absFile, itemURL, installerItem.Hash); !valid {
-			err := fmt.Errorf("unable to download valid file: %s", itemURL)
-			slog.Warn("Unable to download valid file", "item", item.DisplayName, "err", err)
+		ctx, done, ok := r.Cancels.download(item.Name)
+		if !ok {
+			return "", r.canceled(item)
+		}
+		// Progress reaches every local user, so it names the item; the URL,
+		// which can carry signed-query tokens, stays in the debug log.
+		slog.Debug("Downloading", "item", item.DisplayName, "url", itemURL)
+		r.emit(item, "downloading", percent, item.DisplayName)
+		valid := download.IfNeeded(ctx, absFile, itemURL, installerItem.Hash)
+		withdrawn := ctx.Err() != nil // read before done(), which cancels ctx
+		done()
+		if withdrawn {
+			return "", r.canceled(item)
+		}
+		if !valid {
+			err := fmt.Errorf("unable to download a valid installer for %s", item.DisplayName)
+			slog.Warn("Unable to download valid file", "item", item.DisplayName)
 			r.emit(item, "failed", percent, err.Error())
 			return "", r.recordFailure(item, action, err)
 		}
@@ -358,6 +379,11 @@ func (r *Runner) actionItem(item catalog.Item, itemURL, action string) (string, 
 		slog.Warn("Unable to build command", "item", item.DisplayName, "installerType", installerItem.Type, "err", err)
 		r.emit(item, "failed", percent, err.Error())
 		return "", r.recordFailure(item, action, err)
+	}
+
+	// The last moment the user can withdraw the item; past this a cancel is refused.
+	if !r.Cancels.act(item.Name) {
+		return "", r.canceled(item)
 	}
 
 	// Run the command
@@ -460,6 +486,11 @@ func (r *Runner) Install(item catalog.Item, installerType string) (string, error
 			Action:  installerType,
 		})
 		return "Item not needed", nil
+	}
+
+	// A withdrawn item is skipped before anything runs for it, pre-scripts included.
+	if r.Cancels.withdrawn(item.Name) {
+		return "", r.canceled(item)
 	}
 
 	// Install or uninstall the item

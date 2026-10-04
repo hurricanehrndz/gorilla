@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1dustindavis/gorilla/pkg/branding"
 	gorillaservice "github.com/1dustindavis/gorilla/pkg/service"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -15,9 +16,11 @@ const operationStatusEvent = "gorilla:operation-status"
 
 type serviceClient interface {
 	ListOptionalInstalls(context.Context) ([]gorillaservice.OptionalInstallItem, error)
+	GetBranding(context.Context) (branding.Branding, error)
 	InstallItem(context.Context, string) (gorillaservice.AcceptedOperation, error)
 	RemoveItem(context.Context, string) (gorillaservice.AcceptedOperation, error)
 	StreamOperationStatus(context.Context, string, func(gorillaservice.OperationStatus) error) error
+	CancelOperation(context.Context, string) error
 }
 
 // UIService is the complete Wails-bound backend surface.
@@ -55,6 +58,20 @@ func (s *UIService) ListOptionalInstalls() ([]gorillaservice.OptionalInstallItem
 	items, err := s.client.ListOptionalInstalls(ctx)
 	s.logResult("ListOptionalInstalls", "", err, started)
 	return items, err
+}
+
+// GetBranding returns the organisation branding the service resolved from policy
+// and config. The UI never reads either source itself.
+func (s *UIService) GetBranding() (branding.Branding, error) {
+	started := time.Now()
+	ctx, err := s.callContext()
+	if err != nil {
+		s.logResult("GetBranding", "", err, started)
+		return branding.Branding{}, err
+	}
+	b, err := s.client.GetBranding(ctx)
+	s.logResult("GetBranding", "", err, started)
+	return b, err
 }
 
 func (s *UIService) InstallItem(itemName string) (gorillaservice.AcceptedOperation, error) {
@@ -111,6 +128,25 @@ func (s *UIService) WatchOperation(operationID string) error {
 		return nil
 	})
 	s.logResult("WatchOperation", operationID, err, started)
+	return err
+}
+
+// CancelOperation asks the service to cancel an operation whose item has not
+// been acted on yet. A refusal comes back as an error carrying the service's
+// operation_not_cancelable message.
+func (s *UIService) CancelOperation(operationID string) error {
+	started := time.Now()
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		err := errors.New("operationId is required")
+		s.logResult("CancelOperation", "", err, started)
+		return err
+	}
+	ctx, err := s.callContext()
+	if err == nil {
+		err = s.client.CancelOperation(ctx, operationID)
+	}
+	s.logResult("CancelOperation", operationID, err, started)
 	return err
 }
 

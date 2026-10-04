@@ -10,6 +10,12 @@ export class AcceptedOperation {
     "accepted": boolean;
     "queuedAtUtc": string;
 
+    /**
+     * RequestedBy is the user who called, as the service resolved it from the
+     * connection: DOMAIN\user on Windows, "" when unresolved.
+     */
+    "requestedBy": string;
+
     /** Creates a new AcceptedOperation instance. */
     constructor($$source: Partial<AcceptedOperation> = {}) {
         if (!("accepted" in $$source)) {
@@ -17,6 +23,9 @@ export class AcceptedOperation {
         }
         if (!("queuedAtUtc" in $$source)) {
             this["queuedAtUtc"] = "";
+        }
+        if (!("requestedBy" in $$source)) {
+            this["requestedBy"] = "";
         }
 
         Object.assign(this, $$source);
@@ -31,6 +40,11 @@ export class AcceptedOperation {
     }
 }
 
+/**
+ * OptionalInstallItem is one offered self-service item. IsRequired is whether
+ * an admin manifest also lists it in managed_installs: it is installed for
+ * everyone and cannot be removed through self-service.
+ */
 export class OptionalInstallItem {
     "itemName": string;
     "displayName": string;
@@ -42,6 +56,7 @@ export class OptionalInstallItem {
     "iconName"?: string;
     "restartAction"?: string;
     "isManaged": boolean;
+    "isRequired": boolean;
     "isInstalled": boolean;
     "status": string;
     "statusUpdatedAtUtc": string;
@@ -63,6 +78,9 @@ export class OptionalInstallItem {
         }
         if (!("isManaged" in $$source)) {
             this["isManaged"] = false;
+        }
+        if (!("isRequired" in $$source)) {
+            this["isRequired"] = false;
         }
         if (!("isInstalled" in $$source)) {
             this["isInstalled"] = false;
