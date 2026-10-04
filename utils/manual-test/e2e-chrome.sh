@@ -8,9 +8,9 @@
 # brands the UI through a config.yaml `branding:` block, then runs the two
 # machine-assertable gates (run-selfserve-smoke.ps1 and
 # run-chrome-e2e.ps1) and finally launches gorilla-ui.exe on the desktop and
-# captures Home, search, installing (bottom strip), installed, details and
-# Activity screenshots into OUT_DIR (default build/e2e-shots). Logs go next
-# to the screenshots.
+# captures Home, search, the strip with Cancel enabled, a canceled install,
+# installing (bottom strip), installed, details and Activity screenshots into
+# OUT_DIR (default build/e2e-shots). Logs go next to the screenshots.
 #
 # Needs the devenv shell (go, node) and the windows-test-rig skill's `rig`.
 # Exit status is non-zero if either gate fails; the UI capture is visual-only
@@ -131,9 +131,25 @@ tab() { local n=${1:-1}; while ((n-- > 0)); do "$rig" "${vm[@]}" key KEY_TAB; do
 ui_focus
 tab 5; "$rig" "${vm[@]}" type "Chrome"
 "$rig" "${vm[@]}" shot --settle 3 "$out/02-search-chrome.png"
+# Hold the service's queue with a DemoOptional run (its installer sleeps 3 s)
+# so the Chrome install the UI starts next waits Queued and the strip offers
+# Cancel. Dropping the markers makes DemoOptional need installing again.
+cat >"$tmp/busy.ps1" <<'PS'
+Remove-Item C:\ProgramData\gorilla-c-smoke\optional.txt, C:\ProgramData\gorilla-c-smoke\optional-update.txt -Force -ErrorAction SilentlyContinue
+& "$env:ProgramData\gorilla\bin\gorilla.exe" -S InstallItem:DemoOptional
+PS
+"$rig" "${vm[@]}" ps "$tmp/busy.ps1"
 tab 2; "$rig" "${vm[@]}" key KEY_ENTER
-# Straight away, to catch the strip before the installer starts (Cancel enabled).
 "$rig" "${vm[@]}" shot --settle 1 "$out/03a-strip-cancel.png"
+# The click re-rendered the grid, so Tab restarts there: Chrome's Details (its
+# Install is disabled), then the strip's Cancel.
+tab 2; "$rig" "${vm[@]}" key KEY_ENTER
+"$rig" "${vm[@]}" shot --settle 3 "$out/03b-canceled.png"
+# Install for real. The Cancel button that had focus is gone with the strip,
+# so Tab restarts at the top of the page: Get help, Software, My items,
+# Activity, search, category, then Chrome's Install.
+ui_focus
+tab 7; "$rig" "${vm[@]}" key KEY_ENTER
 "$rig" "${vm[@]}" shot --settle 4 "$out/03-installing.png"
 "$rig" "${vm[@]}" shot --settle 45 "$out/04-installed.png"
 "$rig" "${vm[@]}" key KEY_END

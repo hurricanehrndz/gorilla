@@ -255,9 +255,8 @@ Pass "offered: $($item.displayName) $expectedVersion by $($item.developer) [$($i
 # --- Cancel: a queued install is withdrawn before its installer runs
 Write-Step "CancelOperation withdraws a queued InstallItem:$ItemName; a second cancel is refused"
 # DemoOptional's installer sleeps 3 s, so its run holds the command queue.
-# InstallItem:$ItemName waits behind that run, and its own run starts right
-# after it is accepted, so the cancel goes out at once, before the download
-# and the MSI.
+# InstallItem:$ItemName answers at once with its operation Queued behind that
+# run, so the cancel always lands before anything has run for Chrome.
 $demoOut = Invoke-Gorilla "InstallItem:DemoOptional"
 $demoOp = Parse-OperationId $demoOut.Out
 if (-not $demoOp) { Fail "no operationId returned for InstallItem:DemoOptional" }
@@ -272,8 +271,9 @@ if ($terminal.state -ne "Canceled") { Fail "canceled install ended '$($terminal.
 if ($terminal.canceledBy -ne "user") { Fail "canceledBy '$($terminal.canceledBy)', expected user" }
 if ($terminal.itemName -ne $ItemName) { Fail "terminal itemName '$($terminal.itemName)', expected $ItemName" }
 $before = @($events | Where-Object { $_.state -ne 'Canceled' } | ForEach-Object { "$($_.itemName):$($_.state)" }) -join ','
-# ListOptionalInstalls waits in the queue behind the run the cancel landed in,
-# so by the time it answers that run has finished without installing Chrome.
+if ($before -ne "GoogleChrome:Queued") { Fail "the cancel should land while only Queued; records before it: [$before]" }
+# ListOptionalInstalls waits in the queue behind the busy run and the canceled
+# operation's run, so when it answers neither has installed Chrome.
 $item = Get-OptionalItem $ItemName
 if ($item.status -ne "NotInstalled") { Fail "$ItemName status '$($item.status)' after the cancel, expected NotInstalled" }
 if (Get-UninstallEntry $RegistryName) { Fail "'$RegistryName' was installed despite the cancel" }
