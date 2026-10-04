@@ -319,6 +319,22 @@ button:disabled {
   background: var(--ok);
 }
 
+/* A cache or stale notice is a sentence plus Retry: give it its own full row
+   under the nav instead of wrapping word by word at the bar's right edge. */
+.connection[data-source="cache"],
+.connection[data-source="stale"] {
+  flex: 1 0 100%;
+  flex-wrap: nowrap;
+  margin-left: 0;
+  max-width: none;
+}
+
+.connection[data-source="cache"] #connection-text,
+.connection[data-source="stale"] #connection-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .connection .pill {
   padding: 0.25rem 0.75rem;
 }
