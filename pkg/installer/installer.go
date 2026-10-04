@@ -347,7 +347,10 @@ func (r *Runner) actionItem(item catalog.Item, itemURL, action string) (string, 
 		if !ok {
 			return "", r.canceled(item)
 		}
-		r.emit(item, "downloading", percent, itemURL)
+		// Progress reaches every local user, so it names the item; the URL,
+		// which can carry signed-query tokens, stays in the debug log.
+		slog.Debug("Downloading", "item", item.DisplayName, "url", itemURL)
+		r.emit(item, "downloading", percent, item.DisplayName)
 		valid := download.IfNeeded(ctx, absFile, itemURL, installerItem.Hash)
 		withdrawn := ctx.Err() != nil // read before done(), which cancels ctx
 		done()
@@ -355,8 +358,8 @@ func (r *Runner) actionItem(item catalog.Item, itemURL, action string) (string, 
 			return "", r.canceled(item)
 		}
 		if !valid {
-			err := fmt.Errorf("unable to download valid file: %s", itemURL)
-			slog.Warn("Unable to download valid file", "item", item.DisplayName, "err", err)
+			err := fmt.Errorf("unable to download a valid installer for %s", item.DisplayName)
+			slog.Warn("Unable to download valid file", "item", item.DisplayName)
 			r.emit(item, "failed", percent, err.Error())
 			return "", r.recordFailure(item, action, err)
 		}

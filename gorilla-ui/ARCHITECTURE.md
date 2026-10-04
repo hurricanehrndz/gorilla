@@ -59,13 +59,21 @@ the operation, from the first, as `operationStatus` notifications on the same
 connection, until a terminal record, and closes:
 
 ```json
-{"jsonrpc":"2.0","method":"operationStatus","params":{"operationId":"9f2c4e7a1b3d5f60718293a4b5c6d7e8","seq":2,"timestampUtc":"2026-10-04T12:00:01.480Z","itemName":"GoogleChrome","displayName":"Google Chrome","state":"Downloading","progressPercent":40,"message":"Downloading","requestedBy":"PC01\\alice"}}
+{"jsonrpc":"2.0","method":"operationStatus","params":{"operationId":"9f2c4e7a1b3d5f60718293a4b5c6d7e8","seq":2,"timestampUtc":"2026-10-04T12:00:01.480Z","itemName":"GoogleChrome","displayName":"Google Chrome","state":"Downloading","progressPercent":40,"message":"Google Chrome","requestedBy":"PC01\\alice"}}
 ```
 
 `seq` numbers an operation's records from 1 in the order the service recorded
 them, and `timestampUtc` is RFC 3339 UTC with milliseconds. Records can reach
 the frontend out of order (Wails emits each event on its own goroutine), so the
 frontend files them by `seq`, and Activity by time and then `seq`.
+
+Every local user can read what the service sends, so messages name items, not
+locations. A `Downloading` record's message is the item's display name; the
+package URL, which can carry a signed-query token, goes only to the debug log.
+`command_failed` and a `managed_run_failed` record say to see the service log
+instead of quoting the error, which can name repository URLs and local paths.
+An `item_failed` record still quotes the installer's error (usually `exit
+status N`).
 
 `requestedBy` names the user who called `installItem` or `removeItem`. The
 service reads it from the connection, never from the request: on Windows from

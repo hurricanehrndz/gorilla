@@ -22,6 +22,7 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/catalog"
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/installer"
+	"github.com/1dustindavis/gorilla/pkg/manifest"
 	"github.com/1dustindavis/gorilla/pkg/report"
 )
 
@@ -817,5 +818,24 @@ func TestWriteToAStalledClientTimesOut(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the write to a stalled client never gave up")
+	}
+}
+
+// Error text reaches any local user, and a failed fetch names the repository
+// URL, which can carry a signed-query token; the service keeps it in its log.
+func TestCommandFailureDoesNotEchoTheError(t *testing.T) {
+	cfg := testServiceConfig(t)
+	stubOptional(t)
+	manifestGet = func(config.Configuration) ([]manifest.Item, []string, error) {
+		return nil, nil, errors.New("https://repo.example/manifests/site.yaml?sig=SECRET : Download status code: 403")
+	}
+	startTestRunner(t, cfg, noopRun)
+
+	resp := readResponse(t, rawExchange(t, cfg, `{"jsonrpc":"2.0","id":"f","method":"installItem","params":{"itemName":"Slack"}}`))
+	if resp.Error == nil || resp.Error.Data.Code != "command_failed" {
+		t.Fatalf("response = %+v, want command_failed", resp)
+	}
+	if strings.Contains(resp.Error.Message, "SECRET") || strings.Contains(resp.Error.Message, "repo.example") {
+		t.Fatalf("command_failed message leaks the error: %q", resp.Error.Message)
 	}
 }

@@ -646,7 +646,10 @@ func commandError(err error, operationID string) *Error {
 	case errors.Is(err, errItemNotRemovable):
 		return newError(codeItemNotRemovable, err.Error(), operationID)
 	default:
-		return newError(codeCommandFailed, err.Error(), operationID)
+		// Any local user reads this message, and a fetch or file error can
+		// name repository URLs and local paths, so it stays in the log.
+		slog.Warn("service command failed", "operationId", operationID, "err", err)
+		return newError(codeCommandFailed, "the service could not complete the request; see the Gorilla service log", operationID)
 	}
 }
 
@@ -686,7 +689,9 @@ func (sr *serviceRunner) scheduleRunAfterMutation(ctx context.Context, action, i
 				ProgressPercent: 100,
 				Message:         "Operation failed",
 				ErrorCode:       "managed_run_failed",
-				ErrorMessage:    err.Error(),
+				// The run's error can name repository URLs and local paths;
+				// the log above has it.
+				ErrorMessage: "the managed run failed; see the Gorilla service log",
 			})
 			return
 		}
