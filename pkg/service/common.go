@@ -55,12 +55,13 @@ type CommandResponse struct {
 
 	// report carries the managed run's per-run report from an actionRun back to
 	// the caller so scheduleRunAfterMutation can emit an honest terminal event
-	// (R10). Unexported so it is skipped by JSON and never crosses the pipe.
+	// (R10). Unexported so it is skipped by JSON and never reaches a client.
 	report *report.Report
 }
 
 const (
 	actionRun                   = "run"
+	actionGetServiceInfo        = "GetServiceInfo"
 	actionListOptionalInstalls  = "ListOptionalInstalls"
 	actionGetBranding           = "GetBranding"
 	actionInstallItem           = "InstallItem"
@@ -73,6 +74,8 @@ func canonicalizeAction(action string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case strings.ToLower(actionRun):
 		return actionRun, true
+	case strings.ToLower(actionGetServiceInfo):
+		return actionGetServiceInfo, true
 	case strings.ToLower(actionListOptionalInstalls):
 		return actionListOptionalInstalls, true
 	case strings.ToLower(actionGetBranding):
@@ -127,7 +130,7 @@ func validateCommand(cmd Command) error {
 		if len(cmd.Items) != 0 {
 			return errors.New("run action does not support items")
 		}
-	case actionListOptionalInstalls, actionGetBranding:
+	case actionGetServiceInfo, actionListOptionalInstalls, actionGetBranding:
 		if len(cmd.Items) != 0 {
 			return fmt.Errorf("%s action does not support items", cmd.Action)
 		}
@@ -151,6 +154,16 @@ func SendCommand(cfg config.Configuration, spec string) (CommandResponse, error)
 	client := NewClient(cfg.ServicePipeName)
 	ctx := context.Background()
 	switch cmd.Action {
+	case actionGetServiceInfo:
+		info, err := client.GetServiceInfo(ctx)
+		if err != nil {
+			return CommandResponse{}, err
+		}
+		line, err := json.Marshal(info)
+		if err != nil {
+			return CommandResponse{}, fmt.Errorf("failed to encode service info: %w", err)
+		}
+		return CommandResponse{Status: "ok", Items: []string{string(line)}}, nil
 	case actionListOptionalInstalls:
 		items, err := client.ListOptionalInstalls(ctx)
 		if err != nil {
@@ -327,14 +340,14 @@ func setMember(list []string, name string, member bool) []string {
 func addServiceManagedInstall(cfg config.Configuration, name string) (string, selection, error) {
 	// Authorize the requested name against the currently available optional
 	// installs before writing anything (R3). An unknown name is rejected and the
-	// file is left untouched; the pipe layer maps the error to an error envelope.
+	// file is left untouched; the service answers item_not_available.
 	available, err := getOptionalItems(cfg)
 	if err != nil {
 		return "", selection{}, err
 	}
 	i := slices.IndexFunc(available, func(it OptionalInstallItem) bool { return it.ItemName == name })
 	if i < 0 {
-		return "", selection{}, fmt.Errorf("item %q is not available for self-service", name)
+		return "", selection{}, fmt.Errorf("%w: %q", errItemNotAvailable, name)
 	}
 	prior, err := setSelection(cfg, name, selectedForInstall)
 	return available[i].DisplayName, prior, err
@@ -346,8 +359,13 @@ func removeServiceManagedInstall(cfg config.Configuration, name string) (selecti
 	return setSelection(cfg, name, selectedForRemoval)
 }
 
-// errNotCancelable is CancelOperation's refusal, sent as operation_not_cancelable.
-var errNotCancelable = errors.New("operation can no longer be canceled")
+var (
+	// errNotCancelable is cancelOperation's refusal, sent as operation_not_cancelable.
+	errNotCancelable = errors.New("operation can no longer be canceled")
+	// errItemNotAvailable refuses an installItem for an item not offered for
+	// self-service, sent as item_not_available.
+	errItemNotAvailable = errors.New("item is not available for self-service")
+)
 
 // withdrawItem is the item side of CancelOperation. It puts back the selection
 // the operation's request replaced (prior), so no later run performs it, then

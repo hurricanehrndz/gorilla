@@ -1,12 +1,12 @@
-//go:build windows
-
 package service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strconv"
@@ -20,165 +20,209 @@ import (
 	"github.com/1dustindavis/gorilla/pkg/config"
 	"github.com/1dustindavis/gorilla/pkg/installer"
 	"github.com/1dustindavis/gorilla/pkg/report"
-	"golang.org/x/sys/windows"
 )
 
-func TestFlushAndDisconnectNamedPipeStillDisconnectsWhenFlushReportsBrokenPipe(t *testing.T) {
-	var calls []string
+// These tests run the service core over the platform's real transport: the
+// named pipe on Windows, a Unix domain socket elsewhere.
 
-	originalFlush := flushNamedPipeBuffers
-	originalDisconnect := disconnectNamedPipe
-	t.Cleanup(func() {
-		flushNamedPipeBuffers = originalFlush
-		disconnectNamedPipe = originalDisconnect
-	})
+type managedRunFunc = func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error)
 
-	flushNamedPipeBuffers = func(_ windows.Handle) error {
-		calls = append(calls, "flush")
-		return windows.ERROR_BROKEN_PIPE
-	}
-	disconnectNamedPipe = func(_ windows.Handle) error {
-		calls = append(calls, "disconnect")
-		return windows.ERROR_PIPE_NOT_CONNECTED
-	}
-
-	sr := &serviceRunner{}
-	sr.flushAndDisconnectNamedPipe(windows.InvalidHandle)
-
-	if len(calls) != 2 {
-		t.Fatalf("expected exactly two pipe calls, got %d (%v)", len(calls), calls)
-	}
-	if calls[0] != "flush" || calls[1] != "disconnect" {
-		t.Fatalf("expected call order flush -> disconnect, got %v", calls)
-	}
+func noopRun(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+	return nil, nil
 }
 
-func TestNamedPipeStreamStatusReliability(t *testing.T) {
-	tempDir := t.TempDir()
-	cfg := config.Configuration{
-		AppDataPath:     tempDir,
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
+func testServiceConfig(t *testing.T) config.Configuration {
+	t.Helper()
+	return config.Configuration{
+		AppDataPath:     t.TempDir(),
+		ServicePipeName: testPipeName(t),
 		ServiceInterval: "1h",
 		ServiceMode:     true,
 		ServiceName:     "gorilla-test",
 	}
+}
 
-	stubOptional(t, "Slack")
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
-		return nil, nil
-	})
+// startTestRunner starts a runner and stops it when the test ends.
+func startTestRunner(t *testing.T, cfg config.Configuration, run managedRunFunc) (*serviceRunner, context.Context) {
+	t.Helper()
+	sr := newServiceRunner(cfg, run)
 	ctx, cancel := context.WithCancel(context.Background())
-
 	if err := sr.start(ctx); err != nil {
+		cancel()
 		t.Fatalf("service start failed: %v", err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		cancel()
-		bestEffortUnblockPipeListener(cfg)
 		sr.stop(context.Background())
-	}()
+	})
+	return sr, ctx
+}
 
-	iterations := namedPipeReliabilityIterations(t)
-	for i := 0; i < iterations; i++ {
-		operationID := mustInstallAndGetOperationID(t, cfg, i)
-		mustStreamAndReceiveTerminalEvent(t, cfg, operationID, i)
+// rawExchange sends one raw request line and returns a reader for what the
+// service sends back.
+func rawExchange(t *testing.T, cfg config.Configuration, request string) *bufio.Reader {
+	t.Helper()
+	conn, err := dial(context.Background(), cfg.ServicePipeName, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial service: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := io.WriteString(conn, request+"\n"); err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+	return bufio.NewReader(conn)
+}
+
+func readResponse(t *testing.T, r *bufio.Reader) rpcResponse {
+	t.Helper()
+	var resp rpcResponse
+	if err := json.NewDecoder(r).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp
+}
+
+func TestServiceStreamStatusReliability(t *testing.T) {
+	cfg := testServiceConfig(t)
+	stubOptional(t, "Slack")
+	_, ctx := startTestRunner(t, cfg, noopRun)
+
+	for i := 0; i < reliabilityIterations(t); i++ {
+		accepted, err := NewClient(cfg.ServicePipeName).InstallItem(ctx, "Slack")
+		if err != nil {
+			t.Fatalf("iteration %d: installItem: %v", i, err)
+		}
+		if terminal := mustStreamTerminal(t, cfg, accepted.OperationID); terminal.State != "Succeeded" {
+			t.Fatalf("iteration %d: terminal state %s, want Succeeded", i, terminal.State)
+		}
 	}
 }
 
 func TestStreamOperationStatusUnknownOperationIDReturnsError(t *testing.T) {
-	tempDir := t.TempDir()
-	cfg := config.Configuration{
-		AppDataPath:     tempDir,
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
-		ServiceInterval: "1h",
-		ServiceMode:     true,
-		ServiceName:     "gorilla-test",
+	cfg := testServiceConfig(t)
+	startTestRunner(t, cfg, noopRun)
+
+	resp := readResponse(t, rawExchange(t, cfg, `{"jsonrpc":"2.0","id":"req-unknown","method":"streamOperationStatus","params":{"operationId":"does-not-exist"}}`))
+	if resp.Error == nil || resp.Error.Code != codeUnknownOperation || resp.Error.Data.Code != "unknown_operation" || resp.Error.Data.OperationID != "does-not-exist" {
+		t.Fatalf("response = %+v, want unknown_operation", resp)
 	}
+	if string(resp.ID) != `"req-unknown"` {
+		t.Fatalf("response id = %s, want the request's", resp.ID)
+	}
+}
 
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
-		return nil, nil
-	})
-	ctx, cancel := context.WithCancel(context.Background())
+// Every malformed request gets the JSON-RPC error a generic client expects,
+// with the stable data.code beside it.
+func TestJSONRPCErrorResponses(t *testing.T) {
+	cfg := testServiceConfig(t)
+	stubOptional(t, "Slack")
+	startTestRunner(t, cfg, noopRun)
 
-	if err := sr.start(ctx); err != nil {
-		t.Fatalf("service start failed: %v", err)
+	tests := []struct {
+		name, request string
+		code          int
+		appCode, id   string
+	}{
+		{"parse error", `{"jsonrpc" "2.0"}`, codeParseError, "parse_error", "null"},
+		{"batch", `[{"jsonrpc":"2.0","id":1,"method":"getServiceInfo"}]`, codeInvalidRequest, "invalid_request", "null"},
+		{"wrong version", `{"jsonrpc":"1.0","id":7,"method":"getServiceInfo"}`, codeInvalidRequest, "invalid_request", "7"},
+		{"object id", `{"jsonrpc":"2.0","id":{},"method":"getServiceInfo"}`, codeInvalidRequest, "invalid_request", "null"},
+		{"unknown method", `{"jsonrpc":"2.0","id":"a","method":"InstallItem"}`, codeMethodNotFound, "method_not_found", `"a"`},
+		{"missing params", `{"jsonrpc":"2.0","id":"b","method":"installItem"}`, codeInvalidParams, "invalid_params", `"b"`},
+		{"wrong params", `{"jsonrpc":"2.0","id":"c","method":"cancelOperation","params":["op"]}`, codeInvalidParams, "invalid_params", `"c"`},
+		{"not offered", `{"jsonrpc":"2.0","id":"d","method":"installItem","params":{"itemName":"NotOffered"}}`, codeItemNotAvailable, "item_not_available", `"d"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := readResponse(t, rawExchange(t, cfg, tt.request))
+			if resp.JSONRPC != jsonrpcVersion || resp.Error == nil || resp.Error.Code != tt.code || resp.Error.Data.Code != tt.appCode || resp.Result != nil {
+				t.Fatalf("response = %+v (error %+v), want %d/%s", resp, resp.Error, tt.code, tt.appCode)
+			}
+			if string(resp.ID) != tt.id {
+				t.Fatalf("response id = %s, want %s", resp.ID, tt.id)
+			}
+		})
+	}
+}
+
+// A request without an id is a notification: no response, and nothing done.
+func TestNotificationGetsNoResponse(t *testing.T) {
+	cfg := testServiceConfig(t)
+	stubOptional(t, "Slack")
+	startTestRunner(t, cfg, noopRun)
+
+	r := rawExchange(t, cfg, `{"jsonrpc":"2.0","method":"installItem","params":{"itemName":"Slack"}}`)
+	if line, err := r.ReadString('\n'); err == nil || line != "" {
+		t.Fatalf("notification got a response: %q (err %v)", line, err)
+	}
+	if got := loadManifest(t, cfg).Installs; len(got) != 0 {
+		t.Fatalf("a notification changed the selection: %v", got)
+	}
+}
+
+// server_busy is sent before the request is read; the client must still read
+// it as a service error (the v1 envelope here was unreadable).
+func TestServerBusyIsReadableByClient(t *testing.T) {
+	cfg := testServiceConfig(t)
+	sr, ctx := startTestRunner(t, cfg, noopRun)
+	for i := 0; i < cap(sr.handlerSem); i++ {
+		sr.handlerSem <- struct{}{}
 	}
 	defer func() {
-		cancel()
-		bestEffortUnblockPipeListener(cfg)
-		sr.stop(context.Background())
+		for i := 0; i < cap(sr.handlerSem); i++ {
+			<-sr.handlerSem
+		}
 	}()
 
-	conn, err := openPipe(servicePipePath(cfg.ServicePipeName), 5*time.Second)
+	_, err := NewClient(cfg.ServicePipeName).GetServiceInfo(ctx)
+	if !IsErrorCode(err, "server_busy") {
+		t.Fatalf("GetServiceInfo with every handler busy = %v, want server_busy", err)
+	}
+}
+
+// getServiceInfo skips the queue, so it answers while a run holds it, and
+// reports that run.
+func TestGetServiceInfoAnswersWhileRunIsBusy(t *testing.T) {
+	cfg := testServiceConfig(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	_, ctx := startTestRunner(t, cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+		once.Do(func() { close(started) })
+		<-release
+		return nil, nil
+	})
+	defer close(release)
+	<-started
+
+	info, err := NewClient(cfg.ServicePipeName).GetServiceInfo(ctx)
 	if err != nil {
-		t.Fatalf("failed to open service pipe: %v", err)
+		t.Fatalf("GetServiceInfo: %v", err)
 	}
-	defer func() { _ = conn.Close() }()
-
-	request := serviceEnvelope[streamOperationStatusRequest]{
-		Version:      pipeProtocolVersion,
-		MessageType:  messageTypeRequest,
-		Operation:    actionStreamOperationStatus,
-		RequestID:    "req-stream-unknown",
-		OperationID:  "does-not-exist",
-		TimestampUTC: nowRFC3339UTC(),
-		Payload:      streamOperationStatusRequest{},
-	}
-	if err := json.NewEncoder(conn).Encode(request); err != nil {
-		t.Fatalf("failed to encode stream request: %v", err)
-	}
-
-	var resp serviceEnvelope[errorResponsePayload]
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode stream error response: %v", err)
-	}
-	if resp.MessageType != messageTypeError {
-		t.Fatalf("expected messageType=%s, got %s", messageTypeError, resp.MessageType)
-	}
-	if resp.Payload.ErrorCode != "invalid_request" {
-		t.Fatalf("expected errorCode=invalid_request, got %s", resp.Payload.ErrorCode)
+	if !info.Busy || info.APIVersion != apiVersion || info.ProtocolVersion != "2.0" || !slices.Equal(info.Capabilities, capabilities) || info.UptimeSeconds < 0 {
+		t.Fatalf("GetServiceInfo = %+v", info)
 	}
 }
 
 func TestStreamOperationStatusFailedLifecycle(t *testing.T) {
-	tempDir := t.TempDir()
-	cfg := config.Configuration{
-		AppDataPath:     tempDir,
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
-		ServiceInterval: "1h",
-		ServiceMode:     true,
-		ServiceName:     "gorilla-test",
-	}
-
+	cfg := testServiceConfig(t)
 	stubOptional(t, "Slack")
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+	_, ctx := startTestRunner(t, cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		return nil, errors.New("forced managed run failure")
 	})
-	ctx, cancel := context.WithCancel(context.Background())
 
-	if err := sr.start(ctx); err != nil {
-		t.Fatalf("service start failed: %v", err)
+	accepted, err := NewClient(cfg.ServicePipeName).InstallItem(ctx, "Slack")
+	if err != nil {
+		t.Fatalf("installItem: %v", err)
 	}
-	defer func() {
-		cancel()
-		bestEffortUnblockPipeListener(cfg)
-		sr.stop(context.Background())
-	}()
-
-	operationID := mustInstallAndGetOperationID(t, cfg, 0)
-	terminal := mustStreamAndReceiveTerminalState(t, cfg, operationID, 0)
-	if terminal.State != "Failed" {
-		t.Fatalf("expected terminal state Failed, got %s", terminal.State)
-	}
-	if terminal.ErrorCode != "managed_run_failed" {
-		t.Fatalf("expected errorCode managed_run_failed, got %s", terminal.ErrorCode)
+	terminal := mustStreamTerminal(t, cfg, accepted.OperationID)
+	if terminal.State != "Failed" || terminal.ErrorCode != "managed_run_failed" {
+		t.Fatalf("terminal = %+v, want Failed/managed_run_failed", terminal)
 	}
 }
 
 func TestScheduleRunAfterMutationEmitsCanceledTerminalEvent(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
-		return nil, nil
-	})
+	sr := newServiceRunner(config.Configuration{}, noopRun)
 	operationID := "op-canceled"
 	sr.registerTrackedOperation("Slack", CommandResponse{OperationID: operationID})
 
@@ -226,7 +270,7 @@ func TestResolveTerminalEvent(t *testing.T) {
 	}
 }
 
-func namedPipeReliabilityIterations(t *testing.T) int {
+func reliabilityIterations(t *testing.T) int {
 	t.Helper()
 
 	const (
@@ -251,150 +295,55 @@ func namedPipeReliabilityIterations(t *testing.T) int {
 	return iterations
 }
 
-func mustInstallAndGetOperationID(t *testing.T, cfg config.Configuration, seq int) string {
+// mustStreamTerminal streams operationID over a raw connection, checks the
+// ack and the notifications' framing and numbering, and returns the terminal
+// record.
+func mustStreamTerminal(t *testing.T, cfg config.Configuration, operationID string) OperationStatus {
 	t.Helper()
 
-	request := serviceEnvelope[installItemRequest]{
-		Version:      pipeProtocolVersion,
-		MessageType:  messageTypeRequest,
-		Operation:    actionInstallItem,
-		RequestID:    fmt.Sprintf("req-install-%d", seq),
-		OperationID:  "",
-		TimestampUTC: nowRFC3339UTC(),
-		Payload: installItemRequest{
-			ItemName: "Slack",
-		},
+	r := rawExchange(t, cfg, fmt.Sprintf(`{"jsonrpc":"2.0","id":"req-stream","method":"streamOperationStatus","params":{"operationId":%q}}`, operationID))
+	dec := json.NewDecoder(r)
+	var ack rpcResponse
+	if err := dec.Decode(&ack); err != nil {
+		t.Fatalf("decode stream ack: %v", err)
+	}
+	if ack.Error != nil || string(ack.ID) != `"req-stream"` || string(ack.Result) != `{"streamAccepted":true}` {
+		t.Fatalf("stream ack = %+v (error %+v)", ack, ack.Error)
 	}
 
-	response := sendOneRequest(t, cfg, request)
-	if response.MessageType != messageTypeResponse {
-		t.Fatalf("expected %s message type, got %s", messageTypeResponse, response.MessageType)
-	}
-	if response.Operation != actionInstallItem {
-		t.Fatalf("expected operation %s, got %s", actionInstallItem, response.Operation)
-	}
-	if strings.TrimSpace(response.OperationID) == "" {
-		t.Fatalf("expected non-empty operationId from install response")
-	}
-
-	return response.OperationID
-}
-
-func mustStreamAndReceiveTerminalEvent(t *testing.T, cfg config.Configuration, operationID string, seq int) {
-	t.Helper()
-
-	terminal := mustStreamAndReceiveTerminalState(t, cfg, operationID, seq)
-	if terminal.State != "Succeeded" {
-		t.Fatalf("expected terminal state Succeeded, got %s", terminal.State)
-	}
-}
-
-func mustStreamAndReceiveTerminalState(t *testing.T, cfg config.Configuration, operationID string, seq int) OperationStatusPayload {
-	t.Helper()
-
-	conn, err := openPipe(servicePipePath(cfg.ServicePipeName), 5*time.Second)
-	if err != nil {
-		t.Fatalf("failed to open service pipe: %v", err)
-	}
-	defer func() {
-		_ = conn.Close()
-	}()
-
-	request := serviceEnvelope[streamOperationStatusRequest]{
-		Version:      pipeProtocolVersion,
-		MessageType:  messageTypeRequest,
-		Operation:    actionStreamOperationStatus,
-		RequestID:    fmt.Sprintf("req-stream-%d", seq),
-		OperationID:  operationID,
-		TimestampUTC: nowRFC3339UTC(),
-		Payload:      streamOperationStatusRequest{},
-	}
-
-	if err := json.NewEncoder(conn).Encode(request); err != nil {
-		t.Fatalf("failed to encode stream request: %v", err)
-	}
-	decoder := json.NewDecoder(conn)
-
-	var ack serviceEnvelope[json.RawMessage]
-	if err := decoder.Decode(&ack); err != nil {
-		t.Fatalf("failed to decode stream ack: %v", err)
-	}
-	if ack.MessageType != messageTypeResponse {
-		t.Fatalf("expected stream ack messageType=%s, got %s", messageTypeResponse, ack.MessageType)
-	}
-	if ack.Operation != actionStreamOperationStatus {
-		t.Fatalf("expected stream ack operation=%s, got %s", actionStreamOperationStatus, ack.Operation)
-	}
-	if ack.OperationID != operationID {
-		t.Fatalf("expected stream ack operationId=%s, got %s", operationID, ack.OperationID)
-	}
-
-	states := make([]string, 0, 4)
-	var terminal OperationStatusPayload
+	var records []OperationStatus
 	for {
-		var event serviceEnvelope[OperationStatusPayload]
-		if err := decoder.Decode(&event); err != nil {
-			t.Fatalf("failed to decode stream event: %v", err)
+		var note struct {
+			JSONRPC string          `json:"jsonrpc"`
+			ID      json.RawMessage `json:"id"`
+			Method  string          `json:"method"`
+			Params  OperationStatus `json:"params"`
 		}
-		if event.MessageType != messageTypeEvent {
-			t.Fatalf("expected stream event messageType=%s, got %s", messageTypeEvent, event.MessageType)
+		if err := dec.Decode(&note); err != nil {
+			t.Fatalf("decode stream notification: %v", err)
 		}
-		if event.Operation != actionStreamOperationStatus {
-			t.Fatalf("expected stream event operation=%s, got %s", actionStreamOperationStatus, event.Operation)
+		if note.JSONRPC != jsonrpcVersion || note.ID != nil || note.Method != notificationOperationStatus || note.Params.OperationID != operationID {
+			t.Fatalf("unexpected stream message %+v", note)
 		}
-		if event.OperationID != operationID {
-			t.Fatalf("expected stream event operationId=%s, got %s", operationID, event.OperationID)
+		if note.Params.Seq != len(records)+1 {
+			t.Fatalf("record seq %d, want %d", note.Params.Seq, len(records)+1)
 		}
-		states = append(states, event.Payload.State)
-		if IsTerminalOperationState(event.Payload.State) {
-			terminal = event.Payload
+		if _, err := time.Parse(time.RFC3339Nano, note.Params.TimestampUTC); err != nil || !strings.Contains(note.Params.TimestampUTC, ".") {
+			t.Fatalf("timestamp %q is not sub-second RFC 3339", note.Params.TimestampUTC)
+		}
+		records = append(records, note.Params)
+		if IsTerminalOperationState(note.Params.State) {
 			break
 		}
 	}
-
-	if len(states) < 2 {
-		t.Fatalf("expected queued and terminal lifecycle states, got %v", states)
+	if len(records) < 2 || records[0].State != "Queued" {
+		t.Fatalf("expected Queued then a terminal record, got %+v", records)
 	}
-	if states[0] != "Queued" {
-		t.Fatalf("expected first state Queued, got %s (%v)", states[0], states)
-	}
-	return terminal
-}
-
-func sendOneRequest[T any](t *testing.T, cfg config.Configuration, req serviceEnvelope[T]) serviceEnvelope[json.RawMessage] {
-	t.Helper()
-
-	conn, err := openPipe(servicePipePath(cfg.ServicePipeName), 5*time.Second)
-	if err != nil {
-		t.Fatalf("failed to open service pipe: %v", err)
-	}
-	defer func() {
-		_ = conn.Close()
-	}()
-
-	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		t.Fatalf("failed to encode request: %v", err)
-	}
-
-	var resp serviceEnvelope[json.RawMessage]
-	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	return resp
-}
-
-func bestEffortUnblockPipeListener(cfg config.Configuration) {
-	conn, err := openPipe(servicePipePath(cfg.ServicePipeName), 250*time.Millisecond)
-	if err != nil {
-		return
-	}
-	_ = conn.Close()
+	return records[len(records)-1]
 }
 
 func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
-		return nil, nil
-	})
+	sr := newServiceRunner(config.Configuration{}, noopRun)
 	const operationID = "op-progress"
 	sr.registerTrackedOperation("DemoOptional", CommandResponse{OperationID: operationID})
 
@@ -417,6 +366,10 @@ func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
 	for i, want := range wantStates {
 		if events[i].State != want {
 			t.Fatalf("event %d state=%q, want %q", i, events[i].State, want)
+		}
+		// Every record is numbered in the order it was recorded.
+		if events[i].Seq != i+1 || events[i].OperationID != operationID {
+			t.Fatalf("event %d seq=%d operationId=%q", i, events[i].Seq, events[i].OperationID)
 		}
 	}
 	if events[3].ProgressPercent != 100 || events[4].ProgressPercent != 0 {
@@ -443,23 +396,21 @@ func TestOperationProgressUsesActualItemsAndItemScopedPercent(t *testing.T) {
 }
 
 func TestTrackedOperationPruningDropsOldCompletedEntries(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
-		return nil, nil
-	})
+	sr := newServiceRunner(config.Configuration{}, noopRun)
 	now := time.Now()
 
 	sr.operationsMu.Lock()
 	for i := 0; i < trackedOperationsMaxCount+50; i++ {
 		id := fmt.Sprintf("done-%d", i)
 		sr.operations[id] = &trackedOperation{
-			events:      []OperationStatusPayload{{State: "Succeeded", ProgressPercent: 100, Message: "done"}},
+			events:      []OperationStatus{{State: "Succeeded", ProgressPercent: 100, Message: "done"}},
 			done:        true,
 			lastUpdated: now.Add(-time.Duration(i) * time.Minute),
 			completedAt: now.Add(-time.Duration(i) * time.Minute),
 		}
 	}
 	sr.operations["active-op"] = &trackedOperation{
-		events:      []OperationStatusPayload{{State: "Installing", ProgressPercent: 60, Message: "running"}},
+		events:      []OperationStatus{{State: "Installing", ProgressPercent: 60, Message: "running"}},
 		done:        false,
 		lastUpdated: now,
 	}
@@ -479,29 +430,14 @@ func TestTrackedOperationPruningDropsOldCompletedEntries(t *testing.T) {
 // GetBranding must answer while a managed run holds the command queue: the UI
 // asks for it before opening its window.
 func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
-	cfg := config.Configuration{
-		AppDataPath:     t.TempDir(),
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
-		ServiceInterval: "1h",
-		ServiceMode:     true,
-		ServiceName:     "gorilla-test",
-		Branding:        config.Branding{Title: "Acme Software Center", Accent: "#0B6E4F"},
-	}
+	cfg := testServiceConfig(t)
+	cfg.Branding = config.Branding{Title: "Acme Software Center", Accent: "#0B6E4F"}
 	release := make(chan struct{})
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+	_, ctx := startTestRunner(t, cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		<-release
 		return nil, nil
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := sr.start(ctx); err != nil {
-		t.Fatalf("service start failed: %v", err)
-	}
-	defer func() {
-		close(release)
-		cancel()
-		bestEffortUnblockPipeListener(cfg)
-		sr.stop(context.Background())
-	}()
+	defer close(release)
 
 	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer callCancel()
@@ -517,9 +453,7 @@ func TestGetBrandingAnswersWhileRunIsBusy(t *testing.T) {
 // An InstallItem resolves the catalog display name while authorizing, so even
 // a run that never emits progress for the item names it properly at the end.
 func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
-	sr := newServiceRunner(config.Configuration{}, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
-		return nil, nil
-	})
+	sr := newServiceRunner(config.Configuration{}, noopRun)
 	sr.registerTrackedOperation("GoogleChrome", CommandResponse{OperationID: "op-named", displayName: "Google Chrome"})
 	sr.appendOperationEvent("op-named", resolveTerminalEvent("GoogleChrome", nil))
 
@@ -536,16 +470,11 @@ func TestTrackedOperationUsesRegisteredDisplayName(t *testing.T) {
 
 // A managed run that is still busy must not hold a service stop past its
 // deadline: Stop-Service once sat at "Waiting for service to stop" for over
-// ten minutes behind a run. Nothing connects to the pipe first, as with
-// the real Service Control Manager: the listener is blocked in ConnectNamedPipe.
+// ten minutes behind a run. Nothing connects first, as with the real Service
+// Control Manager, so the listener is blocked in Accept (on Windows, in
+// ConnectNamedPipe, which only the self-connect in Close wakes).
 func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
-	cfg := config.Configuration{
-		AppDataPath:     t.TempDir(),
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
-		ServiceInterval: "1h",
-		ServiceMode:     true,
-		ServiceName:     "gorilla-test",
-	}
+	cfg := testServiceConfig(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
@@ -580,18 +509,12 @@ func TestStopHonoursDeadlineWhileRunIsBusy(t *testing.T) {
 // with a user Canceled record and reverts the selection. A second cancel of
 // the now finished operation, or one of an unknown id, is refused.
 func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
-	cfg := config.Configuration{
-		AppDataPath:     t.TempDir(),
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
-		ServiceInterval: "1h",
-		ServiceMode:     true,
-		ServiceName:     "gorilla-test",
-	}
+	cfg := testServiceConfig(t)
 	stubOptional(t, "Slack")
 	var runs atomic.Int32
 	runStarted := make(chan struct{})
 	release := make(chan struct{})
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+	sr, ctx := startTestRunner(t, cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		// The start-up run returns at once; the run InstallItem schedules
 		// stays busy, before its item, until the test releases it.
 		if runs.Add(1) == 2 {
@@ -600,15 +523,6 @@ func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
 		}
 		return nil, nil
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := sr.start(ctx); err != nil {
-		t.Fatalf("service start failed: %v", err)
-	}
-	defer func() {
-		cancel()
-		bestEffortUnblockPipeListener(cfg)
-		sr.stop(context.Background())
-	}()
 
 	client := NewClient(cfg.ServicePipeName)
 	accepted, err := client.InstallItem(ctx, "Slack")
@@ -624,7 +538,7 @@ func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
 	if err := client.CancelOperation(ctx, accepted.OperationID); err != nil {
 		t.Fatalf("CancelOperation while queued failed: %v", err)
 	}
-	terminal := mustStreamAndReceiveTerminalState(t, cfg, accepted.OperationID, 0)
+	terminal := mustStreamTerminal(t, cfg, accepted.OperationID)
 	if terminal.State != "Canceled" || terminal.CanceledBy != "user" || terminal.ItemName != "Slack" || terminal.DisplayName == "" {
 		t.Fatalf("terminal record = %#v, want Canceled by user for Slack", terminal)
 	}
@@ -650,7 +564,9 @@ func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
 
 	for _, id := range []string{accepted.OperationID, "does-not-exist"} {
 		err := client.CancelOperation(ctx, id)
-		if err == nil || !strings.HasPrefix(err.Error(), "operation_not_cancelable:") {
+		var rpcErr *Error
+		if !errors.As(err, &rpcErr) || rpcErr.Code != codeOperationNotCancelable || rpcErr.Data.OperationID != id ||
+			!strings.HasPrefix(err.Error(), "operation_not_cancelable:") {
 			t.Fatalf("CancelOperation(%s) error = %v, want operation_not_cancelable", id, err)
 		}
 	}
@@ -660,30 +576,16 @@ func TestCancelOperationAcceptedWhileQueuedThenRefused(t *testing.T) {
 // only write the selection. Waiting behind the run used to hit the client's
 // 30 s timeout on long installs while the request still went through later.
 func TestMutationReturnsWhileRunIsBusy(t *testing.T) {
-	cfg := config.Configuration{
-		AppDataPath:     t.TempDir(),
-		ServicePipeName: fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano()),
-		ServiceInterval: "1h",
-		ServiceMode:     true,
-		ServiceName:     "gorilla-test",
-	}
+	cfg := testServiceConfig(t)
 	stubOptional(t, "Slack")
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
-	sr := newServiceRunner(cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
+	sr, ctx := startTestRunner(t, cfg, func(config.Configuration, installer.ProgressFn, *installer.Cancels) (*report.Report, error) {
 		once.Do(func() { close(started) })
 		<-release
 		return nil, nil
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := sr.start(ctx); err != nil {
-		t.Fatalf("service start failed: %v", err)
-	}
-	defer func() {
-		cancel()
-		sr.stop(context.Background())
-	}()
 	defer close(release)
 	select {
 	case <-started:
@@ -707,5 +609,37 @@ func TestMutationReturnsWhileRunIsBusy(t *testing.T) {
 	}
 	if _, err := client.RemoveItem(callCtx, "Slack"); err != nil {
 		t.Fatalf("RemoveItem behind a busy run failed: %v", err)
+	}
+}
+
+// `gorilla -S` prints what SendCommand returns, and the manual-test scripts
+// parse it: one JSON line per item or status record, and the operationId of an
+// accepted mutation.
+func TestSendCommandOverTransport(t *testing.T) {
+	cfg := testServiceConfig(t)
+	stubOptional(t, "Slack")
+	startTestRunner(t, cfg, noopRun)
+
+	info, err := SendCommand(cfg, "GetServiceInfo")
+	if err != nil || len(info.Items) != 1 || !strings.Contains(info.Items[0], `"protocolVersion":"2.0"`) {
+		t.Fatalf("GetServiceInfo = %+v, %v", info, err)
+	}
+	accepted, err := SendCommand(cfg, "InstallItem:Slack")
+	if err != nil || accepted.OperationID == "" {
+		t.Fatalf("InstallItem = %+v, %v", accepted, err)
+	}
+	stream, err := SendCommand(cfg, "StreamOperationStatus:"+accepted.OperationID)
+	if err != nil || len(stream.Items) < 2 {
+		t.Fatalf("StreamOperationStatus = %+v, %v", stream, err)
+	}
+	var last OperationStatus
+	if err := json.Unmarshal([]byte(stream.Items[len(stream.Items)-1]), &last); err != nil {
+		t.Fatal(err)
+	}
+	if last.OperationID != accepted.OperationID || last.State != "Succeeded" || last.Seq != len(stream.Items) {
+		t.Fatalf("last status line = %+v", last)
+	}
+	if _, err := SendCommand(cfg, "CancelOperation:"+accepted.OperationID); !IsErrorCode(err, "operation_not_cancelable") {
+		t.Fatalf("CancelOperation of a finished operation = %v", err)
 	}
 }
