@@ -370,6 +370,9 @@ func (r *Runner) actionItem(item catalog.Item, itemURL, action string) (string, 
 		return out, r.recordFailure(item, action, err)
 	}
 	slog.Info(verb+"ation SUCCESSFUL", "item", item.DisplayName, "version", item.Version, "result", "success")
+	// The command changed the registry, so later checks in this run (the
+	// self-serve prune, updates, the inventory) must not read the old snapshot.
+	r.Checker.Invalidate()
 
 	// Add the item to the report only after the command succeeded
 	if action == "uninstall" {
