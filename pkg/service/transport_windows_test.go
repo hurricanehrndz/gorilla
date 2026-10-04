@@ -4,16 +4,22 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
+var testPipeSeq atomic.Uint64
+
 // testPipeName is a fresh pipe name. The test serves it as itself, not as
-// SYSTEM, so its clients trust a pipe the test's user owns.
+// SYSTEM, so its clients trust a pipe the test's user owns. It counts rather
+// than reading the clock: the Windows wall clock moves in timer ticks, and a
+// listener closed while no Accept waits keeps its spare instance until the
+// process exits, so a reused name fails listen.
 func testPipeName(t *testing.T) string {
 	t.Helper()
 	original := trustedPipeOwner
@@ -25,7 +31,7 @@ func testPipeName(t *testing.T) string {
 		return user.User.Sid, nil
 	}
 	t.Cleanup(func() { trustedPipeOwner = original })
-	return fmt.Sprintf("gorilla-test-%d", time.Now().UnixNano())
+	return fmt.Sprintf("gorilla-test-%d-%d", os.Getpid(), testPipeSeq.Add(1))
 }
 
 // distrustTestServer makes clients expect the real service's owner,
